@@ -1,0 +1,171 @@
+#pragma once
+
+#include "../JuceHeader.h"
+#include "../Utils/Constants.h"
+#include "../Utils/UI/Theme.h"
+
+// Forward declaration - EditMode is defined in PianoRollComponent.h
+enum class EditMode;
+
+// Tool button with hover and active states
+class ToolButton : public juce::DrawableButton
+{
+public:
+    ToolButton(const juce::String& name) : juce::DrawableButton(name, juce::DrawableButton::ImageFitted) {}
+
+    void setActive(bool active) { isActive = active; repaint(); }
+    bool getActive() const { return isActive; }
+
+    void paint(juce::Graphics& g) override
+    {
+        auto bounds = getLocalBounds().toFloat().reduced(2.0f);
+
+        if (isActive)
+        {
+            juce::ColourGradient activeGradient(
+                APP_COLOR_PRIMARY.withAlpha(0.9f), bounds.getX(), bounds.getY(),
+                APP_COLOR_PRIMARY.darker(0.25f), bounds.getX(), bounds.getBottom(), false);
+            g.setGradientFill(activeGradient);
+            g.fillRoundedRectangle(bounds, 5.0f);
+
+            // Subtle glow
+            g.setColour(APP_COLOR_PRIMARY_GLOW.withAlpha(0.35f));
+            g.drawRoundedRectangle(bounds.expanded(1.5f), 6.0f, 1.5f);
+        }
+        else if (isMouseOver())
+        {
+            g.setColour(APP_COLOR_SURFACE_RAISED);
+            g.fillRoundedRectangle(bounds, 5.0f);
+        }
+        else
+        {
+            g.setColour(juce::Colours::transparentBlack);
+            g.fillRoundedRectangle(bounds, 5.0f);
+        }
+        juce::DrawableButton::paint(g);
+    }
+
+private:
+    bool isActive = false;
+};
+
+class ToolbarComponent : public juce::Component,
+                         public juce::Button::Listener,
+                         public juce::Slider::Listener
+{
+public:
+    ToolbarComponent();
+    ~ToolbarComponent() override;
+
+    void paint(juce::Graphics& g) override;
+    void resized() override;
+    void mouseDown(const juce::MouseEvent& e) override;
+    void mouseDrag(const juce::MouseEvent& e) override;
+    void mouseDoubleClick(const juce::MouseEvent& e) override;
+
+    void buttonClicked(juce::Button* button) override;
+    void sliderValueChanged(juce::Slider* slider) override;
+    
+    void setPlaying(bool playing);
+    void setCurrentTime(double time);
+    void setTotalTime(double time);
+    void setEditMode(EditMode mode);
+    void setZoom(float pixelsPerSecond);  // Update zoom slider without triggering callback
+    void setLoopEnabled(bool enabled);
+    void setParametersVisible(bool visible);
+    void setVoicebankVisible(bool visible);
+    bool isFollowPlayback() const { return followPlayback; }
+    bool isLoopEnabled() const { return loopEnabled; }
+
+    // Access to follow/loop buttons for command-driven toggling
+    juce::Button& getFollowButton() { return followButton; }
+    juce::Button& getLoopButton() { return loopButton; }
+
+    // Plugin mode
+    void setPluginMode(bool isPlugin);
+    void setARAMode(bool isARA);  // Set ARA mode indicator
+
+    // Progress bar control
+    void showProgress(const juce::String& message);
+    void hideProgress();
+    void setProgress(float progress);  // 0.0 to 1.0, or -1 for indeterminate
+    
+    // Status display
+    void setStatusMessage(const juce::String& message);  // Show status (e.g., "ARA Mode" or "Non-ARA Mode")
+    juce::String getStatusText() const { return statusLabel.getText(); }
+
+    std::function<void()> onPlay;
+    std::function<void()> onPause;
+    std::function<void()> onStop;
+    std::function<void()> onGoToStart;
+    std::function<void()> onGoToEnd;
+    std::function<void(float)> onZoomChanged;
+    std::function<void(EditMode)> onEditModeChanged;
+    std::function<void(bool)> onLoopToggled;
+
+    // Plugin mode callbacks
+    std::function<void()> onReanalyze;
+    std::function<void(bool)> onToggleParameters;  // Called with new visibility state
+    std::function<void(bool)> onToggleVoicebank;    // Called with new visibility state
+    // Note: Removed onRender - Melodyne-style: edits automatically trigger real-time processing
+
+private:
+    void updateTimeDisplay();
+    juce::String formatTime(double seconds);
+
+    juce::DrawableButton playButton { "Play", juce::DrawableButton::ImageFitted };
+    juce::DrawableButton stopButton { "Stop", juce::DrawableButton::ImageFitted };
+    juce::DrawableButton goToStartButton { "Start", juce::DrawableButton::ImageFitted };
+    juce::DrawableButton goToEndButton { "End", juce::DrawableButton::ImageFitted };
+    std::unique_ptr<juce::Drawable> playDrawable;
+    std::unique_ptr<juce::Drawable> pauseDrawable;
+
+    // Plugin mode buttons
+    juce::TextButton reanalyzeButton { "Re-analyze" };
+    juce::Label araModeLabel;  // ARA mode indicator tag
+    bool pluginMode = false;
+    bool araMode = false;
+    // Note: Removed renderButton - Melodyne-style: automatic real-time processing
+
+    // Edit mode buttons
+    ToolButton selectModeButton { "Select" };
+    ToolButton stretchModeButton { "Stretch" };
+    ToolButton drawModeButton { "Draw" };
+    ToolButton splitModeButton { "Split" };
+    ToolButton followButton { "Follow" };
+    ToolButton loopButton { "Loop" };
+    ToolButton parametersButton { "Parameters" };
+    ToolButton voicebankButton { "Voicebank" };
+    juce::Rectangle<int> toolContainerBounds;  // For drawing container background
+    
+    juce::Label timeLabel;
+    
+    juce::Slider zoomSlider;
+    juce::Label zoomLabel { {}, "Zoom:" };
+
+    // Progress components
+    double progressValue = 0.0;  // Must be declared before progressBar
+    juce::ProgressBar progressBar { progressValue };
+    juce::Label progressLabel;
+    bool showingProgress = false;
+    
+    // Status label (for mode indication)
+    juce::Label statusLabel;
+    bool showingStatus = false;
+
+    bool parametersVisible = false;
+    bool voicebankVisible = false;
+    
+    double currentTime = 0.0;
+    double totalTime = 0.0;
+    bool isPlaying = false;
+    bool followPlayback = true;
+    bool loopEnabled = false;
+    int currentEditModeInt = 0;  // 0 = Select, 1 = Stretch, 2 = Draw, 3 = Split
+
+#if JUCE_MAC
+    juce::ComponentDragger dragger;
+#endif
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ToolbarComponent)
+};

@@ -1,0 +1,1485 @@
+name: Build SVCFusion Studio
+
+on:
+  push:
+    branches: [main, master, refactor]
+  pull_request:
+    branches: [main, master, refactor]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BUILD_TYPE: Release
+  ONNXRUNTIME_VERSION: "1.17.3"
+  DIRECTML_VERSION: "1.15.4"
+  MODEL_ARCHIVE_URL: "https://huggingface.co/SVCFusion/things/resolve/main/SVCFusionStudio-Models.7z?download=true"
+  MODEL_CACHE_KEY: "svcfusion-models-v1"
+
+jobs:
+  # ===========================================
+  # Prepare Shared Model Cache
+  # ===========================================
+  prepare-model-cache:
+    runs-on: ubuntu-22.04
+    name: Prepare Model Cache
+
+    steps:
+      - name: Restore/Save Model Cache
+        id: models-cache
+        uses: actions/cache@v4
+        with:
+          path: .ci-model-cache/extracted
+          key: ${{ env.MODEL_CACHE_KEY }}
+          enableCrossOsArchive: true
+
+      - name: Download and Extract Models
+        if: steps.models-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+
+          mkdir -p .ci-model-cache/extracted
+          sudo apt-get update
+          sudo apt-get install -y p7zip-full
+
+          curl -L --retry 3 --fail \
+            -o .ci-model-cache/SVCFusionStudio-Models.7z \
+            "${{ env.MODEL_ARCHIVE_URL }}"
+
+          rm -rf .ci-model-cache/extracted
+          mkdir -p .ci-model-cache/extracted
+          7z x .ci-model-cache/SVCFusionStudio-Models.7z -o.ci-model-cache/extracted -y >/dev/null
+
+          test -f .ci-model-cache/extracted/pc_nsf_hifigan.onnx
+          test -f .ci-model-cache/extracted/cent_table.bin
+
+  # ===========================================
+  # Windows CPU Build
+  # ===========================================
+  build-windows-cpu:
+    needs: prepare-model-cache
+    runs-on: windows-latest
+    name: Windows (CPU)
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: recursive
+
+      - name: Ensure JUCE Build Helpers
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $required = "third_party/JUCE/extras/Build/CMake/JUCEModuleSupport.cmake"
+          if (Test-Path $required) {
+            Write-Host "JUCE build helpers already present"
+            exit 0
+          }
+
+          $juceCmake = "third_party/JUCE/CMakeLists.txt"
+          if (-not (Test-Path $juceCmake)) {
+            throw "Missing $juceCmake"
+          }
+
+          $match = Select-String -Path $juceCmake -Pattern 'project\(JUCE VERSION ([0-9\.]+)' | Select-Object -First 1
+          if (-not $match) {
+            throw "Unable to parse JUCE version from $juceCmake"
+          }
+
+          $juceVersion = $match.Matches[0].Groups[1].Value
+          $tmpDir = Join-Path $PWD ".ci-juce"
+          $archivePath = Join-Path $tmpDir "JUCE.tar.gz"
+          $downloadUrl = "https://github.com/juce-framework/JUCE/archive/refs/tags/$juceVersion.tar.gz"
+
+          if (Test-Path $tmpDir) {
+            Remove-Item -Recurse -Force $tmpDir
+          }
+          New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
+
+          Invoke-WebRequest -Uri $downloadUrl -OutFile $archivePath
+          tar -xzf $archivePath -C $tmpDir
+
+          $extractRoot = Get-ChildItem -Path $tmpDir -Directory | Where-Object { $_.Name -like "JUCE-*" } | Select-Object -First 1
+          if (-not $extractRoot) {
+            throw "Failed to extract JUCE archive"
+          }
+
+          $srcBuildDir = Join-Path $extractRoot.FullName "extras/Build"
+          if (-not (Test-Path $srcBuildDir)) {
+            throw "Downloaded JUCE archive does not contain extras/Build"
+          }
+
+          New-Item -ItemType Directory -Force -Path "third_party/JUCE/extras" | Out-Null
+          Copy-Item -Path $srcBuildDir -Destination "third_party/JUCE/extras/" -Recurse -Force
+
+          if (-not (Test-Path $required)) {
+            throw "Failed to restore $required"
+          }
+
+      - name: Cache ONNX Runtime
+        uses: actions/cache@v4
+        with:
+          path: build/_deps/onnxruntime-src
+          key: windows-onnxruntime-${{ env.ONNXRUNTIME_VERSION }}-cpu
+
+      - name: Restore Model Cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .ci-model-cache/extracted
+          key: ${{ env.MODEL_CACHE_KEY }}
+          fail-on-cache-miss: true
+          enableCrossOsArchive: true
+
+      - name: Prepare Build Models (CPU fp32 slim)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $extractDir = ".ci-model-cache/extracted"
+          if (-not (Test-Path $extractDir)) {
+            throw "Model cache directory not found: $extractDir"
+          }
+
+          $dstModels = "Resources/models"
+          New-Item -ItemType Directory -Force -Path $dstModels | Out-Null
+
+          $onnxFiles = Get-ChildItem -Path $extractDir -Recurse -File -Filter *.onnx
+          if (-not $onnxFiles) {
+            throw "No ONNX files found in model archive"
+          }
+
+          $onnxMap = @{}
+          foreach ($file in $onnxFiles) {
+            $onnxMap[$file.Name.ToLowerInvariant()] = $file.FullName
+          }
+
+          function Resolve-OnnxCandidate {
+            param(
+              [string] $BaseFile,
+              [string[]] $Candidates
+            )
+
+            foreach ($candidate in $Candidates) {
+              $key = $candidate.ToLowerInvariant()
+              if ($onnxMap.ContainsKey($key)) {
+                return $onnxMap[$key]
+              }
+            }
+
+            throw "Unable to resolve required ONNX model '$BaseFile'. Tried: $($Candidates -join ', ')"
+          }
+
+          $targetOnnx = @(
+            "contentvec768l12.onnx",
+            "pc_nsf_hifigan.onnx",
+            "fcpe.onnx",
+            "rmvpe.onnx",
+            "some.onnx"
+          )
+
+          foreach ($baseFile in $targetOnnx) {
+            $stem = [System.IO.Path]::GetFileNameWithoutExtension($baseFile)
+            $sourcePath = Resolve-OnnxCandidate -BaseFile $baseFile -Candidates @(
+              "${stem}_fp32_slim.onnx",
+              "${stem}_fp32.onnx",
+              $baseFile
+            )
+
+            Copy-Item -Path $sourcePath -Destination (Join-Path $dstModels $baseFile) -Force
+            Write-Host "Selected $baseFile <= $(Split-Path $sourcePath -Leaf)"
+          }
+
+          foreach ($binName in @("cent_table.bin", "mel_filterbank.bin")) {
+            $binFile = Get-ChildItem -Path $extractDir -Recurse -File -Filter $binName | Select-Object -First 1
+            if ($binFile) {
+              Copy-Item -Path $binFile.FullName -Destination (Join-Path $dstModels $binName) -Force
+              Write-Host "Prepared $binName <= $(Split-Path $binFile.FullName -Leaf)"
+            } else {
+              throw "$binName not found in model cache"
+            }
+          }
+
+          Write-Host "Prepared build models in $dstModels"
+
+      - name: Configure CMake
+        run: cmake -B build -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -DUSE_ASIO=ON
+
+      - name: Build
+        run: cmake --build build --config ${{ env.BUILD_TYPE }} --parallel -- /p:WholeProgramOptimization=false
+
+      - name: Prepare Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path package
+
+          # Copy standalone app
+          Copy-Item -Path "build/SVCFusionStudio_artefacts/${{ env.BUILD_TYPE }}/*" -Destination "package/" -Recurse -Force
+
+          # Move VST3 binary next to the exe (avoid the VST3 folder packaging)
+          $vst3Binary = "build/SVCFusionStudioPlugin_artefacts/${{ env.BUILD_TYPE }}/VST3/SVCFusionStudio.vst3/Contents/x86_64-win/SVCFusionStudio.vst3"
+          if (Test-Path $vst3Binary) {
+            Copy-Item -Path $vst3Binary -Destination "package/SVCFusionStudio.vst3" -Force
+          } else {
+            Write-Warning "VST3 binary not found at $vst3Binary"
+          }
+
+          if (Test-Path "package/VST3") {
+            Remove-Item -Recurse -Force "package/VST3"
+          }
+
+          # Create no-models package (keep models dirs, remove files)
+          New-Item -ItemType Directory -Force -Path package-nomodels
+          Copy-Item -Path "package/*" -Destination "package-nomodels" -Recurse -Force
+          Get-ChildItem -Path "package-nomodels" -Recurse -Directory -Filter models | ForEach-Object {
+            Get-ChildItem -Path $_.FullName -Force | Remove-Item -Recurse -Force
+            New-Item -ItemType Directory -Force -Path $_.FullName | Out-Null
+          }
+          if (-not (Test-Path "package-nomodels/models")) {
+            New-Item -ItemType Directory -Force -Path "package-nomodels/models" | Out-Null
+          }
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SVCFusionStudio-Windows-CPU
+          path: package/
+          retention-days: 30
+
+      - name: Upload Artifact (No Models)
+        uses: actions/upload-artifact@v4
+        with:
+          name: SVCFusionStudio-Windows-CPU-NoModels
+          path: package-nomodels/
+          retention-days: 30
+
+  # ===========================================
+  # Windows DirectML Build
+  # ===========================================
+  build-windows-directml:
+    needs: prepare-model-cache
+    runs-on: windows-latest
+    name: Windows (DirectML)
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: recursive
+
+      - name: Ensure JUCE Build Helpers
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $required = "third_party/JUCE/extras/Build/CMake/JUCEModuleSupport.cmake"
+          if (Test-Path $required) {
+            Write-Host "JUCE build helpers already present"
+            exit 0
+          }
+
+          $juceCmake = "third_party/JUCE/CMakeLists.txt"
+          if (-not (Test-Path $juceCmake)) {
+            throw "Missing $juceCmake"
+          }
+
+          $match = Select-String -Path $juceCmake -Pattern 'project\(JUCE VERSION ([0-9\.]+)' | Select-Object -First 1
+          if (-not $match) {
+            throw "Unable to parse JUCE version from $juceCmake"
+          }
+
+          $juceVersion = $match.Matches[0].Groups[1].Value
+          $tmpDir = Join-Path $PWD ".ci-juce"
+          $archivePath = Join-Path $tmpDir "JUCE.tar.gz"
+          $downloadUrl = "https://github.com/juce-framework/JUCE/archive/refs/tags/$juceVersion.tar.gz"
+
+          if (Test-Path $tmpDir) {
+            Remove-Item -Recurse -Force $tmpDir
+          }
+          New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
+
+          Invoke-WebRequest -Uri $downloadUrl -OutFile $archivePath
+          tar -xzf $archivePath -C $tmpDir
+
+          $extractRoot = Get-ChildItem -Path $tmpDir -Directory | Where-Object { $_.Name -like "JUCE-*" } | Select-Object -First 1
+          if (-not $extractRoot) {
+            throw "Failed to extract JUCE archive"
+          }
+
+          $srcBuildDir = Join-Path $extractRoot.FullName "extras/Build"
+          if (-not (Test-Path $srcBuildDir)) {
+            throw "Downloaded JUCE archive does not contain extras/Build"
+          }
+
+          New-Item -ItemType Directory -Force -Path "third_party/JUCE/extras" | Out-Null
+          Copy-Item -Path $srcBuildDir -Destination "third_party/JUCE/extras/" -Recurse -Force
+
+          if (-not (Test-Path $required)) {
+            throw "Failed to restore $required"
+          }
+
+      - name: Cache ONNX Runtime
+        uses: actions/cache@v4
+        with:
+          path: build/_deps/onnxruntime-src
+          key: windows-onnxruntime-${{ env.ONNXRUNTIME_VERSION }}-directml-${{ env.DIRECTML_VERSION }}
+
+      - name: Restore Model Cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .ci-model-cache/extracted
+          key: ${{ env.MODEL_CACHE_KEY }}
+          fail-on-cache-miss: true
+          enableCrossOsArchive: true
+
+      - name: Download DirectML Runtime
+        shell: pwsh
+        run: |
+          # Download DirectML NuGet package
+          $dmlUrl = "https://www.nuget.org/api/v2/package/Microsoft.AI.DirectML/${{ env.DIRECTML_VERSION }}"
+          Invoke-WebRequest -Uri $dmlUrl -OutFile "directml.nupkg"
+
+          # Extract (nupkg is just a zip)
+          Expand-Archive -Path "directml.nupkg" -DestinationPath "directml_pkg" -Force
+
+          # Create vendor directory and copy DLL
+          New-Item -ItemType Directory -Force -Path "vendor/directml/bin"
+          Copy-Item -Path "directml_pkg/bin/x64-win/DirectML.dll" -Destination "vendor/directml/bin/"
+
+          Write-Host "DirectML ${{ env.DIRECTML_VERSION }} downloaded successfully"
+          Get-ChildItem "vendor/directml/bin/"
+
+      - name: Prepare Build Models (DirectML fp32 slim)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $extractDir = ".ci-model-cache/extracted"
+          if (-not (Test-Path $extractDir)) {
+            throw "Model cache directory not found: $extractDir"
+          }
+
+          $dstModels = "Resources/models"
+          New-Item -ItemType Directory -Force -Path $dstModels | Out-Null
+
+          $onnxFiles = Get-ChildItem -Path $extractDir -Recurse -File -Filter *.onnx
+          if (-not $onnxFiles) {
+            throw "No ONNX files found in model archive"
+          }
+
+          $onnxMap = @{}
+          foreach ($file in $onnxFiles) {
+            $onnxMap[$file.Name.ToLowerInvariant()] = $file.FullName
+          }
+
+          function Resolve-OnnxCandidate {
+            param(
+              [string] $BaseFile,
+              [string[]] $Candidates
+            )
+
+            foreach ($candidate in $Candidates) {
+              $key = $candidate.ToLowerInvariant()
+              if ($onnxMap.ContainsKey($key)) {
+                return $onnxMap[$key]
+              }
+            }
+
+            throw "Unable to resolve required ONNX model '$BaseFile'. Tried: $($Candidates -join ', ')"
+          }
+
+          $targetOnnx = @(
+            "contentvec768l12.onnx",
+            "pc_nsf_hifigan.onnx",
+            "fcpe.onnx",
+            "rmvpe.onnx",
+            "some.onnx"
+          )
+
+          foreach ($baseFile in $targetOnnx) {
+            $stem = [System.IO.Path]::GetFileNameWithoutExtension($baseFile)
+            $sourcePath = Resolve-OnnxCandidate -BaseFile $baseFile -Candidates @(
+              "${stem}_fp32_slim.onnx",
+              "${stem}_fp32.onnx",
+              $baseFile
+            )
+
+            Copy-Item -Path $sourcePath -Destination (Join-Path $dstModels $baseFile) -Force
+            Write-Host "Selected $baseFile <= $(Split-Path $sourcePath -Leaf)"
+          }
+
+          foreach ($binName in @("cent_table.bin", "mel_filterbank.bin")) {
+            $binFile = Get-ChildItem -Path $extractDir -Recurse -File -Filter $binName | Select-Object -First 1
+            if ($binFile) {
+              Copy-Item -Path $binFile.FullName -Destination (Join-Path $dstModels $binName) -Force
+              Write-Host "Prepared $binName <= $(Split-Path $binFile.FullName -Leaf)"
+            } else {
+              throw "$binName not found in model cache"
+            }
+          }
+
+          Write-Host "Prepared build models in $dstModels"
+
+      - name: Configure CMake
+        run: cmake -B build -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -DUSE_DIRECTML=ON -DUSE_BUNDLED_DIRECTML_RUNTIME=ON -DUSE_ASIO=ON
+
+      - name: Build
+        run: cmake --build build --config ${{ env.BUILD_TYPE }} --parallel -- /p:WholeProgramOptimization=false
+
+      - name: Prepare Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path package
+
+          # Copy standalone app
+          Copy-Item -Path "build/SVCFusionStudio_artefacts/${{ env.BUILD_TYPE }}/*" -Destination "package/" -Recurse -Force
+
+          # Move VST3 binary next to the exe (avoid the VST3 folder packaging)
+          $vst3Binary = "build/SVCFusionStudioPlugin_artefacts/${{ env.BUILD_TYPE }}/VST3/SVCFusionStudio.vst3/Contents/x86_64-win/SVCFusionStudio.vst3"
+          if (Test-Path $vst3Binary) {
+            Copy-Item -Path $vst3Binary -Destination "package/SVCFusionStudio.vst3" -Force
+          } else {
+            Write-Warning "VST3 binary not found at $vst3Binary"
+          }
+
+          if (Test-Path "package/VST3") {
+            Remove-Item -Recurse -Force "package/VST3"
+          }
+
+          # Create no-models package (keep models dirs, remove files)
+          New-Item -ItemType Directory -Force -Path package-nomodels
+          Copy-Item -Path "package/*" -Destination "package-nomodels" -Recurse -Force
+          Get-ChildItem -Path "package-nomodels" -Recurse -Directory -Filter models | ForEach-Object {
+            Get-ChildItem -Path $_.FullName -Force | Remove-Item -Recurse -Force
+            New-Item -ItemType Directory -Force -Path $_.FullName | Out-Null
+          }
+          if (-not (Test-Path "package-nomodels/models")) {
+            New-Item -ItemType Directory -Force -Path "package-nomodels/models" | Out-Null
+          }
+
+          # Verify DirectML.dll is included
+          if (Test-Path "package/DirectML.dll") {
+            Write-Host "DirectML.dll included in package"
+          } else {
+            Write-Warning "DirectML.dll NOT found in package!"
+          }
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SVCFusionStudio-Windows-DirectML
+          path: package/
+          retention-days: 30
+
+      - name: Upload Artifact (No Models)
+        uses: actions/upload-artifact@v4
+        with:
+          name: SVCFusionStudio-Windows-DirectML-NoModels
+          path: package-nomodels/
+          retention-days: 30
+
+  # ===========================================
+  # Windows CUDA Build
+  # ===========================================
+  build-windows-cuda:
+    needs: prepare-model-cache
+    runs-on: windows-latest
+    name: Windows (CUDA)
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: recursive
+
+      - name: Ensure JUCE Build Helpers
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $required = "third_party/JUCE/extras/Build/CMake/JUCEModuleSupport.cmake"
+          if (Test-Path $required) {
+            Write-Host "JUCE build helpers already present"
+            exit 0
+          }
+
+          $juceCmake = "third_party/JUCE/CMakeLists.txt"
+          if (-not (Test-Path $juceCmake)) {
+            throw "Missing $juceCmake"
+          }
+
+          $match = Select-String -Path $juceCmake -Pattern 'project\(JUCE VERSION ([0-9\.]+)' | Select-Object -First 1
+          if (-not $match) {
+            throw "Unable to parse JUCE version from $juceCmake"
+          }
+
+          $juceVersion = $match.Matches[0].Groups[1].Value
+          $tmpDir = Join-Path $PWD ".ci-juce"
+          $archivePath = Join-Path $tmpDir "JUCE.tar.gz"
+          $downloadUrl = "https://github.com/juce-framework/JUCE/archive/refs/tags/$juceVersion.tar.gz"
+
+          if (Test-Path $tmpDir) {
+            Remove-Item -Recurse -Force $tmpDir
+          }
+          New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
+
+          Invoke-WebRequest -Uri $downloadUrl -OutFile $archivePath
+          tar -xzf $archivePath -C $tmpDir
+
+          $extractRoot = Get-ChildItem -Path $tmpDir -Directory | Where-Object { $_.Name -like "JUCE-*" } | Select-Object -First 1
+          if (-not $extractRoot) {
+            throw "Failed to extract JUCE archive"
+          }
+
+          $srcBuildDir = Join-Path $extractRoot.FullName "extras/Build"
+          if (-not (Test-Path $srcBuildDir)) {
+            throw "Downloaded JUCE archive does not contain extras/Build"
+          }
+
+          New-Item -ItemType Directory -Force -Path "third_party/JUCE/extras" | Out-Null
+          Copy-Item -Path $srcBuildDir -Destination "third_party/JUCE/extras/" -Recurse -Force
+
+          if (-not (Test-Path $required)) {
+            throw "Failed to restore $required"
+          }
+
+      - name: Cache ONNX Runtime
+        uses: actions/cache@v4
+        with:
+          path: build/_deps/onnxruntime-src
+          key: windows-onnxruntime-${{ env.ONNXRUNTIME_VERSION }}-cuda
+
+      - name: Restore Model Cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .ci-model-cache/extracted
+          key: ${{ env.MODEL_CACHE_KEY }}
+          fail-on-cache-miss: true
+          enableCrossOsArchive: true
+
+      - name: Prepare Build Models (CUDA fp32 slim)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $extractDir = ".ci-model-cache/extracted"
+          if (-not (Test-Path $extractDir)) {
+            throw "Model cache directory not found: $extractDir"
+          }
+
+          $dstModels = "Resources/models"
+          New-Item -ItemType Directory -Force -Path $dstModels | Out-Null
+
+          $onnxFiles = Get-ChildItem -Path $extractDir -Recurse -File -Filter *.onnx
+          if (-not $onnxFiles) {
+            throw "No ONNX files found in model archive"
+          }
+
+          $onnxMap = @{}
+          foreach ($file in $onnxFiles) {
+            $onnxMap[$file.Name.ToLowerInvariant()] = $file.FullName
+          }
+
+          function Resolve-OnnxCandidate {
+            param(
+              [string] $BaseFile,
+              [string[]] $Candidates
+            )
+
+            foreach ($candidate in $Candidates) {
+              $key = $candidate.ToLowerInvariant()
+              if ($onnxMap.ContainsKey($key)) {
+                return $onnxMap[$key]
+              }
+            }
+
+            throw "Unable to resolve required ONNX model '$BaseFile'. Tried: $($Candidates -join ', ')"
+          }
+
+          $targetOnnx = @(
+            "contentvec768l12.onnx",
+            "pc_nsf_hifigan.onnx",
+            "fcpe.onnx",
+            "rmvpe.onnx",
+            "some.onnx"
+          )
+
+          foreach ($baseFile in $targetOnnx) {
+            $stem = [System.IO.Path]::GetFileNameWithoutExtension($baseFile)
+            $sourcePath = Resolve-OnnxCandidate -BaseFile $baseFile -Candidates @(
+              "${stem}_fp32_slim.onnx",
+              "${stem}_fp32.onnx",
+              $baseFile
+            )
+
+            Copy-Item -Path $sourcePath -Destination (Join-Path $dstModels $baseFile) -Force
+            Write-Host "Selected $baseFile <= $(Split-Path $sourcePath -Leaf)"
+          }
+
+          foreach ($binName in @("cent_table.bin", "mel_filterbank.bin")) {
+            $binFile = Get-ChildItem -Path $extractDir -Recurse -File -Filter $binName | Select-Object -First 1
+            if ($binFile) {
+              Copy-Item -Path $binFile.FullName -Destination (Join-Path $dstModels $binName) -Force
+              Write-Host "Prepared $binName <= $(Split-Path $binFile.FullName -Leaf)"
+            } else {
+              throw "$binName not found in model cache"
+            }
+          }
+
+          Write-Host "Prepared build models in $dstModels"
+
+      - name: Configure CMake
+        run: cmake -B build -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -DUSE_CUDA=ON -DUSE_ASIO=ON
+
+      - name: Build
+        run: cmake --build build --config ${{ env.BUILD_TYPE }} --parallel -- /p:WholeProgramOptimization=false
+
+      - name: Prepare Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path package
+
+          # Copy standalone app
+          Copy-Item -Path "build/SVCFusionStudio_artefacts/${{ env.BUILD_TYPE }}/*" -Destination "package/" -Recurse -Force
+
+          # Move VST3 binary next to the exe (avoid the VST3 folder packaging)
+          $vst3Binary = "build/SVCFusionStudioPlugin_artefacts/${{ env.BUILD_TYPE }}/VST3/SVCFusionStudio.vst3/Contents/x86_64-win/SVCFusionStudio.vst3"
+          if (Test-Path $vst3Binary) {
+            Copy-Item -Path $vst3Binary -Destination "package/SVCFusionStudio.vst3" -Force
+          } else {
+            Write-Warning "VST3 binary not found at $vst3Binary"
+          }
+
+          if (Test-Path "package/VST3") {
+            Remove-Item -Recurse -Force "package/VST3"
+          }
+
+          # Create no-models package (keep models dirs, remove files)
+          New-Item -ItemType Directory -Force -Path package-nomodels
+          Copy-Item -Path "package/*" -Destination "package-nomodels" -Recurse -Force
+          Get-ChildItem -Path "package-nomodels" -Recurse -Directory -Filter models | ForEach-Object {
+            Get-ChildItem -Path $_.FullName -Force | Remove-Item -Recurse -Force
+            New-Item -ItemType Directory -Force -Path $_.FullName | Out-Null
+          }
+          if (-not (Test-Path "package-nomodels/models")) {
+            New-Item -ItemType Directory -Force -Path "package-nomodels/models" | Out-Null
+          }
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SVCFusionStudio-Windows-CUDA
+          path: package/
+          retention-days: 30
+
+      - name: Upload Artifact (No Models)
+        uses: actions/upload-artifact@v4
+        with:
+          name: SVCFusionStudio-Windows-CUDA-NoModels
+          path: package-nomodels/
+          retention-days: 30
+
+  # ===========================================
+  # macOS Build (Apple Silicon)
+  # ===========================================
+  build-macos:
+    needs: prepare-model-cache
+    runs-on: macos-14
+    name: macOS (ARM64)
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: recursive
+
+      - name: Ensure JUCE Build Helpers
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          required="third_party/JUCE/extras/Build/CMake/JUCEModuleSupport.cmake"
+          if [ -f "$required" ]; then
+            echo "JUCE build helpers already present"
+            exit 0
+          fi
+
+          juce_cmake="third_party/JUCE/CMakeLists.txt"
+          [ -f "$juce_cmake" ]
+
+          juce_version=$(grep -Eo 'project\(JUCE VERSION [0-9.]+' "$juce_cmake" | awk '{print $3}' | head -n1)
+          if [ -z "$juce_version" ]; then
+            echo "Unable to parse JUCE version from $juce_cmake" >&2
+            exit 1
+          fi
+
+          tmp_dir=".ci-juce"
+          archive_path="$tmp_dir/JUCE.tar.gz"
+          download_url="https://github.com/juce-framework/JUCE/archive/refs/tags/${juce_version}.tar.gz"
+
+          rm -rf "$tmp_dir"
+          mkdir -p "$tmp_dir"
+
+          curl -L --retry 3 --fail -o "$archive_path" "$download_url"
+          tar -xzf "$archive_path" -C "$tmp_dir"
+
+          src_build_dir=$(find "$tmp_dir" -type d -path '*/extras/Build' -print -quit)
+          if [ -z "$src_build_dir" ]; then
+            echo "Downloaded JUCE archive does not contain extras/Build" >&2
+            exit 1
+          fi
+
+          mkdir -p third_party/JUCE/extras
+          cp -R "$src_build_dir" third_party/JUCE/extras/
+
+          test -f "$required"
+
+      - name: Cache ONNX Runtime
+        uses: actions/cache@v4
+        with:
+          path: build/_deps/onnxruntime-src
+          key: macos-onnxruntime-${{ env.ONNXRUNTIME_VERSION }}-arm64
+
+      - name: Restore Model Cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .ci-model-cache/extracted
+          key: ${{ env.MODEL_CACHE_KEY }}
+          fail-on-cache-miss: true
+          enableCrossOsArchive: true
+
+      - name: Prepare Runtime Models (CPU fp32 slim)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          extract_dir=".ci-model-cache/extracted"
+          if [ ! -d "${extract_dir}" ]; then
+            echo "Model cache directory not found: ${extract_dir}" >&2
+            exit 1
+          fi
+
+          dst_models="Resources/models"
+          mkdir -p "${dst_models}"
+
+          onnx_count=$(find "${extract_dir}" -type f -name "*.onnx" | wc -l | tr -d ' ')
+          if [ "${onnx_count}" -eq 0 ]; then
+            echo "No ONNX files found in model archive" >&2
+            exit 1
+          fi
+
+          find_model() {
+            local name="$1"
+            find "${extract_dir}" -type f -name "${name}" -print -quit
+          }
+
+          resolve_model() {
+            local base="$1"
+            shift
+            local candidate
+            local found
+
+            for candidate in "$@"; do
+              found=$(find_model "${candidate}")
+              if [ -n "${found}" ]; then
+                cp -f "${found}" "${dst_models}/${base}"
+                echo "Selected ${base} <= $(basename "${found}")"
+                return 0
+              fi
+            done
+
+            echo "Unable to resolve required ONNX model '${base}'. Tried: $*" >&2
+            exit 1
+          }
+
+          targets=(contentvec768l12 pc_nsf_hifigan fcpe rmvpe some)
+          for stem in "${targets[@]}"; do
+            resolve_model "${stem}.onnx" "${stem}_fp32_slim.onnx" "${stem}_fp32.onnx" "${stem}.onnx"
+          done
+
+          for bin_name in cent_table.bin mel_filterbank.bin; do
+            bin_path=$(find_model "${bin_name}")
+            if [ -z "${bin_path}" ]; then
+              echo "Required model not found in cache: ${bin_name}" >&2
+              exit 1
+            fi
+
+            cp -f "${bin_path}" "${dst_models}/${bin_name}"
+            echo "Selected ${bin_name} <= $(basename "${bin_path}")"
+          done
+
+      - name: Install ccache
+        run: brew install ccache
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/ccache
+          key: ccache-macos-arm64-${{ github.sha }}
+          restore-keys: ccache-macos-arm64-
+
+      - name: Configure CMake
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Build
+        run: cmake --build build --config ${{ env.BUILD_TYPE }} --parallel
+
+      - name: Prepare Package
+        run: |
+          mkdir -p package
+
+          # Copy standalone app (PRODUCT_NAME has a space)
+          cp -R "build/SVCFusionStudio_artefacts/${{ env.BUILD_TYPE }}/SVCFusion Studio.app" package/
+
+          # Copy VST3 plugin
+          if [ -d "build/SVCFusionStudioPlugin_artefacts/${{ env.BUILD_TYPE }}/VST3" ]; then
+            cp -R "build/SVCFusionStudioPlugin_artefacts/${{ env.BUILD_TYPE }}/VST3/SVCFusion Studio.vst3" package/
+          fi
+
+          # Copy AU plugin
+          if [ -d "build/SVCFusionStudioPlugin_artefacts/${{ env.BUILD_TYPE }}/AU" ]; then
+            cp -R "build/SVCFusionStudioPlugin_artefacts/${{ env.BUILD_TYPE }}/AU/SVCFusion Studio.component" package/
+          fi
+
+          # Create no-models package (keep models dirs, remove files)
+          rm -rf package-nomodels
+          cp -R package package-nomodels
+          find package-nomodels -type d -name models -exec sh -c 'rm -rf "$1"/*' _ {} \;
+          mkdir -p "package-nomodels/SVCFusion Studio.app/Contents/Resources/models"
+          if [ -d "package-nomodels/SVCFusion Studio.vst3" ]; then
+            mkdir -p "package-nomodels/SVCFusion Studio.vst3/Contents/Resources/models"
+          fi
+          if [ -d "package-nomodels/SVCFusion Studio.component" ]; then
+            mkdir -p "package-nomodels/SVCFusion Studio.component/Contents/Resources/models"
+          fi
+
+      - name: Ad-hoc Code Sign
+        run: |
+          codesign --force --deep -s - "package/SVCFusion Studio.app" || true
+          codesign --force --deep -s - "package/SVCFusion Studio.vst3" || true
+          codesign --force --deep -s - "package/SVCFusion Studio.component" || true
+          codesign --force --deep -s - "package-nomodels/SVCFusion Studio.app" || true
+          codesign --force --deep -s - "package-nomodels/SVCFusion Studio.vst3" || true
+          codesign --force --deep -s - "package-nomodels/SVCFusion Studio.component" || true
+
+      - name: Create DMG
+        run: |
+          for volume in "SVCFusionStudio" "SVCFusionStudio-NoModels"; do
+            if [ -d "/Volumes/$volume" ]; then
+              hdiutil detach "/Volumes/$volume" || hdiutil detach -force "/Volumes/$volume"
+            fi
+          done
+
+          rm -f SVCFusionStudio-macOS.dmg SVCFusionStudio-macOS-NoModels.dmg
+
+          hdiutil create -volname "SVCFusionStudio" \
+            -srcfolder package \
+            -ov -format UDZO \
+            SVCFusionStudio-macOS.dmg
+          hdiutil create -volname "SVCFusionStudio-NoModels" \
+            -srcfolder package-nomodels \
+            -ov -format UDZO \
+            SVCFusionStudio-macOS-NoModels.dmg
+
+      - name: Create App ZIP
+        run: |
+          cd package
+          zip -r ../SVCFusionStudio-macOS-App.zip "SVCFusion Studio.app"
+          cd ../package-nomodels
+          zip -r ../SVCFusionStudio-macOS-App-NoModels.zip "SVCFusion Studio.app"
+
+      - name: Upload Artifact (DMG)
+        uses: actions/upload-artifact@v4
+        with:
+          name: SVCFusionStudio-macOS
+          path: SVCFusionStudio-macOS.dmg
+          retention-days: 30
+
+      - name: Upload Artifact (DMG, No Models)
+        uses: actions/upload-artifact@v4
+        with:
+          name: SVCFusionStudio-macOS-NoModels
+          path: SVCFusionStudio-macOS-NoModels.dmg
+          retention-days: 30
+
+      - name: Upload Artifact (App ZIP)
+        uses: actions/upload-artifact@v4
+        with:
+          name: SVCFusionStudio-macOS-App
+          path: SVCFusionStudio-macOS-App.zip
+          retention-days: 30
+
+      - name: Upload Artifact (App ZIP, No Models)
+        uses: actions/upload-artifact@v4
+        with:
+          name: SVCFusionStudio-macOS-App-NoModels
+          path: SVCFusionStudio-macOS-App-NoModels.zip
+          retention-days: 30
+
+      - name: Upload Artifact (Unpacked)
+        uses: actions/upload-artifact@v4
+        with:
+          name: SVCFusionStudio-macOS-Unpacked
+          path: package/
+          retention-days: 30
+
+      - name: Upload Artifact (Unpacked, No Models)
+        uses: actions/upload-artifact@v4
+        with:
+          name: SVCFusionStudio-macOS-Unpacked-NoModels
+          path: package-nomodels/
+          retention-days: 30
+
+  # ===========================================
+  # Linux Build
+  # ===========================================
+  build-linux:
+    needs: prepare-model-cache
+    runs-on: ubuntu-22.04
+    name: Linux (CPU)
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: recursive
+
+      - name: Ensure JUCE Build Helpers
+        run: |
+          set -euo pipefail
+
+          required="third_party/JUCE/extras/Build/CMake/JUCEModuleSupport.cmake"
+          if [ -f "$required" ]; then
+            echo "JUCE build helpers already present"
+            exit 0
+          fi
+
+          juce_cmake="third_party/JUCE/CMakeLists.txt"
+          [ -f "$juce_cmake" ]
+
+          juce_version=$(grep -Eo 'project\(JUCE VERSION [0-9.]+' "$juce_cmake" | awk '{print $3}' | head -n1)
+          if [ -z "$juce_version" ]; then
+            echo "Unable to parse JUCE version from $juce_cmake" >&2
+            exit 1
+          fi
+
+          tmp_dir=".ci-juce"
+          archive_path="$tmp_dir/JUCE.tar.gz"
+          download_url="https://github.com/juce-framework/JUCE/archive/refs/tags/${juce_version}.tar.gz"
+
+          rm -rf "$tmp_dir"
+          mkdir -p "$tmp_dir"
+
+          curl -L --retry 3 --fail -o "$archive_path" "$download_url"
+          tar -xzf "$archive_path" -C "$tmp_dir"
+
+          src_build_dir=$(find "$tmp_dir" -type d -path '*/extras/Build' -print -quit)
+          if [ -z "$src_build_dir" ]; then
+            echo "Downloaded JUCE archive does not contain extras/Build" >&2
+            exit 1
+          fi
+
+          mkdir -p third_party/JUCE/extras
+          cp -R "$src_build_dir" third_party/JUCE/extras/
+
+          test -f "$required"
+
+      - name: Cache ONNX Runtime
+        uses: actions/cache@v4
+        with:
+          path: build/_deps/onnxruntime-src
+          key: linux-onnxruntime-${{ env.ONNXRUNTIME_VERSION }}-cpu
+
+      - name: Restore Model Cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .ci-model-cache/extracted
+          key: ${{ env.MODEL_CACHE_KEY }}
+          fail-on-cache-miss: true
+          enableCrossOsArchive: true
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            ninja-build \
+            ccache \
+            pkg-config \
+            gobjc++ \
+            libasound2-dev \
+            libjack-jackd2-dev \
+            libfreetype6-dev \
+            libx11-dev \
+            libxcomposite-dev \
+            libxcursor-dev \
+            libxext-dev \
+            libxinerama-dev \
+            libxrandr-dev \
+            libxrender-dev \
+            libwebkit2gtk-4.0-dev \
+            libcurl4-openssl-dev \
+            libglu1-mesa-dev \
+            mesa-common-dev
+
+      - name: Prepare Runtime Models (CPU fp32 slim)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          extract_dir=".ci-model-cache/extracted"
+          if [ ! -d "${extract_dir}" ]; then
+            echo "Model cache directory not found: ${extract_dir}" >&2
+            exit 1
+          fi
+
+          dst_models="Resources/models"
+          mkdir -p "${dst_models}"
+
+          onnx_count=$(find "${extract_dir}" -type f -name "*.onnx" | wc -l | tr -d ' ')
+          if [ "${onnx_count}" -eq 0 ]; then
+            echo "No ONNX files found in model archive" >&2
+            exit 1
+          fi
+
+          find_model() {
+            local name="$1"
+            find "${extract_dir}" -type f -name "${name}" -print -quit
+          }
+
+          resolve_model() {
+            local base="$1"
+            shift
+            local candidate
+            local found
+
+            for candidate in "$@"; do
+              found=$(find_model "${candidate}")
+              if [ -n "${found}" ]; then
+                cp -f "${found}" "${dst_models}/${base}"
+                echo "Selected ${base} <= $(basename "${found}")"
+                return 0
+              fi
+            done
+
+            echo "Unable to resolve required ONNX model '${base}'. Tried: $*" >&2
+            exit 1
+          }
+
+          targets=(contentvec768l12 pc_nsf_hifigan fcpe rmvpe some)
+          for stem in "${targets[@]}"; do
+            resolve_model "${stem}.onnx" "${stem}_fp32_slim.onnx" "${stem}_fp32.onnx" "${stem}.onnx"
+          done
+
+          for bin_name in cent_table.bin mel_filterbank.bin; do
+            bin_path=$(find_model "${bin_name}")
+            if [ -z "${bin_path}" ]; then
+              echo "Required model not found in cache: ${bin_name}" >&2
+              exit 1
+            fi
+
+            cp -f "${bin_path}" "${dst_models}/${bin_name}"
+            echo "Selected ${bin_name} <= $(basename "${bin_path}")"
+          done
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-linux-cpu-${{ github.sha }}
+          restore-keys: ccache-linux-cpu-
+
+      - name: Configure CMake
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Build
+        run: cmake --build build --config ${{ env.BUILD_TYPE }} --parallel
+
+      - name: Prepare Package
+        run: |
+          mkdir -p package/SVCFusionStudio
+
+          # Copy standalone app
+          cp -R build/SVCFusionStudio_artefacts/${{ env.BUILD_TYPE }}/* package/SVCFusionStudio/
+
+          # Copy VST3 plugin
+          if [ -d "build/SVCFusionStudioPlugin_artefacts/${{ env.BUILD_TYPE }}/VST3" ]; then
+            cp -R build/SVCFusionStudioPlugin_artefacts/${{ env.BUILD_TYPE }}/VST3 package/SVCFusionStudio/
+          fi
+
+          # Create launch script
+          cat > package/SVCFusionStudio/run.sh << 'EOF'
+          #!/bin/bash
+          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          export LD_LIBRARY_PATH="$SCRIPT_DIR:$LD_LIBRARY_PATH"
+          exec "$SCRIPT_DIR/SVCFusionStudio" "$@"
+          EOF
+          chmod +x package/SVCFusionStudio/run.sh
+
+          # Create no-models tarball (keep models dirs, remove files)
+          rm -rf package-nomodels
+          cp -R package package-nomodels
+          find package-nomodels -type d -name models -exec sh -c 'rm -rf "$1"/*' _ {} \;
+          mkdir -p package-nomodels/SVCFusionStudio/models
+
+          # Create tarball
+          cd package
+          tar -czvf ../SVCFusionStudio-Linux.tar.gz SVCFusionStudio
+
+          cd ../package-nomodels
+          tar -czvf ../SVCFusionStudio-Linux-NoModels.tar.gz SVCFusionStudio
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SVCFusionStudio-Linux
+          path: SVCFusionStudio-Linux.tar.gz
+          retention-days: 30
+
+      - name: Upload Artifact (No Models)
+        uses: actions/upload-artifact@v4
+        with:
+          name: SVCFusionStudio-Linux-NoModels
+          path: SVCFusionStudio-Linux-NoModels.tar.gz
+          retention-days: 30
+
+  # ===========================================
+  # Linux GPU Build
+  # ===========================================
+  build-linux-gpu:
+    needs: prepare-model-cache
+    runs-on: ubuntu-22.04
+    name: Linux (GPU)
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: recursive
+
+      - name: Ensure JUCE Build Helpers
+        run: |
+          set -euo pipefail
+
+          required="third_party/JUCE/extras/Build/CMake/JUCEModuleSupport.cmake"
+          if [ -f "$required" ]; then
+            echo "JUCE build helpers already present"
+            exit 0
+          fi
+
+          juce_cmake="third_party/JUCE/CMakeLists.txt"
+          [ -f "$juce_cmake" ]
+
+          juce_version=$(grep -Eo 'project\(JUCE VERSION [0-9.]+' "$juce_cmake" | awk '{print $3}' | head -n1)
+          if [ -z "$juce_version" ]; then
+            echo "Unable to parse JUCE version from $juce_cmake" >&2
+            exit 1
+          fi
+
+          tmp_dir=".ci-juce"
+          archive_path="$tmp_dir/JUCE.tar.gz"
+          download_url="https://github.com/juce-framework/JUCE/archive/refs/tags/${juce_version}.tar.gz"
+
+          rm -rf "$tmp_dir"
+          mkdir -p "$tmp_dir"
+
+          curl -L --retry 3 --fail -o "$archive_path" "$download_url"
+          tar -xzf "$archive_path" -C "$tmp_dir"
+
+          src_build_dir=$(find "$tmp_dir" -type d -path '*/extras/Build' -print -quit)
+          if [ -z "$src_build_dir" ]; then
+            echo "Downloaded JUCE archive does not contain extras/Build" >&2
+            exit 1
+          fi
+
+          mkdir -p third_party/JUCE/extras
+          cp -R "$src_build_dir" third_party/JUCE/extras/
+
+          test -f "$required"
+
+      - name: Cache ONNX Runtime
+        uses: actions/cache@v4
+        with:
+          path: build/_deps/onnxruntime-src
+          key: linux-onnxruntime-${{ env.ONNXRUNTIME_VERSION }}-gpu
+
+      - name: Restore Model Cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .ci-model-cache/extracted
+          key: ${{ env.MODEL_CACHE_KEY }}
+          fail-on-cache-miss: true
+          enableCrossOsArchive: true
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            ninja-build \
+            ccache \
+            pkg-config \
+            gobjc++ \
+            libasound2-dev \
+            libjack-jackd2-dev \
+            libfreetype6-dev \
+            libx11-dev \
+            libxcomposite-dev \
+            libxcursor-dev \
+            libxext-dev \
+            libxinerama-dev \
+            libxrandr-dev \
+            libxrender-dev \
+            libwebkit2gtk-4.0-dev \
+            libcurl4-openssl-dev \
+            libglu1-mesa-dev \
+            mesa-common-dev
+
+      - name: Prepare Runtime Models (GPU fp32 slim)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          extract_dir=".ci-model-cache/extracted"
+          if [ ! -d "${extract_dir}" ]; then
+            echo "Model cache directory not found: ${extract_dir}" >&2
+            exit 1
+          fi
+
+          dst_models="Resources/models"
+          mkdir -p "${dst_models}"
+
+          onnx_count=$(find "${extract_dir}" -type f -name "*.onnx" | wc -l | tr -d ' ')
+          if [ "${onnx_count}" -eq 0 ]; then
+            echo "No ONNX files found in model archive" >&2
+            exit 1
+          fi
+
+          find_model() {
+            local name="$1"
+            find "${extract_dir}" -type f -name "${name}" -print -quit
+          }
+
+          resolve_model() {
+            local base="$1"
+            shift
+            local candidate
+            local found
+
+            for candidate in "$@"; do
+              found=$(find_model "${candidate}")
+              if [ -n "${found}" ]; then
+                cp -f "${found}" "${dst_models}/${base}"
+                echo "Selected ${base} <= $(basename "${found}")"
+                return 0
+              fi
+            done
+
+            echo "Unable to resolve required ONNX model '${base}'. Tried: $*" >&2
+            exit 1
+          }
+
+          targets=(contentvec768l12 pc_nsf_hifigan fcpe rmvpe some)
+          for stem in "${targets[@]}"; do
+            resolve_model "${stem}.onnx" "${stem}_fp32_slim.onnx" "${stem}_fp32.onnx" "${stem}.onnx"
+          done
+
+          for bin_name in cent_table.bin mel_filterbank.bin; do
+            bin_path=$(find_model "${bin_name}")
+            if [ -z "${bin_path}" ]; then
+              echo "Required model not found in cache: ${bin_name}" >&2
+              exit 1
+            fi
+
+            cp -f "${bin_path}" "${dst_models}/${bin_name}"
+            echo "Selected ${bin_name} <= $(basename "${bin_path}")"
+          done
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-linux-gpu-${{ github.sha }}
+          restore-keys: ccache-linux-gpu-
+
+      - name: Configure CMake
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -DUSE_GPU=ON -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Build
+        run: cmake --build build --config ${{ env.BUILD_TYPE }} --parallel
+
+      - name: Prepare Package
+        run: |
+          mkdir -p package/SVCFusionStudio
+
+          # Copy standalone app
+          cp -R build/SVCFusionStudio_artefacts/${{ env.BUILD_TYPE }}/* package/SVCFusionStudio/
+
+          # Copy VST3 plugin
+          if [ -d "build/SVCFusionStudioPlugin_artefacts/${{ env.BUILD_TYPE }}/VST3" ]; then
+            cp -R build/SVCFusionStudioPlugin_artefacts/${{ env.BUILD_TYPE }}/VST3 package/SVCFusionStudio/
+          fi
+
+          # Create launch script
+          cat > package/SVCFusionStudio/run.sh << 'EOF'
+          #!/bin/bash
+          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          export LD_LIBRARY_PATH="$SCRIPT_DIR:$LD_LIBRARY_PATH"
+          exec "$SCRIPT_DIR/SVCFusionStudio" "$@"
+          EOF
+          chmod +x package/SVCFusionStudio/run.sh
+
+          # Create no-models tarball (keep models dirs, remove files)
+          rm -rf package-nomodels
+          cp -R package package-nomodels
+          find package-nomodels -type d -name models -exec sh -c 'rm -rf "$1"/*' _ {} \;
+          mkdir -p package-nomodels/SVCFusionStudio/models
+
+          # Create tarball
+          cd package
+          tar -czvf ../SVCFusionStudio-Linux-GPU.tar.gz SVCFusionStudio
+
+          cd ../package-nomodels
+          tar -czvf ../SVCFusionStudio-Linux-GPU-NoModels.tar.gz SVCFusionStudio
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SVCFusionStudio-Linux-GPU
+          path: SVCFusionStudio-Linux-GPU.tar.gz
+          retention-days: 30
+
+      - name: Upload Artifact (No Models)
+        uses: actions/upload-artifact@v4
+        with:
+          name: SVCFusionStudio-Linux-GPU-NoModels
+          path: SVCFusionStudio-Linux-GPU-NoModels.tar.gz
+          retention-days: 30
+
+  # ===========================================
+  # Create Release
+  # ===========================================
+  release:
+    name: Create Release
+    needs:
+      - build-windows-cpu
+      - build-windows-directml
+      - build-windows-cuda
+      - build-macos
+      - build-linux
+      - build-linux-gpu
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare Release Files
+        run: |
+          cd artifacts
+
+          # Windows packages
+          if [ -d "SVCFusionStudio-Windows-CPU" ]; then
+            cd SVCFusionStudio-Windows-CPU && zip -r ../SVCFusionStudio-Windows-CPU.zip . && cd ..
+          fi
+
+          if [ -d "SVCFusionStudio-Windows-CPU-NoModels" ]; then
+            cd SVCFusionStudio-Windows-CPU-NoModels && zip -r ../SVCFusionStudio-Windows-CPU-NoModels.zip . && cd ..
+          fi
+
+          if [ -d "SVCFusionStudio-Windows-DirectML" ]; then
+            cd SVCFusionStudio-Windows-DirectML && zip -r ../SVCFusionStudio-Windows-DirectML.zip . && cd ..
+          fi
+
+          if [ -d "SVCFusionStudio-Windows-DirectML-NoModels" ]; then
+            cd SVCFusionStudio-Windows-DirectML-NoModels && zip -r ../SVCFusionStudio-Windows-DirectML-NoModels.zip . && cd ..
+          fi
+
+          if [ -d "SVCFusionStudio-Windows-CUDA" ]; then
+            cd SVCFusionStudio-Windows-CUDA && zip -r ../SVCFusionStudio-Windows-CUDA.zip . && cd ..
+          fi
+
+          if [ -d "SVCFusionStudio-Windows-CUDA-NoModels" ]; then
+            cd SVCFusionStudio-Windows-CUDA-NoModels && zip -r ../SVCFusionStudio-Windows-CUDA-NoModels.zip . && cd ..
+          fi
+
+          # macOS DMG is already ready
+          if [ -d "SVCFusionStudio-macOS" ]; then
+            mv SVCFusionStudio-macOS/*.dmg ./SVCFusionStudio-macOS.dmg || true
+          fi
+
+          if [ -d "SVCFusionStudio-macOS-NoModels" ]; then
+            mv SVCFusionStudio-macOS-NoModels/*.dmg ./SVCFusionStudio-macOS-NoModels.dmg || true
+          fi
+
+          # macOS App ZIP is already ready
+          if [ -d "SVCFusionStudio-macOS-App" ]; then
+            mv SVCFusionStudio-macOS-App/*.zip ./SVCFusionStudio-macOS-App.zip || true
+          fi
+
+          if [ -d "SVCFusionStudio-macOS-App-NoModels" ]; then
+            mv SVCFusionStudio-macOS-App-NoModels/*.zip ./SVCFusionStudio-macOS-App-NoModels.zip || true
+          fi
+
+          # Linux tarballs are already ready
+          if [ -d "SVCFusionStudio-Linux" ]; then
+            mv SVCFusionStudio-Linux/*.tar.gz ./SVCFusionStudio-Linux.tar.gz || true
+          fi
+
+          if [ -d "SVCFusionStudio-Linux-NoModels" ]; then
+            mv SVCFusionStudio-Linux-NoModels/*.tar.gz ./SVCFusionStudio-Linux-NoModels.tar.gz || true
+          fi
+
+          if [ -d "SVCFusionStudio-Linux-GPU" ]; then
+            mv SVCFusionStudio-Linux-GPU/*.tar.gz ./SVCFusionStudio-Linux-GPU.tar.gz || true
+          fi
+
+          if [ -d "SVCFusionStudio-Linux-GPU-NoModels" ]; then
+            mv SVCFusionStudio-Linux-GPU-NoModels/*.tar.gz ./SVCFusionStudio-Linux-GPU-NoModels.tar.gz || true
+          fi
+
+          ls -la
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/SVCFusionStudio-Windows-CPU.zip
+            artifacts/SVCFusionStudio-Windows-CPU-NoModels.zip
+            artifacts/SVCFusionStudio-Windows-DirectML.zip
+            artifacts/SVCFusionStudio-Windows-DirectML-NoModels.zip
+            artifacts/SVCFusionStudio-Windows-CUDA.zip
+            artifacts/SVCFusionStudio-Windows-CUDA-NoModels.zip
+            artifacts/SVCFusionStudio-macOS.dmg
+            artifacts/SVCFusionStudio-macOS-NoModels.dmg
+            artifacts/SVCFusionStudio-macOS-App.zip
+            artifacts/SVCFusionStudio-macOS-App-NoModels.zip
+            artifacts/SVCFusionStudio-Linux.tar.gz
+            artifacts/SVCFusionStudio-Linux-NoModels.tar.gz
+            artifacts/SVCFusionStudio-Linux-GPU.tar.gz
+            artifacts/SVCFusionStudio-Linux-GPU-NoModels.tar.gz
+          draft: true
+          generate_release_notes: true
+          fail_on_unmatched_files: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

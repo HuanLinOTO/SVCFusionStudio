@@ -1,0 +1,39 @@
+#include "Theme.h"
+
+// Dark neon synth theme palette
+const juce::Colour APP_COLOR_BACKGROUND = juce::Colour(0xFF161A24u);
+const juce::Colour APP_COLOR_SURFACE = juce::Colour(0xFF1E2330u);
+const juce::Colour APP_COLOR_SURFACE_ALT = juce::Colour(0xFF1A1F2Bu);
+const juce::Colour APP_COLOR_SURFACE_RAISED = juce::Colour(0xFF242B3Bu);
+const juce::Colour APP_COLOR_BORDER = juce::Colour(0xFF2A3244u);
+const juce::Colour APP_COLOR_BORDER_SUBTLE = juce::Colour(0xFF202735u);
+const juce::Colour APP_COLOR_BORDER_HIGHLIGHT = juce::Colour(0xFF3A4460u);
+const juce::Colour APP_COLOR_GRID = juce::Colour(0xFF252C3Du);
+const juce::Colour APP_COLOR_GRID_BAR = juce::Colour(0xFF323B50u);
+const juce::Colour APP_COLOR_TIMELINE = juce::Colour(0xFF1A202Cu);
+const juce::Colour APP_COLOR_PIANO_WHITE = juce::Colour(0xFF2A3245u);
+const juce::Colour APP_COLOR_PIANO_BLACK = juce::Colour(0xFF1C2231u);
+const juce::Colour APP_COLOR_PIANO_TEXT = juce::Colour(0xFFCAD3E6u);
+const juce::Colour APP_COLOR_PIANO_TEXT_DIM = juce::Colour(0xFF9CA6BDu);
+const juce::Colour APP_COLOR_TEXT_PRIMARY = juce::Colour(0xFFE6E9F2u);
+const juce::Colour APP_COLOR_TEXT_MUTED = juce::Colour(0xFF9AA4B8u);
+const juce::Colour APP_COLOR_PITCH_CURVE = juce::Colour(0xFFEAEAF2u);
+const juce::Colour APP_COLOR_NOTE_NORMAL = juce::Colour(0xFF7B6CFFu);
+const juce::Colour APP_COLOR_NOTE_SELECTED = juce::Colour(0xFF9C8CFFu);
+const juce::Colour APP_COLOR_NOTE_HOVER = juce::Colour(0xFF8A7BFFu);
+const juce::Colour APP_COLOR_PRIMARY = juce::Colour(0xFF7B6CFFu);
+const juce::Colour APP_COLOR_PRIMARY_GLOW = juce::Colour(0xFFB3A8FFu);
+const juce::Colour APP_COLOR_SECONDARY = juce::Colour(0xFF4FC3F7u);
+const juce::Colour APP_COLOR_WAVEFORM = juce::Colour(0xFF2B3446u);
+const juce::Colour APP_COLOR_KNOB_SHADOW = juce::Colour(0xFF0D0F16u);
+const juce::Colour APP_COLOR_ALERT_WARNING = juce::Colour(0xFFFFAA00u);
+const juce::Colour APP_COLOR_ALERT_ERROR = juce::Colour(0xFFFF4444u);
+const juce::Colour APP_COLOR_OVERLAY_DIM = juce::Colour(0xB0000000u);
+const juce::Colour APP_COLOR_OVERLAY_SHADOW = juce::Colour(0x90000000u);
+const juce::Colour APP_COLOR_SELECTION_OVERLAY = juce::Colour(0x18000000u);
+const juce::Colour APP_COLOR_SELECTION_HIGHLIGHT = juce::Colour(0x403080FFu);
+const juce::Colour APP_COLOR_SELECTION_HIGHLIGHT_STRONG = juce::Colour(0xC03080FFu);
+const juce::Colour APP_COLOR_TITLEBAR_CLOSE_MAC = juce::Colour(0xFFFF5F57u);
+const juce::Colour APP_COLOR_TITLEBAR_MINIMIZE_MAC = juce::Colour(0xFFFEBC2Eu);
+const juce::Colour APP_COLOR_TITLEBAR_MAXIMIZE_MAC = juce::Colour(0xFF28C840u);
+const juce::Colour APP_COLOR_TITLEBAR_CLOSE_HOVER = juce::Colour(0xFFE81123u);
