@@ -55,10 +55,30 @@ endif()
 
 # Check if ONNX Runtime already exists in build directory
 set(ONNXRUNTIME_CACHE_DIR "${CMAKE_BINARY_DIR}/_deps/onnxruntime-src")
-if(EXISTS "${ONNXRUNTIME_CACHE_DIR}/include/onnxruntime_cxx_api.h")
+if(WIN32 AND USE_DIRECTML)
+    set(ONNXRUNTIME_CACHE_HEADER "${ONNXRUNTIME_CACHE_DIR}/build/native/include/onnxruntime_cxx_api.h")
+    set(ONNXRUNTIME_CACHE_LIBRARY "${ONNXRUNTIME_CACHE_DIR}/runtimes/win-x64/native/onnxruntime.lib")
+else()
+    set(ONNXRUNTIME_CACHE_HEADER "${ONNXRUNTIME_CACHE_DIR}/include/onnxruntime_cxx_api.h")
+    if(WIN32)
+        set(ONNXRUNTIME_CACHE_LIBRARY "${ONNXRUNTIME_CACHE_DIR}/lib/onnxruntime.lib")
+    else()
+        set(ONNXRUNTIME_CACHE_LIBRARY "${ONNXRUNTIME_CACHE_DIR}/lib/libonnxruntime.so")
+    endif()
+endif()
+
+if(EXISTS "${ONNXRUNTIME_CACHE_HEADER}" AND EXISTS "${ONNXRUNTIME_CACHE_LIBRARY}")
     message(STATUS "ONNX Runtime already downloaded, skipping download")
     set(ONNXRUNTIME_ROOT ${ONNXRUNTIME_CACHE_DIR})
 else()
+    if(EXISTS "${ONNXRUNTIME_CACHE_DIR}")
+        message(STATUS "ONNX Runtime cache does not match selected provider, refreshing download")
+        file(REMOVE_RECURSE
+            "${ONNXRUNTIME_CACHE_DIR}"
+            "${CMAKE_BINARY_DIR}/_deps/onnxruntime-build"
+            "${CMAKE_BINARY_DIR}/_deps/onnxruntime-subbuild")
+    endif()
+
     # Detect platform and set download URL
     if(WIN32)
         if(USE_CUDA)
@@ -224,6 +244,15 @@ target_sources(SVCFusionStudioPlugin PRIVATE
 add_library(svcfusionstudio_core STATIC ${SVCFUSIONSTUDIO_CORE_SOURCES})
 add_library(svcfusionstudio_ui STATIC ${SVCFUSIONSTUDIO_UI_SOURCES})
 
+add_executable(SVCFusionStudioLogicTests EXCLUDE_FROM_ALL
+    Tests/Logic/SVCFusionStudioLogicTests.cpp)
+
+target_link_libraries(SVCFusionStudioLogicTests PRIVATE
+    svcfusionstudio_ui
+    svcfusionstudio_core
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+
 # Binary data for SVG icons
 file(GLOB SVG_FILES "${CMAKE_CURRENT_SOURCE_DIR}/Resources/svg/*.svg")
 set(BINARY_DATA_FILES ${SVG_FILES})
@@ -292,7 +321,21 @@ endif()
 if(ONNXRUNTIME_FOUND)
     target_include_directories(svcfusionstudio_core PUBLIC ${ONNXRUNTIME_INCLUDE_DIR})
     target_link_libraries(svcfusionstudio_core PUBLIC ${ONNXRUNTIME_LIBRARY})
-    target_compile_definitions(svcfusionstudio_core PUBLIC HAVE_ONNXRUNTIME=1)
+    target_compile_definitions(svcfusionstudio_core PUBLIC HAVE_ONNXRUNTIME=1 ORT_API_MANUAL_INIT=1)
+
+    if(WIN32)
+        foreach(ORT_DELAY_TARGET
+                SVCFusionStudio
+                SVCFusionStudioPlugin
+                SVCFusionStudioPlugin_VST3
+                SVCFusionStudioPlugin_AU
+                SVCFusionStudioPlugin_AAX)
+            if(TARGET ${ORT_DELAY_TARGET})
+                target_link_options(${ORT_DELAY_TARGET} PRIVATE "/DELAYLOAD:onnxruntime.dll")
+                target_link_libraries(${ORT_DELAY_TARGET} PRIVATE delayimp)
+            endif()
+        endforeach()
+    endif()
 
     # Pass GPU option to code (macOS always uses CPU)
     if(USE_GPU AND NOT APPLE)
@@ -609,6 +652,26 @@ message(STATUS "All required models found")
 file(GLOB ALL_MODEL_FILES "${MODELS_DIR}/*")
 foreach(MODEL_PATH ${ALL_MODEL_FILES})
     get_filename_component(MODEL_NAME "${MODEL_PATH}" NAME)
+    if(IS_DIRECTORY "${MODEL_PATH}")
+    if(APPLE)
+        add_custom_command(TARGET SVCFusionStudio POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_BUNDLE_DIR:SVCFusionStudio>/Contents/Resources/models"
+            COMMAND ${CMAKE_COMMAND} -E copy_directory "${MODEL_PATH}" "$<TARGET_BUNDLE_DIR:SVCFusionStudio>/Contents/Resources/models/${MODEL_NAME}")
+        add_custom_command(TARGET SVCFusionStudioPlugin_VST3 POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_BUNDLE_DIR:SVCFusionStudioPlugin_VST3>/Contents/Resources/models"
+            COMMAND ${CMAKE_COMMAND} -E copy_directory "${MODEL_PATH}" "$<TARGET_BUNDLE_DIR:SVCFusionStudioPlugin_VST3>/Contents/Resources/models/${MODEL_NAME}")
+        add_custom_command(TARGET SVCFusionStudioPlugin_AU POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_BUNDLE_DIR:SVCFusionStudioPlugin_AU>/Contents/Resources/models"
+            COMMAND ${CMAKE_COMMAND} -E copy_directory "${MODEL_PATH}" "$<TARGET_BUNDLE_DIR:SVCFusionStudioPlugin_AU>/Contents/Resources/models/${MODEL_NAME}")
+    else()
+        add_custom_command(TARGET SVCFusionStudio POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:SVCFusionStudio>/models"
+            COMMAND ${CMAKE_COMMAND} -E copy_directory "${MODEL_PATH}" "$<TARGET_FILE_DIR:SVCFusionStudio>/models/${MODEL_NAME}")
+        add_custom_command(TARGET SVCFusionStudioPlugin_VST3 POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:SVCFusionStudioPlugin_VST3>/models"
+            COMMAND ${CMAKE_COMMAND} -E copy_directory "${MODEL_PATH}" "$<TARGET_FILE_DIR:SVCFusionStudioPlugin_VST3>/models/${MODEL_NAME}")
+    endif()
+    else()
     if(APPLE)
         add_custom_command(TARGET SVCFusionStudio POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_BUNDLE_DIR:SVCFusionStudio>/Contents/Resources/models"
@@ -626,6 +689,7 @@ foreach(MODEL_PATH ${ALL_MODEL_FILES})
         add_custom_command(TARGET SVCFusionStudioPlugin_VST3 POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:SVCFusionStudioPlugin_VST3>/models"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different "${MODEL_PATH}" "$<TARGET_FILE_DIR:SVCFusionStudioPlugin_VST3>/models/${MODEL_NAME}")
+    endif()
     endif()
 endforeach()
 

@@ -1,5 +1,6 @@
 #include "AudioAnalyzer.h"
 #include "../../Utils/Constants.h"
+#include "../../Utils/HNSepCurveProcessor.h"
 #include "../../Utils/PlatformPaths.h"
 #include <climits>
 
@@ -43,16 +44,15 @@ void AudioAnalyzer::initialize() {
     DBG("AudioAnalyzer: FCPE model not found");
   }
 
-  // Try to load SOME model
-  auto someModelPath =
-      PlatformPaths::getModelsDirectory().getChildFile("some.onnx");
-  if (someModelPath.existsAsFile()) {
-    someDetector = std::make_unique<SOMEDetector>();
-    if (someDetector->loadModel(someModelPath)) {
-      DBG("AudioAnalyzer: SOME model loaded");
+  // Try to load GAME models
+  auto gameModelDir = PlatformPaths::getModelSubDir("GAME", "encoder.onnx");
+  if (gameModelDir.isDirectory()) {
+    gameDetector = std::make_unique<GAMEDetector>();
+    if (gameDetector->loadModels(gameModelDir)) {
+      DBG("AudioAnalyzer: GAME model loaded");
     } else {
-      someDetector.reset();
-      DBG("AudioAnalyzer: Failed to load SOME model");
+      gameDetector.reset();
+      DBG("AudioAnalyzer: Failed to load GAME model");
     }
   }
 }
@@ -140,6 +140,7 @@ void AudioAnalyzer::analyze(Project &project, ProgressCallback onProgress,
 
   // Build dense base/delta curves
   PitchCurveProcessor::rebuildCurvesFromSource(project, audioData.f0);
+  HNSepCurveProcessor::initializeCurves(project);
 
   if (onComplete)
     onComplete();
@@ -293,11 +294,11 @@ void AudioAnalyzer::segmentIntoNotes(Project &project) {
   if (audioData.f0.empty())
     return;
 
-  // Try SOME model first
-  auto *detector = someDetector ? someDetector.get() : externalSOMEDetector;
+  // Try GAME model first
+  auto *detector = gameDetector ? gameDetector.get() : externalGAMEDetector;
   if (detector && detector->isLoaded() &&
       audioData.waveform.getNumSamples() > 0) {
-    segmentWithSOME(project);
+    segmentWithGAME(project);
     return;
   }
 
@@ -305,7 +306,7 @@ void AudioAnalyzer::segmentIntoNotes(Project &project) {
   segmentFallback(project);
 }
 
-void AudioAnalyzer::segmentWithSOME(Project &project) {
+void AudioAnalyzer::segmentWithGAME(Project &project) {
   auto &audioData = project.getAudioData();
   auto &notes = project.getNotes();
 
@@ -314,83 +315,71 @@ void AudioAnalyzer::segmentWithSOME(Project &project) {
   const int f0Size = static_cast<int>(audioData.f0.size());
   const int melSize = static_cast<int>(audioData.melSpectrogram.size());
 
-  auto *detector = someDetector ? someDetector.get() : externalSOMEDetector;
-  detector->detectNotesStreaming(
-      samples, numSamples, SOMEDetector::SAMPLE_RATE,
-      [&](const std::vector<SOMEDetector::NoteEvent> &chunkNotes) {
-        for (const auto &someNote : chunkNotes) {
-          if (someNote.isRest)
-            continue;
+  auto *detector = gameDetector ? gameDetector.get() : externalGAMEDetector;
+  auto gameNotes = detector->detectNotes(samples, numSamples,
+                                         GAMEDetector::SAMPLE_RATE);
 
-          int f0Start = std::max(0, std::min(someNote.startFrame, f0Size - 1));
-          int f0End =
-              std::max(f0Start + 1, std::min(someNote.endFrame, f0Size));
+  for (const auto &gameNote : gameNotes) {
+    if (gameNote.isRest)
+      continue;
 
-          if (f0End - f0Start < 3)
-            continue;
+    int f0Start = std::max(0, std::min(gameNote.startFrame, f0Size - 1));
+    int f0End = std::max(f0Start + 1, std::min(gameNote.endFrame, f0Size));
 
-          // Calculate average MIDI from actual F0 data
-          float midiSum = 0.0f;
-          int midiCount = 0;
-          for (int j = f0Start; j < f0End; ++j) {
-            if (j < static_cast<int>(audioData.voicedMask.size()) &&
-                audioData.voicedMask[j] && audioData.f0[j] > 0) {
-              midiSum += freqToMidi(audioData.f0[j]);
-              midiCount++;
-            }
-          }
+    if (f0End - f0Start < 3)
+      continue;
 
-          float midi = someNote.midiNote;
-          if (midiCount > 0) {
-            midi = midiSum / midiCount;
-          }
+    float midiSum = 0.0f;
+    int midiCount = 0;
+    for (int j = f0Start; j < f0End; ++j) {
+      if (j < static_cast<int>(audioData.voicedMask.size()) &&
+          audioData.voicedMask[j] && audioData.f0[j] > 0) {
+        midiSum += freqToMidi(audioData.f0[j]);
+        midiCount++;
+      }
+    }
 
-          Note note(f0Start, f0End, midi);
-          std::vector<float> f0Values(audioData.f0.begin() + f0Start,
-                                      audioData.f0.begin() + f0End);
-          note.setF0Values(std::move(f0Values));
+    float midi = gameNote.midiNote;
+    if (midiCount > 0)
+      midi = midiSum / midiCount;
 
-          // Extract waveform clip for this note
-          if (audioData.waveform.getNumSamples() > 0) {
-            int startSample = f0Start * HOP_SIZE;
-            int endSample = f0End * HOP_SIZE;
-            startSample =
-                std::max(0, std::min(startSample,
-                                     audioData.waveform.getNumSamples()));
-            endSample = std::max(startSample,
-                                 std::min(endSample,
-                                          audioData.waveform.getNumSamples()));
-            std::vector<float> clip;
-            clip.reserve(static_cast<size_t>(endSample - startSample));
-            const float *src = audioData.waveform.getReadPointer(0);
-            for (int i = startSample; i < endSample; ++i)
-              clip.push_back(src[i]);
-            note.setClipWaveform(std::move(clip));
-          }
+    Note note(f0Start, f0End, midi);
+    std::vector<float> f0Values(audioData.f0.begin() + f0Start,
+                                audioData.f0.begin() + f0End);
+    note.setF0Values(std::move(f0Values));
 
-          // Extract mel spectrogram clip for this note
-          if (!audioData.melSpectrogram.empty() && f0Start < melSize) {
-            int melStart = std::max(0, f0Start);
-            int melEnd = std::min(f0End, melSize);
-            if (melEnd > melStart) {
-              std::vector<std::vector<float>> melClip(
-                  audioData.melSpectrogram.begin() + melStart,
-                  audioData.melSpectrogram.begin() + melEnd);
-              note.setClipMel(std::move(melClip));
-            }
-          }
+    if (audioData.waveform.getNumSamples() > 0) {
+      int startSample = f0Start * HOP_SIZE;
+      int endSample = f0End * HOP_SIZE;
+      startSample =
+          std::max(0, std::min(startSample, audioData.waveform.getNumSamples()));
+      endSample = std::max(startSample,
+                           std::min(endSample, audioData.waveform.getNumSamples()));
+      std::vector<float> clip;
+      clip.reserve(static_cast<size_t>(endSample - startSample));
+      const float *src = audioData.waveform.getReadPointer(0);
+      for (int i = startSample; i < endSample; ++i)
+        clip.push_back(src[i]);
+      note.setClipWaveform(std::move(clip));
+    }
 
-          notes.push_back(note);
-        }
-      },
-      nullptr,
-      nullptr,
-      nullptr);
+    if (!audioData.melSpectrogram.empty() && f0Start < melSize) {
+      int melStart = std::max(0, f0Start);
+      int melEnd = std::min(f0End, melSize);
+      if (melEnd > melStart) {
+        std::vector<std::vector<float>> melClip(
+            audioData.melSpectrogram.begin() + melStart,
+            audioData.melSpectrogram.begin() + melEnd);
+        note.setClipMel(std::move(melClip));
+      }
+    }
 
-  juce::Thread::sleep(100);
+    notes.push_back(note);
+  }
 
   if (!audioData.f0.empty())
     PitchCurveProcessor::rebuildCurvesFromSource(project, audioData.f0);
+  HNSepCurveProcessor::initializeCurves(project);
 }
 
 void AudioAnalyzer::segmentFallback(Project &project) {
@@ -510,6 +499,7 @@ void AudioAnalyzer::segmentFallback(Project &project) {
 
   if (!audioData.f0.empty())
     PitchCurveProcessor::rebuildCurvesFromSource(project, audioData.f0);
+  HNSepCurveProcessor::initializeCurves(project);
 }
 
 void AudioAnalyzer::computeVadMask(AudioData &audioData) {

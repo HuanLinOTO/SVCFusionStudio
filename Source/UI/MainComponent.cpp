@@ -322,8 +322,11 @@ MainComponent::MainComponent(bool enableAudioDevice)
   LOG("MainComponent: creating core components...");
   // Initialize components
   editorController = std::make_unique<EditorController>(enableAudioDeviceFlag);
+  LOG("MainComponent: editorController created");
   undoManager = std::make_unique<PitchUndoManager>(100);
+  LOG("MainComponent: undoManager created");
   commandManager = std::make_unique<juce::ApplicationCommandManager>();
+  LOG("MainComponent: commandManager created");
   undoManager->onHistoryChanged = [this]() {
     if (commandManager)
       commandManager->commandStatusChanged();
@@ -331,8 +334,11 @@ MainComponent::MainComponent(bool enableAudioDevice)
 
   // Initialize new modular components
   fileManager = std::make_unique<AudioFileManager>();
+  LOG("MainComponent: fileManager created");
   menuHandler = std::make_unique<MenuHandler>();
+  LOG("MainComponent: menuHandler created");
   settingsManager = std::make_unique<SettingsManager>();
+  LOG("MainComponent: settingsManager created");
 
   LOG("MainComponent: loading ONNX models...");
   editorController->setPitchDetectorType(
@@ -409,6 +415,7 @@ MainComponent::MainComponent(bool enableAudioDevice)
   // Set undo manager for piano roll
   pianoRoll.setUndoManager(undoManager.get());
   parameterPanel.setUndoManager(undoManager.get());
+  pianoRollView.setUndoManager(undoManager.get());
 
   // Setup toolbar callbacks
   toolbar.onPlay = [this]() { play(); };
@@ -557,9 +564,11 @@ MainComponent::MainComponent(bool enableAudioDevice)
   };
   pianoRoll.onZoomChanged = [this](float pps) {
     onZoomChanged(pps);
+    pianoRollView.getHNSepLane().setPixelsPerSecond(pps);
     pianoRollView.refreshOverview();
   };
-  pianoRoll.onScrollChanged = [this](double) {
+  pianoRoll.onScrollChanged = [this](double x) {
+    pianoRollView.getHNSepLane().setScrollX(x);
     pianoRollView.refreshOverview();
   };
   pianoRoll.onLoopRangeChanged = [this](const LoopRange &range) {
@@ -653,6 +662,17 @@ MainComponent::MainComponent(bool enableAudioDevice)
   };
   parameterPanel.setProject(getProject());
 
+  pianoRollView.getHNSepLane().onParamEdited = [this]() {
+    pianoRollView.repaint();
+    onPitchEdited();
+  };
+  pianoRollView.getHNSepLane().onParamEditFinished = [this]() {
+    resynthesizeIncremental();
+    notifyProjectDataChanged();
+    if (isPluginMode() && onPitchEditFinished)
+      onPitchEditFinished();
+  };
+
   // Sync toolbar toggle with panel visibility
   toolbar.setParametersVisible(workspace.isPanelVisible("parameters"));
   toolbar.setVoicebankVisible(workspace.isPanelVisible("voicebank"));
@@ -686,6 +706,7 @@ MainComponent::MainComponent(bool enableAudioDevice)
   // Set initial project
   pianoRoll.setProject(editorController->getProject());
   pianoRollView.setProject(editorController->getProject());
+  pianoRollView.setHNSepVisible(false);
 
   // Register commands with the command manager
   commandManager->registerAllCommandsForTarget(this);
@@ -2039,6 +2060,7 @@ void MainComponent::undo() {
     parameterPanel.updateFromNote();
     pianoRoll.invalidateBasePitchCache(); // Refresh cache after note split etc.
     pianoRoll.repaint();
+    pianoRollView.repaint();
 
     if (getProject()) {
       // Don't mark all notes as dirty - let undo action callbacks handle
@@ -2059,6 +2081,7 @@ void MainComponent::redo() {
     parameterPanel.updateFromNote();
     pianoRoll.invalidateBasePitchCache(); // Refresh cache after note split etc.
     pianoRoll.repaint();
+    pianoRollView.repaint();
 
     if (getProject()) {
       // Don't mark all notes as dirty - let redo action callbacks handle
@@ -2076,6 +2099,7 @@ void MainComponent::redo() {
 void MainComponent::setEditMode(EditMode mode) {
   pianoRoll.setEditMode(mode);
   toolbar.setEditMode(mode);
+  pianoRollView.setHNSepVisible(mode == EditMode::Parameter);
   
   // Update command states (draw mode toggle state changed)
   if (commandManager)

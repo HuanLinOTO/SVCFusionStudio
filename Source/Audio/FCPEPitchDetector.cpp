@@ -1,4 +1,5 @@
 #include "FCPEPitchDetector.h"
+#include "../Utils/AppLogger.h"
 #include <algorithm>
 #include <cmath>
 #include <numeric>
@@ -93,8 +94,10 @@ bool FCPEPitchDetector::loadModel(const juce::File &modelPath,
                                   GPUProvider provider, int deviceId) {
 #ifdef HAVE_ONNXRUNTIME
   try {
+    LOG("FCPE: loadModel start");
     // Load mel filterbank from file if provided
     if (melFilterbankPath.existsAsFile()) {
+      LOG("FCPE: loading mel filterbank from " + melFilterbankPath.getFullPathName());
       juce::FileInputStream stream(melFilterbankPath);
       if (stream.openedOk()) {
         const int numBins = N_FFT / 2 + 1;
@@ -114,6 +117,7 @@ bool FCPEPitchDetector::loadModel(const juce::File &modelPath,
 
     // Load cent table from file if provided
     if (centTablePath.existsAsFile()) {
+      LOG("FCPE: loading cent table from " + centTablePath.getFullPathName());
       juce::FileInputStream stream(centTablePath);
       if (stream.openedOk()) {
         centTable.resize(OUT_DIMS);
@@ -123,10 +127,13 @@ bool FCPEPitchDetector::loadModel(const juce::File &modelPath,
     }
 
     // Initialize ONNX Runtime
+  LOG("FCPE: creating ONNX env");
     onnxEnv = std::make_unique<Ort::Env>(ORT_LOGGING_LEVEL_WARNING,
                                          "FCPEPitchDetector");
+  LOG("FCPE: ONNX env created");
 
     Ort::SessionOptions sessionOptions;
+  LOG("FCPE: session options created");
     sessionOptions.SetIntraOpNumThreads(1);
     sessionOptions.SetGraphOptimizationLevel(
         GraphOptimizationLevel::ORT_ENABLE_ALL);
@@ -179,6 +186,7 @@ bool FCPEPitchDetector::loadModel(const juce::File &modelPath,
     }
 
 #ifdef _WIN32
+  LOG("FCPE: creating session from " + modelPath.getFullPathName());
     std::wstring modelPathW = modelPath.getFullPathName().toWideCharPointer();
     onnxSession = std::make_unique<Ort::Session>(*onnxEnv, modelPathW.c_str(),
                                                  sessionOptions);
@@ -187,8 +195,10 @@ bool FCPEPitchDetector::loadModel(const juce::File &modelPath,
     onnxSession = std::make_unique<Ort::Session>(*onnxEnv, modelPathStr.c_str(),
                                                  sessionOptions);
 #endif
+  LOG("FCPE: session created");
 
     allocator = std::make_unique<Ort::AllocatorWithDefaultOptions>();
+  LOG("FCPE: allocator created");
 
     // Get input/output names
     size_t numInputs = onnxSession->GetInputCount();

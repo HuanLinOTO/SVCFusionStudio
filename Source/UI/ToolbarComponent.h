@@ -132,6 +132,7 @@ private:
     ToolButton stretchModeButton { "Stretch" };
     ToolButton drawModeButton { "Draw" };
     ToolButton splitModeButton { "Split" };
+    ToolButton hnsepModeButton { "HNSep" };
     ToolButton followButton { "Follow" };
     ToolButton loopButton { "Loop" };
     ToolButton parametersButton { "Parameters" };
@@ -161,7 +162,7 @@ private:
     bool isPlaying = false;
     bool followPlayback = true;
     bool loopEnabled = false;
-    int currentEditModeInt = 0;  // 0 = Select, 1 = Stretch, 2 = Draw, 3 = Split
+    int currentEditModeInt = 0;  // 0 = Select, 1 = Stretch, 2 = Draw, 3 = Split, 4 = HNSep
 
 #if JUCE_MAC
     juce::ComponentDragger dragger;

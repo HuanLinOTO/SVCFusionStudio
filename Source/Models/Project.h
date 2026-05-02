@@ -31,6 +31,8 @@ struct AudioData
 
     juce::AudioBuffer<float> waveform;
     juce::AudioBuffer<float> originalWaveform;  // pristine copy for blend (never modified after analysis)
+    juce::AudioBuffer<float> harmonicWaveform;
+    juce::AudioBuffer<float> noiseWaveform;
     int sampleRate = 44100;
     
     // Extracted features
@@ -39,6 +41,9 @@ struct AudioData
     std::vector<float> baseF0;                        // [T] (cached base pitch in Hz)
     std::vector<float> basePitch;                     // [T] base pitch in MIDI (dense)
     std::vector<float> deltaPitch;                    // [T] delta pitch in MIDI (dense)
+    std::vector<float> voicingCurve;                  // [T] hnsep harmonic energy in %
+    std::vector<float> breathCurve;                   // [T] hnsep noise energy in %
+    std::vector<float> tensionCurve;                  // [T] hnsep spectral tilt control
     std::vector<bool> voicedMask;                     // [T] uv mask (true = voiced, F0-based)
     std::vector<bool> vadMask;                        // [T] energy-based VAD (true = has audio energy, captures consonants)
     std::vector<std::pair<int, int>> someChunkRanges; // [N] SOME slicer chunks in frame range [start, end)

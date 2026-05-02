@@ -29,20 +29,7 @@
 // Construction / Destruction
 // =======================================================================
 
-SVCInferenceEngine::SVCInferenceEngine()
-{
-#ifdef HAVE_ONNXRUNTIME
-    try
-    {
-        onnxEnv = std::make_shared<Ort::Env>(ORT_LOGGING_LEVEL_WARNING, "SVCInference");
-        allocator = std::make_unique<Ort::AllocatorWithDefaultOptions>();
-    }
-    catch (const Ort::Exception& e)
-    {
-        DBG("SVCInferenceEngine: Failed to init ONNX env: " + juce::String(e.what()));
-    }
-#endif
-}
+SVCInferenceEngine::SVCInferenceEngine() = default;
 
 SVCInferenceEngine::~SVCInferenceEngine()
 {
@@ -62,7 +49,18 @@ bool SVCInferenceEngine::loadContentVec(const juce::File& onnxPath,
 {
 #ifdef HAVE_ONNXRUNTIME
     if (!onnxEnv)
-        return false;
+    {
+        try
+        {
+            onnxEnv = std::make_shared<Ort::Env>(ORT_LOGGING_LEVEL_WARNING, "SVCInference");
+            allocator = std::make_unique<Ort::AllocatorWithDefaultOptions>();
+        }
+        catch (const Ort::Exception& e)
+        {
+            LOG("SVCInferenceEngine: Failed to init ONNX env: " + juce::String(e.what()));
+            return false;
+        }
+    }
 
     if (!onnxPath.existsAsFile())
     {

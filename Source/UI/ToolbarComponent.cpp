@@ -35,6 +35,7 @@ ToolbarComponent::ToolbarComponent()
     stretchModeButton.setImages(stretchIcon.get());
     drawModeButton.setImages(pitchEditIcon.get());
     splitModeButton.setImages(scissorsIcon.get());
+    hnsepModeButton.setImages(parametersIcon.get());
     followButton.setImages(followIcon.get());
     loopButton.setImages(loopIcon.get());
     parametersButton.setImages(parametersIcon.get());
@@ -49,6 +50,7 @@ ToolbarComponent::ToolbarComponent()
     stretchModeButton.setEdgeIndent(6);
     drawModeButton.setEdgeIndent(6);
     splitModeButton.setEdgeIndent(6);
+    hnsepModeButton.setEdgeIndent(6);
     followButton.setEdgeIndent(6);
     loopButton.setEdgeIndent(6);
     parametersButton.setEdgeIndent(6);
@@ -67,6 +69,7 @@ ToolbarComponent::ToolbarComponent()
     addAndMakeVisible(stretchModeButton);
     addAndMakeVisible(drawModeButton);
     addAndMakeVisible(splitModeButton);
+    addAndMakeVisible(hnsepModeButton);
     addAndMakeVisible(followButton);
     addAndMakeVisible(loopButton);
     addAndMakeVisible(parametersButton);
@@ -91,6 +94,7 @@ ToolbarComponent::ToolbarComponent()
     stretchModeButton.addListener(this);
     drawModeButton.addListener(this);
     splitModeButton.addListener(this);
+    hnsepModeButton.addListener(this);
     followButton.addListener(this);
     loopButton.addListener(this);
     parametersButton.addListener(this);
@@ -102,6 +106,7 @@ ToolbarComponent::ToolbarComponent()
     stretchModeButton.setTooltip(TR("toolbar.stretch") + " (2)");
     drawModeButton.setTooltip(TR("toolbar.draw") + " (3)");
     splitModeButton.setTooltip(TR("toolbar.split") + " (4)");
+    hnsepModeButton.setTooltip("HNSep Parameters");
     followButton.setTooltip(TR("toolbar.follow") + " (5)");
     loopButton.setTooltip(TR("toolbar.loop") + " (6)");
     parametersButton.setTooltip(TR("panel.parameters"));
@@ -278,7 +283,7 @@ void ToolbarComponent::resized()
     // Center section - edit mode buttons
     const int toolButtonSize = 32;
     const int toolContainerPadding = 4;
-    const int numToolButtons = pluginMode ? 4 : 6;
+    const int numToolButtons = pluginMode ? 5 : 7;
     const int toolContainerWidth = toolButtonSize * numToolButtons + toolContainerPadding * 2;
     const int centerWidth = bounds.getRight() - currentX;
     const int centerX = currentX + std::max(0, (centerWidth - toolContainerWidth) / 2);
@@ -292,6 +297,8 @@ void ToolbarComponent::resized()
     drawModeButton.setBounds(toolX, toolArea.getY(), toolButtonSize, toolArea.getHeight());
     toolX += toolButtonSize;
     splitModeButton.setBounds(toolX, toolArea.getY(), toolButtonSize, toolArea.getHeight());
+    toolX += toolButtonSize;
+    hnsepModeButton.setBounds(toolX, toolArea.getY(), toolButtonSize, toolArea.getHeight());
     toolX += toolButtonSize;
     if (!pluginMode)
         followButton.setBounds(toolX, toolArea.getY(), toolButtonSize, toolArea.getHeight());
@@ -348,6 +355,12 @@ void ToolbarComponent::buttonClicked(juce::Button* button)
         setEditMode(EditMode::Split);
         if (onEditModeChanged)
             onEditModeChanged(EditMode::Split);
+    }
+    else if (button == &hnsepModeButton)
+    {
+        setEditMode(EditMode::Parameter);
+        if (onEditModeChanged)
+            onEditModeChanged(EditMode::Parameter);
     }
     else if (button == &followButton)
     {
@@ -408,6 +421,7 @@ void ToolbarComponent::setEditMode(EditMode mode)
     stretchModeButton.setActive(mode == EditMode::Stretch);
     drawModeButton.setActive(mode == EditMode::Draw);
     splitModeButton.setActive(mode == EditMode::Split);
+    hnsepModeButton.setActive(mode == EditMode::Parameter);
 }
 
 void ToolbarComponent::setZoom(float pixelsPerSecond)

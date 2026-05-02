@@ -5,9 +5,10 @@
 #include "AudioEngine.h"
 #include "Engine/PlaybackController.h"
 #include "FCPEPitchDetector.h"
+#include "GAMEDetector.h"
+#include "HNSepModel.h"
 #include "PitchDetectorType.h"
 #include "RMVPEPitchDetector.h"
-#include "SOMEDetector.h"
 #include "SVCInferenceEngine.h"
 #include "SVCModelSession.h"
 #include "Synthesis/IncrementalSynthesizer.h"
@@ -48,6 +49,10 @@ public:
   void setDeviceConfig(const juce::String &deviceName, int gpuDeviceId) {
     device = deviceName;
     deviceId = gpuDeviceId;
+    if (vocoder) {
+      vocoder->setExecutionDevice(deviceName);
+      vocoder->setExecutionDeviceId(gpuDeviceId);
+    }
   }
 
   void reloadInferenceModels(bool async);
@@ -139,12 +144,14 @@ public:
 
 private:
   GPUProvider getProviderFromDevice(const juce::String &device) const;
+  Vocoder *ensureVocoder();
 
   std::unique_ptr<Project> project;
   std::unique_ptr<AudioEngine> audioEngine;
   std::unique_ptr<FCPEPitchDetector> fcpePitchDetector;
   std::unique_ptr<RMVPEPitchDetector> rmvpePitchDetector;
-  std::unique_ptr<SOMEDetector> someDetector;
+  std::unique_ptr<GAMEDetector> gameDetector;
+  std::unique_ptr<HNSepModel> hnsepModel;
   std::unique_ptr<Vocoder> vocoder;
   std::unique_ptr<AudioAnalyzer> audioAnalyzer;
   std::unique_ptr<IncrementalSynthesizer> incrementalSynth;
@@ -157,7 +164,8 @@ private:
   juce::File melFilterbankPath;
   juce::File centTablePath;
   juce::File rmvpeModelPath;
-  juce::File someModelPath;
+  juce::File gameModelDir;
+  juce::File hnsepModelDir;
 
   PitchDetectorType pitchDetectorType = PitchDetectorType::RMVPE;
   juce::String device = "CPU";

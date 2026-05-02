@@ -29,7 +29,8 @@ enum class EditMode {
   Select, // Normal selection and dragging
   Stretch, // Stretch note timing
   Draw,   // Pitch drawing mode
-  Split   // Note splitting mode
+  Split,  // Note splitting mode
+  Parameter // HNSep parameter lane editing mode
 };
 
 /**
@@ -88,6 +89,7 @@ public:
   // Scroll
   void setScrollX(double x);
   double getScrollX() const { return scrollX; }
+  int getPianoKeysWidth() const { return pianoKeysWidth; }
   void centerOnPitchRange(float minMidi, float maxMidi);
   int getVisibleContentWidth() const;
   int getVisibleContentHeight() const;
@@ -201,6 +203,10 @@ private:
     std::vector<bool> rightVoiced;
     std::vector<float> originalLeftClip;
     std::vector<float> originalRightClip;
+    std::vector<float> originalLeftHarmonicClip;
+    std::vector<float> originalRightHarmonicClip;
+    std::vector<float> originalLeftNoiseClip;
+    std::vector<float> originalRightNoiseClip;
     std::vector<std::vector<float>> originalMelRangeFull;
     std::vector<float> originalDeltaRangeFull;
     std::vector<bool> originalVoicedRangeFull;

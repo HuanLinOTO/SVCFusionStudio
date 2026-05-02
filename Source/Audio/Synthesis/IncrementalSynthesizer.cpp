@@ -1,6 +1,10 @@
 #include "IncrementalSynthesizer.h"
 #include "../../Utils/Localization.h"
 #include "../../Utils/AppLogger.h"
+#include "../../Utils/Constants.h"
+#include "../../Utils/HNSepCurveProcessor.h"
+#include "../../Utils/MelSpectrogram.h"
+#include "../TensionProcessor.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -281,6 +285,70 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
       + " melFromSVC=" + juce::String((int)audioData.melFromSVC)
       + " useSvcMelDirect=" + juce::String((int)useSvcMelDirect));
 
+  std::vector<float> hnsepRebuiltSegment;
+  std::vector<std::vector<float>> hnsepMelRange;
+  if (audioData.harmonicWaveform.getNumSamples() > 0 &&
+      audioData.noiseWaveform.getNumSamples() > 0) {
+    HNSepCurveProcessor::rebuildCurvesForRange(*project, startFrame, endFrame);
+
+    if (HNSepCurveProcessor::hasActiveEdits(*project, startFrame, endFrame)) {
+      const int numFrames = endFrame - startFrame;
+      const int harmonicAvail = audioData.harmonicWaveform.getNumSamples();
+      const int noiseAvail = audioData.noiseWaveform.getNumSamples();
+      const int copyLen = std::min(
+          numSynthSamples,
+          std::min(std::max(0, harmonicAvail - startSample),
+                   std::max(0, noiseAvail - startSample)));
+
+      if (copyLen > 0 &&
+          static_cast<int>(audioData.voicingCurve.size()) >= endFrame &&
+          static_cast<int>(audioData.breathCurve.size()) >= endFrame &&
+          static_cast<int>(audioData.tensionCurve.size()) >= endFrame) {
+        std::vector<float> harmonicSegment(static_cast<size_t>(numSynthSamples),
+                                           0.0f);
+        std::vector<float> noiseSegment(static_cast<size_t>(numSynthSamples),
+                                        0.0f);
+        std::copy(audioData.harmonicWaveform.getReadPointer(0) + startSample,
+                  audioData.harmonicWaveform.getReadPointer(0) + startSample +
+                      copyLen,
+                  harmonicSegment.begin());
+        std::copy(audioData.noiseWaveform.getReadPointer(0) + startSample,
+                  audioData.noiseWaveform.getReadPointer(0) + startSample +
+                      copyLen,
+                  noiseSegment.begin());
+
+        TensionProcessor tensionProcessor;
+        hnsepRebuiltSegment = tensionProcessor.processSegment(
+            harmonicSegment.data(), noiseSegment.data(), numSynthSamples,
+            audioData.voicingCurve.data() + startFrame,
+            audioData.breathCurve.data() + startFrame,
+            audioData.tensionCurve.data() + startFrame, numFrames);
+
+        if (!hnsepRebuiltSegment.empty()) {
+          MelSpectrogram melComputer(audioData.sampleRate, N_FFT, hopSize,
+                                     NUM_MELS, FMIN, FMAX);
+          hnsepMelRange =
+              melComputer.compute(hnsepRebuiltSegment.data(), numSynthSamples);
+
+          if (static_cast<int>(hnsepMelRange.size()) > numFrames) {
+            hnsepMelRange.resize(static_cast<size_t>(numFrames));
+          } else if (static_cast<int>(hnsepMelRange.size()) < numFrames &&
+                     !hnsepMelRange.empty()) {
+            hnsepMelRange.resize(static_cast<size_t>(numFrames),
+                                 hnsepMelRange.back());
+          }
+
+          if (static_cast<int>(hnsepMelRange.size()) == numFrames) {
+            LOG("[STRETCH-DBG] using hnsep-regenerated mel for incremental synthesis");
+          } else {
+            hnsepMelRange.clear();
+            LOG("[STRETCH-DBG] hnsep mel regeneration size mismatch, using original mel");
+          }
+        }
+      }
+    }
+  }
+
   // F0 for SVC: may exclude global pitch offset in post-SVC mode
   bool pitchOffsetPreSVC = project->isPitchOffsetBeforeSVC();
   std::vector<float> f0ForSVC;
@@ -303,18 +371,28 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
   {
     // Fast path: SVC mel already stored — just use it through vocoder
     DBG("IncrementalSynthesizer: Using stored SVC mel (melFromSVC) — skipping inference");
-    melRange.assign(
-        audioData.melSpectrogram.begin() + startFrame,
-        audioData.melSpectrogram.begin() + endFrame);
+    if (!hnsepMelRange.empty()) {
+      LOG("[STRETCH-DBG] applying HNSep-regenerated mel on stored SVC mel path");
+      melRange = hnsepMelRange;
+    } else {
+      melRange.assign(
+          audioData.melSpectrogram.begin() + startFrame,
+          audioData.melSpectrogram.begin() + endFrame);
+    }
   }
   else if (isSoVITS)
   {
     // SoVITS stretch: use mel from SoVITS waveform analysis through vocoder.
     // This preserves SoVITS timbre while correctly time-stretching.
     LOG("[STRETCH-DBG] SoVITS: using mel+vocoder path for stretch (skip re-inference)");
-    melRange.assign(
-        audioData.melSpectrogram.begin() + startFrame,
-        audioData.melSpectrogram.begin() + endFrame);
+    if (!hnsepMelRange.empty()) {
+      LOG("[STRETCH-DBG] applying HNSep-regenerated mel on SoVITS path");
+      melRange = hnsepMelRange;
+    } else {
+      melRange.assign(
+          audioData.melSpectrogram.begin() + startFrame,
+          audioData.melSpectrogram.begin() + endFrame);
+    }
   }
   else if (svcActive)
   {
@@ -330,10 +408,17 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
     int origNumSamples = (endFrame - startFrame) * hopSize;
     int origAvail = origWF.getNumSamples();
 
-    // Get the audio segment for SVC
+    // Get the audio segment for SVC. When HNSep edits are active, infer on the
+    // rebuilt source segment instead of the untouched original waveform.
     std::vector<float> audioSegment(origNumSamples, 0.f);
-    if (origStartSample < origAvail)
-    {
+    if (!hnsepRebuiltSegment.empty()) {
+      const int copyLen = std::min(origNumSamples,
+                                   static_cast<int>(hnsepRebuiltSegment.size()));
+      std::copy(hnsepRebuiltSegment.begin(),
+                hnsepRebuiltSegment.begin() + copyLen,
+                audioSegment.begin());
+      LOG("[STRETCH-DBG] applying HNSep-rebuilt audio segment before SVC inference");
+    } else if (origStartSample < origAvail) {
       int copyLen = std::min(origNumSamples, origAvail - origStartSample);
       const float* ptr = origWF.getReadPointer(0);
       std::copy(ptr + origStartSample, ptr + origStartSample + copyLen,
@@ -352,9 +437,13 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
     if (melRange.empty())
     {
       DBG("IncrementalSynthesizer: SVC mel inference failed, falling back to original mel");
-      melRange.assign(
-          audioData.melSpectrogram.begin() + startFrame,
-          audioData.melSpectrogram.begin() + endFrame);
+      if (!hnsepMelRange.empty()) {
+        melRange = hnsepMelRange;
+      } else {
+        melRange.assign(
+            audioData.melSpectrogram.begin() + startFrame,
+            audioData.melSpectrogram.begin() + endFrame);
+      }
     }
     else
     {
@@ -366,9 +455,13 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
   else
   {
     // No SVC model — use original analysis mel
-    melRange.assign(
-        audioData.melSpectrogram.begin() + startFrame,
-        audioData.melSpectrogram.begin() + endFrame);
+    if (!hnsepMelRange.empty()) {
+      melRange = std::move(hnsepMelRange);
+    } else {
+      melRange.assign(
+          audioData.melSpectrogram.begin() + startFrame,
+          audioData.melSpectrogram.begin() + endFrame);
+    }
   }
 
   // For SoVITS direct audio path, skip vocoder entirely
@@ -582,6 +675,33 @@ void IncrementalSynthesizer::applySynthesizedAudio(
         const float cur = originalSegment[static_cast<size_t>(i)];
         const float target = targetSegment[static_cast<size_t>(i)];
         dst[startSample + i] = cur + edgeEnv * (target - cur);
+      }
+    }
+
+    // Keep per-note waveform overlays in sync with the newly rendered audio.
+    if (audioData.waveform.getNumSamples() > 0) {
+      const float *updatedSamples = audioData.waveform.getReadPointer(0);
+      const int totalWaveSamples = audioData.waveform.getNumSamples();
+      for (auto &note : capturedProject->getNotes()) {
+        if (note.isRest())
+          continue;
+
+        const int overlapStart = std::max(capturedStartFrame, note.getStartFrame());
+        const int overlapEnd = std::min(capturedEndFrame, note.getEndFrame());
+        if (overlapEnd <= overlapStart)
+          continue;
+
+        const int noteStartSample = std::max(0, note.getStartFrame() * hopSize);
+        const int noteEndSample = std::min(totalWaveSamples,
+                                           note.getEndFrame() * hopSize);
+        if (noteEndSample <= noteStartSample)
+          continue;
+
+        std::vector<float> clip;
+        clip.reserve(static_cast<size_t>(noteEndSample - noteStartSample));
+        clip.insert(clip.end(), updatedSamples + noteStartSample,
+                    updatedSamples + noteEndSample);
+        note.setClipWaveform(std::move(clip));
       }
     }
 

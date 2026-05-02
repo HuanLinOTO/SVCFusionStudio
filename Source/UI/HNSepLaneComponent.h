@@ -1,0 +1,107 @@
+#pragma once
+
+#include "../JuceHeader.h"
+#include "../Models/Project.h"
+#include "../Utils/Constants.h"
+#include "../Utils/UndoManager.h"
+
+#include <array>
+#include <map>
+
+class HNSepLaneComponent : public juce::Component {
+public:
+  enum class LaneType { Voicing, Breath, Tension };
+
+  struct CurveEdit {
+    LaneType lane;
+    int frameIndex = -1;
+    float oldValue = 0.0f;
+    float newValue = 0.0f;
+  };
+
+  HNSepLaneComponent();
+  ~HNSepLaneComponent() override = default;
+
+  void paint(juce::Graphics &g) override;
+  void resized() override;
+  void mouseDown(const juce::MouseEvent &e) override;
+  void mouseDrag(const juce::MouseEvent &e) override;
+  void mouseUp(const juce::MouseEvent &e) override;
+  void mouseWheelMove(const juce::MouseEvent &e,
+                      const juce::MouseWheelDetails &wheel) override;
+
+  void setProject(Project *proj);
+  Project *getProject() const { return project; }
+
+  void setUndoManager(PitchUndoManager *manager) { undoManager = manager; }
+  void setPixelsPerSecond(float pps);
+  float getPixelsPerSecond() const { return pixelsPerSecond; }
+  void setScrollX(double x);
+  double getScrollX() const { return scrollX; }
+  void setPianoKeysWidth(int width);
+  void setMouseWheelPassthroughTarget(juce::Component *target) {
+    mouseWheelPassthroughTarget = target;
+  }
+
+  std::function<void()> onParamEdited;
+  std::function<void()> onParamEditFinished;
+
+private:
+  struct LaneInfo {
+    LaneType type;
+    juce::String label;
+    juce::Colour colour;
+    float minValue;
+    float maxValue;
+    float defaultValue;
+  };
+
+  juce::Rectangle<int> getLaneBounds(int laneIndex) const;
+  int getLaneIndexAt(juce::Point<float> position) const;
+  int xToFrame(float x) const;
+  float frameToX(int frame) const;
+  float valueToY(float value, const LaneInfo &lane,
+                 const juce::Rectangle<int> &bounds) const;
+  float yToValue(float y, const LaneInfo &lane,
+                 const juce::Rectangle<int> &bounds) const;
+
+  std::vector<float> *curveForLane(AudioData &audioData, LaneType lane);
+  const std::vector<float> *curveForLane(const AudioData &audioData,
+                                         LaneType lane) const;
+
+  void drawLane(juce::Graphics &g, int laneIndex) const;
+  void drawNoteOverlay(juce::Graphics &g,
+                       const juce::Rectangle<int> &bounds) const;
+  void drawEnergyOverlay(juce::Graphics &g, const juce::Rectangle<int> &bounds,
+                         LaneType lane) const;
+  void drawCurve(juce::Graphics &g, const juce::Rectangle<int> &bounds,
+                 const LaneInfo &lane, const std::vector<float> &curve) const;
+
+  void applyGesturePoint(float localX, float localY);
+  void applyValueAtFrame(int frameIndex, float value);
+  void commitPendingEdits();
+  void markDirtyRange(int startFrame, int endFrame) const;
+
+  Project *project = nullptr;
+  PitchUndoManager *undoManager = nullptr;
+  juce::Component *mouseWheelPassthroughTarget = nullptr;
+
+  std::array<LaneInfo, 3> lanes;
+  float pixelsPerSecond = DEFAULT_PIXELS_PER_SECOND;
+  double scrollX = 0.0;
+  int pianoKeysWidth = 60;
+
+  bool isDrawing = false;
+  bool isResetting = false;
+  int activeLaneIndex = -1;
+  int lastDrawFrame = -1;
+  float lastDrawValue = 0.0f;
+  std::vector<CurveEdit> pendingEdits;
+  std::map<int, size_t> pendingEditIndexByFrame;
+
+  static constexpr int lanePadding = 8;
+  static constexpr int labelWidth = 64;
+  static constexpr int separatorThickness = 1;
+
+  JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(HNSepLaneComponent)
+};

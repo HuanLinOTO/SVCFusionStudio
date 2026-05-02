@@ -10,11 +10,14 @@
 #include <thread>
 
 Vocoder::Vocoder() {
+  LOG("Vocoder: constructor start");
   // Open log file in platform-appropriate logs directory
   auto logPath = PlatformPaths::getLogFile("vocoder_" +
                                            AppLogger::getSessionId() + ".txt");
+  LOG("Vocoder: log path resolved to " + logPath.getFullPathName());
   logFile = std::make_unique<std::ofstream>(
       logPath.getFullPathName().toStdString(), std::ios::app);
+  LOG("Vocoder: log file stream created");
 
   if (logFile && logFile->is_open()) {
     auto now = std::chrono::system_clock::now();
@@ -23,12 +26,15 @@ Vocoder::Vocoder() {
              << " ==========\n";
     logFile->flush();
   }
+  LOG("Vocoder: log file initialized");
 
 #ifdef HAVE_ONNXRUNTIME
   // Initialize ONNX Runtime environment
   try {
+    LOG("Vocoder: creating ONNX environment");
     onnxEnv =
         std::make_unique<Ort::Env>(ORT_LOGGING_LEVEL_WARNING, "SVCFusion Studio");
+    LOG("Vocoder: ONNX environment created");
     allocator = std::make_unique<Ort::AllocatorWithDefaultOptions>();
     log("ONNX Runtime initialized successfully");
   } catch (const Ort::Exception &e) {
@@ -37,6 +43,7 @@ Vocoder::Vocoder() {
 #endif
 
   // Start async worker thread for inferAsync()
+  LOG("Vocoder: starting async worker");
   asyncWorker = std::thread([this]() {
     for (;;) {
       AsyncTask task;
@@ -99,6 +106,7 @@ Vocoder::Vocoder() {
       });
     }
   });
+  LOG("Vocoder: constructor complete");
 }
 
 Vocoder::~Vocoder() {

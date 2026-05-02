@@ -4,6 +4,7 @@
 #include "../Utils/CenteredMelSpectrogram.h"
 #include "../Utils/CurveResampler.h"
 #include "../Utils/Constants.h"
+#include "../Utils/HNSepCurveProcessor.h"
 #include "../Utils/UI/TimecodeFont.h"
 #include "../Utils/UI/Theme.h"
 #include "../Utils/PitchCurveProcessor.h"
@@ -3158,6 +3159,11 @@ void PianoRollComponent::startStretchDrag(const StretchBoundary &boundary) {
     }
     if (boundary.left->hasClipWaveform())
       stretchDrag.originalLeftClip = boundary.left->getClipWaveform();
+    if (boundary.left->hasClipHarmonicWaveform())
+      stretchDrag.originalLeftHarmonicClip =
+          boundary.left->getClipHarmonicWaveform();
+    if (boundary.left->hasClipNoiseWaveform())
+      stretchDrag.originalLeftNoiseClip = boundary.left->getClipNoiseWaveform();
   }
 
   // Save right note data if exists
@@ -3174,6 +3180,12 @@ void PianoRollComponent::startStretchDrag(const StretchBoundary &boundary) {
     }
     if (boundary.right->hasClipWaveform())
       stretchDrag.originalRightClip = boundary.right->getClipWaveform();
+    if (boundary.right->hasClipHarmonicWaveform())
+      stretchDrag.originalRightHarmonicClip =
+          boundary.right->getClipHarmonicWaveform();
+    if (boundary.right->hasClipNoiseWaveform())
+      stretchDrag.originalRightNoiseClip =
+          boundary.right->getClipNoiseWaveform();
   }
 
   // Save full range data for undo
@@ -3302,6 +3314,18 @@ void PianoRollComponent::updateStretchDrag(int targetFrame) {
           CurveResampler::resampleLinear(stretchDrag.originalLeftClip, newLeftSamples);
       stretchDrag.boundary.left->setClipWaveform(std::move(newLeftClip));
     }
+    if (!stretchDrag.originalLeftHarmonicClip.empty()) {
+      const int newLeftSamples = std::max(0, newLeftLength * HOP_SIZE);
+      auto newLeftClip = CurveResampler::resampleLinear(
+          stretchDrag.originalLeftHarmonicClip, newLeftSamples);
+      stretchDrag.boundary.left->setClipHarmonicWaveform(std::move(newLeftClip));
+    }
+    if (!stretchDrag.originalLeftNoiseClip.empty()) {
+      const int newLeftSamples = std::max(0, newLeftLength * HOP_SIZE);
+      auto newLeftClip = CurveResampler::resampleLinear(
+          stretchDrag.originalLeftNoiseClip, newLeftSamples);
+      stretchDrag.boundary.left->setClipNoiseWaveform(std::move(newLeftClip));
+    }
 
     stretchDrag.boundary.left->setEndFrame(targetFrame);
     stretchDrag.boundary.left->markDirty();
@@ -3327,6 +3351,18 @@ void PianoRollComponent::updateStretchDrag(int targetFrame) {
       auto newRightClip =
           CurveResampler::resampleLinear(stretchDrag.originalRightClip, newRightSamples);
       stretchDrag.boundary.right->setClipWaveform(std::move(newRightClip));
+    }
+    if (!stretchDrag.originalRightHarmonicClip.empty()) {
+      const int newRightSamples = std::max(0, newRightLength * HOP_SIZE);
+      auto newRightClip = CurveResampler::resampleLinear(
+          stretchDrag.originalRightHarmonicClip, newRightSamples);
+      stretchDrag.boundary.right->setClipHarmonicWaveform(std::move(newRightClip));
+    }
+    if (!stretchDrag.originalRightNoiseClip.empty()) {
+      const int newRightSamples = std::max(0, newRightLength * HOP_SIZE);
+      auto newRightClip = CurveResampler::resampleLinear(
+          stretchDrag.originalRightNoiseClip, newRightSamples);
+      stretchDrag.boundary.right->setClipNoiseWaveform(std::move(newRightClip));
     }
 
     stretchDrag.boundary.right->setStartFrame(targetFrame);
@@ -3408,6 +3444,7 @@ void PianoRollComponent::updateStretchDrag(int targetFrame) {
 
   PitchCurveProcessor::rebuildBaseFromNotes(*project);
   PitchCurveProcessor::composeF0InPlace(*project, /*applyUvMask=*/false);
+  HNSepCurveProcessor::rebuildCurvesFromNotes(*project);
   invalidateBasePitchCache();
 
   if (onPitchEdited)
@@ -3583,6 +3620,18 @@ void PianoRollComponent::finishStretchDrag() {
   std::vector<float> newRightClip;
   if (stretchDrag.boundary.right)
     newRightClip = stretchDrag.boundary.right->getClipWaveform();
+  std::vector<float> newLeftHarmonicClip;
+  if (stretchDrag.boundary.left)
+    newLeftHarmonicClip = stretchDrag.boundary.left->getClipHarmonicWaveform();
+  std::vector<float> newRightHarmonicClip;
+  if (stretchDrag.boundary.right)
+    newRightHarmonicClip = stretchDrag.boundary.right->getClipHarmonicWaveform();
+  std::vector<float> newLeftNoiseClip;
+  if (stretchDrag.boundary.left)
+    newLeftNoiseClip = stretchDrag.boundary.left->getClipNoiseWaveform();
+  std::vector<float> newRightNoiseClip;
+  if (stretchDrag.boundary.right)
+    newRightNoiseClip = stretchDrag.boundary.right->getClipNoiseWaveform();
 
   if (undoManager) {
     int capturedRangeStart = rangeStart;
@@ -3626,6 +3675,10 @@ void PianoRollComponent::finishStretchDrag() {
         currentBoundary, stretchDrag.originalRightEnd,
         stretchDrag.originalLeftClip, newLeftClip,
         stretchDrag.originalRightClip, newRightClip,
+        stretchDrag.originalLeftHarmonicClip, newLeftHarmonicClip,
+        stretchDrag.originalRightHarmonicClip, newRightHarmonicClip,
+        stretchDrag.originalLeftNoiseClip, newLeftNoiseClip,
+        stretchDrag.originalRightNoiseClip, newRightNoiseClip,
         std::move(oldDelta), std::move(newDelta),
         std::move(oldVoiced), std::move(newVoiced),
         std::move(oldMel), std::move(newMel),
@@ -3635,6 +3688,7 @@ void PianoRollComponent::finishStretchDrag() {
           PitchCurveProcessor::rebuildBaseFromNotes(*project);
           PitchCurveProcessor::composeF0InPlace(*project,
                                                 /*applyUvMask=*/false);
+          HNSepCurveProcessor::rebuildCurvesFromNotes(*project);
           invalidateBasePitchCache();
           const int f0Size =
               static_cast<int>(project->getAudioData().f0.size());
@@ -3774,6 +3828,12 @@ void PianoRollComponent::cancelStretchDrag() {
     stretchDrag.boundary.left->markDirty();
     if (!stretchDrag.originalLeftClip.empty())
       stretchDrag.boundary.left->setClipWaveform(stretchDrag.originalLeftClip);
+    if (!stretchDrag.originalLeftHarmonicClip.empty())
+      stretchDrag.boundary.left->setClipHarmonicWaveform(
+          stretchDrag.originalLeftHarmonicClip);
+    if (!stretchDrag.originalLeftNoiseClip.empty())
+      stretchDrag.boundary.left->setClipNoiseWaveform(
+          stretchDrag.originalLeftNoiseClip);
   }
   if (stretchDrag.boundary.right) {
     stretchDrag.boundary.right->setStartFrame(stretchDrag.originalRightStart);
@@ -3781,10 +3841,17 @@ void PianoRollComponent::cancelStretchDrag() {
     stretchDrag.boundary.right->markDirty();
     if (!stretchDrag.originalRightClip.empty())
       stretchDrag.boundary.right->setClipWaveform(stretchDrag.originalRightClip);
+    if (!stretchDrag.originalRightHarmonicClip.empty())
+      stretchDrag.boundary.right->setClipHarmonicWaveform(
+          stretchDrag.originalRightHarmonicClip);
+    if (!stretchDrag.originalRightNoiseClip.empty())
+      stretchDrag.boundary.right->setClipNoiseWaveform(
+          stretchDrag.originalRightNoiseClip);
   }
 
   PitchCurveProcessor::rebuildBaseFromNotes(*project);
   PitchCurveProcessor::composeF0InPlace(*project, /*applyUvMask=*/false);
+  HNSepCurveProcessor::rebuildCurvesFromNotes(*project);
   invalidateBasePitchCache();
 
   if (onPitchEdited)

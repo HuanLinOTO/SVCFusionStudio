@@ -17,6 +17,13 @@ PianoRollWorkspaceView::PianoRollWorkspaceView(PianoRollComponent &piano)
   overviewCard.setContentComponent(&overviewPanel);
   overviewPanel.setDrawBackground(false);
 
+  hnsepCard.setPadding(0);
+  hnsepCard.setCornerRadius(10.0f);
+  hnsepCard.setBorderColour(APP_COLOR_BORDER_SUBTLE.withAlpha(0.35f));
+  hnsepCard.setContentComponent(&hnsepLane);
+  hnsepLane.setPianoKeysWidth(pianoRoll.getPianoKeysWidth());
+  hnsepLane.setMouseWheelPassthroughTarget(&pianoRoll);
+
   overviewPanel.getViewState = [this]()
   {
     OverviewPanel::ViewState state;
@@ -88,6 +95,7 @@ PianoRollWorkspaceView::PianoRollWorkspaceView(PianoRollComponent &piano)
   };
 
   addAndMakeVisible(pianoCard);
+  addChildComponent(hnsepCard);
   addAndMakeVisible(overviewCard);
   addAndMakeVisible(overviewToggleButton);
   addAndMakeVisible(zoomXSlider);
@@ -128,6 +136,17 @@ void PianoRollWorkspaceView::resized()
     overviewCard.setBounds({});
   }
 
+  if (hnsepVisible)
+  {
+    auto hnsepBounds = bounds.removeFromBottom(hnsepHeight);
+    bounds.removeFromBottom(cardGap);
+    hnsepCard.setBounds(hnsepBounds);
+  }
+  else
+  {
+    hnsepCard.setBounds({});
+  }
+
   pianoCard.setBounds(bounds);
 
   auto overlay = pianoCard.getBounds();
@@ -163,6 +182,12 @@ void PianoRollWorkspaceView::resized()
 void PianoRollWorkspaceView::setProject(Project *project)
 {
   overviewPanel.setProject(project);
+  hnsepLane.setProject(project);
+}
+
+void PianoRollWorkspaceView::setUndoManager(PitchUndoManager *undoManager)
+{
+  hnsepLane.setUndoManager(undoManager);
 }
 
 void PianoRollWorkspaceView::refreshOverview()
@@ -176,6 +201,18 @@ void PianoRollWorkspaceView::setShowSomeSegmentsDebug(bool show)
   overviewPanel.setShowSomeSegmentsDebug(show);
 }
 
+void PianoRollWorkspaceView::setHNSepVisible(bool show)
+{
+  if (hnsepVisible == show)
+    return;
+
+  hnsepVisible = show;
+  hnsepCard.setVisible(show);
+  hnsepLane.setVisible(show);
+  resized();
+  repaint();
+}
+
 void PianoRollWorkspaceView::updateOverviewVisibility()
 {
   overviewCard.setVisible(overviewVisible);
@@ -187,6 +224,8 @@ void PianoRollWorkspaceView::timerCallback()
   const float pps = pianoRoll.getPixelsPerSecond();
   if (std::abs(zoomXSlider.getValue() - pps) > 0.05)
     zoomXSlider.setValue(pps, juce::dontSendNotification);
+  hnsepLane.setPixelsPerSecond(pps);
+  hnsepLane.setScrollX(pianoRoll.getScrollX());
 
   const float ppsY = pianoRoll.getPixelsPerSemitone();
   if (std::abs(zoomYSlider.getValue() - ppsY) > 0.05)

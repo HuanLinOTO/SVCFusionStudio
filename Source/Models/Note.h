@@ -72,6 +72,27 @@ public:
     void setDeltaPitch(std::vector<float> delta) { deltaPitch = std::move(delta); }
     bool hasDeltaPitch() const { return !deltaPitch.empty(); }
 
+    // Harmonic-noise parameter curves (per note-local frame)
+    const std::vector<float>& getVoicingCurve() const { return voicingCurve; }
+    void setVoicingCurve(std::vector<float> curve) { voicingCurve = std::move(curve); }
+    bool hasVoicingCurve() const { return !voicingCurve.empty(); }
+
+    const std::vector<float>& getBreathCurve() const { return breathCurve; }
+    void setBreathCurve(std::vector<float> curve) { breathCurve = std::move(curve); }
+    bool hasBreathCurve() const { return !breathCurve.empty(); }
+
+    const std::vector<float>& getTensionCurve() const { return tensionCurve; }
+    void setTensionCurve(std::vector<float> curve) { tensionCurve = std::move(curve); }
+    bool hasTensionCurve() const { return !tensionCurve.empty(); }
+
+    const std::vector<float>& getClipHarmonicWaveform() const { return clipHarmonicWaveform; }
+    void setClipHarmonicWaveform(std::vector<float> samples) { clipHarmonicWaveform = std::move(samples); }
+    bool hasClipHarmonicWaveform() const { return !clipHarmonicWaveform.empty(); }
+
+    const std::vector<float>& getClipNoiseWaveform() const { return clipNoiseWaveform; }
+    void setClipNoiseWaveform(std::vector<float> samples) { clipNoiseWaveform = std::move(samples); }
+    bool hasClipNoiseWaveform() const { return !clipNoiseWaveform.empty(); }
+
     // Vibrato
     bool isVibratoEnabled() const { return vibratoEnabled; }
     void setVibratoEnabled(bool enabled) { vibratoEnabled = enabled; }
@@ -141,6 +162,9 @@ private:
     float volumeDb = 0.0f; // Per-note gain in dB (0 = unity)
 
     std::vector<float> deltaPitch;  // Per-frame deviation from midiNote in semitones
+    std::vector<float> voicingCurve;
+    std::vector<float> breathCurve;
+    std::vector<float> tensionCurve;
 
     bool vibratoEnabled = false;
     float vibratoRateHz = 5.0f;
@@ -149,6 +173,8 @@ private:
 
     std::vector<float> f0Values;
     std::vector<float> clipWaveform;
+    std::vector<float> clipHarmonicWaveform;
+    std::vector<float> clipNoiseWaveform;
     std::vector<std::vector<float>> clipMel;  // Mel spectrogram clip [T, numMels]
     bool selected = false;
     bool dirty = false;  // For incremental synthesis

@@ -1,6 +1,7 @@
 #include "PluginProcessor.h"
 #include "../UI/IMainView.h"
 #include "../Utils/Localization.h"
+#include "../Utils/OnnxRuntimeLoader.h"
 #include "PluginEditor.h"
 
 SVCFusionStudioAudioProcessor::SVCFusionStudioAudioProcessor()
@@ -11,6 +12,7 @@ SVCFusionStudioAudioProcessor::SVCFusionStudioAudioProcessor()
               .withOutput("Output", juce::AudioChannelSet::stereo(), true))
 #endif
 {
+  OnnxRuntimeLoader::ensureLoaded();
 }
 
 SVCFusionStudioAudioProcessor::~SVCFusionStudioAudioProcessor() = default;

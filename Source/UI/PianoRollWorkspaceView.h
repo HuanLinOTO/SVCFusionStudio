@@ -2,6 +2,7 @@
 
 #include "../JuceHeader.h"
 #include "../Models/Project.h"
+#include "HNSepLaneComponent.h"
 #include "PianoRollComponent.h"
 #include "PianoRoll/OverviewPanel.h"
 #include "Workspace/RoundedCard.h"
@@ -15,21 +16,28 @@ public:
   void timerCallback() override;
 
   void setProject(Project *project);
+  void setUndoManager(PitchUndoManager *undoManager);
   void refreshOverview();
   void setShowSomeSegmentsDebug(bool show);
+  void setHNSepVisible(bool show);
+  bool isHNSepVisible() const { return hnsepVisible; }
   PianoRollComponent &getPianoRoll() { return pianoRoll; }
+  HNSepLaneComponent &getHNSepLane() { return hnsepLane; }
 
 private:
   void updateOverviewVisibility();
 
   PianoRollComponent &pianoRoll;
   OverviewPanel overviewPanel;
+  HNSepLaneComponent hnsepLane;
 
   RoundedCard pianoCard;
+  RoundedCard hnsepCard;
   RoundedCard overviewCard;
 
   juce::TextButton overviewToggleButton{"[]"};
   bool overviewVisible = true;
+  bool hnsepVisible = false;
 
   juce::Slider zoomXSlider;
   juce::Slider zoomYSlider;
@@ -38,6 +46,7 @@ private:
   juce::Rectangle<float> toggleBg;
 
   static constexpr int overviewHeight = 78;
+  static constexpr int hnsepHeight = 176;
   static constexpr int cardGap = 8;
   static constexpr int toggleSize = 24;
   static constexpr int toggleMargin = 8;

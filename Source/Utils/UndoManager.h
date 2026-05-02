@@ -462,6 +462,14 @@ public:
                             std::vector<float> newLeftClip,
                             std::vector<float> oldRightClip,
                             std::vector<float> newRightClip,
+                            std::vector<float> oldLeftHarmonicClip,
+                            std::vector<float> newLeftHarmonicClip,
+                            std::vector<float> oldRightHarmonicClip,
+                            std::vector<float> newRightHarmonicClip,
+                            std::vector<float> oldLeftNoiseClip,
+                            std::vector<float> newLeftNoiseClip,
+                            std::vector<float> oldRightNoiseClip,
+                            std::vector<float> newRightNoiseClip,
                             std::vector<float> oldDelta,
                             std::vector<float> newDelta,
                             std::vector<bool> oldVoiced,
@@ -481,6 +489,14 @@ public:
           newLeftClip(std::move(newLeftClip)),
           oldRightClip(std::move(oldRightClip)),
           newRightClip(std::move(newRightClip)),
+          oldLeftHarmonicClip(std::move(oldLeftHarmonicClip)),
+          newLeftHarmonicClip(std::move(newLeftHarmonicClip)),
+          oldRightHarmonicClip(std::move(oldRightHarmonicClip)),
+          newRightHarmonicClip(std::move(newRightHarmonicClip)),
+          oldLeftNoiseClip(std::move(oldLeftNoiseClip)),
+          newLeftNoiseClip(std::move(newLeftNoiseClip)),
+          oldRightNoiseClip(std::move(oldRightNoiseClip)),
+          newRightNoiseClip(std::move(newRightNoiseClip)),
           oldDelta(std::move(oldDelta)), newDelta(std::move(newDelta)),
           oldVoiced(std::move(oldVoiced)), newVoiced(std::move(newVoiced)),
           oldMel(std::move(oldMel)), newMel(std::move(newMel)),
@@ -489,13 +505,19 @@ public:
     void undo() override
     {
         applyState(oldLeftStart, oldLeftEnd, oldRightStart, oldRightEnd,
-                   oldLeftClip, oldRightClip, oldDelta, oldVoiced, oldMel);
+                   oldLeftClip, oldRightClip,
+                   oldLeftHarmonicClip, oldRightHarmonicClip,
+                   oldLeftNoiseClip, oldRightNoiseClip,
+                   oldDelta, oldVoiced, oldMel);
     }
 
     void redo() override
     {
         applyState(newLeftStart, newLeftEnd, newRightStart, newRightEnd,
-                   newLeftClip, newRightClip, newDelta, newVoiced, newMel);
+                   newLeftClip, newRightClip,
+                   newLeftHarmonicClip, newRightHarmonicClip,
+                   newLeftNoiseClip, newRightNoiseClip,
+                   newDelta, newVoiced, newMel);
     }
 
     juce::String getName() const override { return "Stretch Note Timing"; }
@@ -505,6 +527,10 @@ private:
                     int rightStart, int rightEnd,
                     const std::vector<float>& leftClip,
                     const std::vector<float>& rightClip,
+                    const std::vector<float>& leftHarmonicClip,
+                    const std::vector<float>& rightHarmonicClip,
+                    const std::vector<float>& leftNoiseClip,
+                    const std::vector<float>& rightNoiseClip,
                     const std::vector<float>& delta,
                     const std::vector<bool>& voiced,
                     const std::vector<std::vector<float>>& mel)
@@ -514,12 +540,16 @@ private:
             left->setEndFrame(leftEnd);
             left->markDirty();
             left->setClipWaveform(leftClip);
+            left->setClipHarmonicWaveform(leftHarmonicClip);
+            left->setClipNoiseWaveform(leftNoiseClip);
         }
         if (right) {
             right->setStartFrame(rightStart);
             right->setEndFrame(rightEnd);
             right->markDirty();
             right->setClipWaveform(rightClip);
+            right->setClipHarmonicWaveform(rightHarmonicClip);
+            right->setClipNoiseWaveform(rightNoiseClip);
         }
 
         if (deltaPitchArray && rangeEnd > rangeStart &&
@@ -572,6 +602,14 @@ private:
     std::vector<float> newLeftClip;
     std::vector<float> oldRightClip;
     std::vector<float> newRightClip;
+    std::vector<float> oldLeftHarmonicClip;
+    std::vector<float> newLeftHarmonicClip;
+    std::vector<float> oldRightHarmonicClip;
+    std::vector<float> newRightHarmonicClip;
+    std::vector<float> oldLeftNoiseClip;
+    std::vector<float> newLeftNoiseClip;
+    std::vector<float> oldRightNoiseClip;
+    std::vector<float> newRightNoiseClip;
     std::vector<float> oldDelta;
     std::vector<float> newDelta;
     std::vector<bool> oldVoiced;

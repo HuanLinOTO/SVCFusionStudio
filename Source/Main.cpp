@@ -7,6 +7,7 @@
 #include "Utils/AppLogger.h"
 #include "Utils/Constants.h"
 #include "Utils/Localization.h"
+#include "Utils/OnnxRuntimeLoader.h"
 #include "Utils/PlatformUtils.h"
 #include "Utils/UI/WindowSizing.h"
 #include "Utils/UI/TimecodeFont.h"
@@ -104,6 +105,7 @@ public:
     juce::ignoreUnused(commandLine);
     AppLogger::init();
     LOG("========== APP STARTING ==========");
+    OnnxRuntimeLoader::ensureLoaded();
     LOG("Initializing fonts...");
     AppFont::initialize();
     TimecodeFont::initialize();

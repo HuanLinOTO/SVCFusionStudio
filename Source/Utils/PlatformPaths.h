@@ -74,6 +74,49 @@ namespace PlatformPaths
         return probe;
     }
 
+    inline juce::File getModelSubDir(const juce::String& dirName,
+                                     const juce::String& verifyFile = "")
+    {
+        auto isValid = [&](const juce::File& candidate) -> bool
+        {
+            if (!candidate.isDirectory())
+                return false;
+            if (verifyFile.isEmpty())
+                return true;
+            return candidate.getChildFile(verifyFile).existsAsFile();
+        };
+
+        auto probe = getModelsDirectory().getChildFile(dirName);
+        if (isValid(probe))
+            return probe;
+
+        auto cwdProbe = juce::File::getCurrentWorkingDirectory()
+                            .getChildFile("Resources/models")
+                            .getChildFile(dirName);
+        if (isValid(cwdProbe))
+            return cwdProbe;
+
+        auto dir = juce::File::getSpecialLocation(juce::File::currentExecutableFile)
+                       .getParentDirectory();
+        for (int i = 0; i < 8 && dir.exists(); ++i)
+        {
+            auto modelsCandidate = dir.getChildFile("models").getChildFile(dirName);
+            if (isValid(modelsCandidate))
+                return modelsCandidate;
+
+            auto resourcesCandidate = dir.getChildFile("Resources/models").getChildFile(dirName);
+            if (isValid(resourcesCandidate))
+                return resourcesCandidate;
+
+            auto parent = dir.getParentDirectory();
+            if (parent == dir)
+                break;
+            dir = parent;
+        }
+
+        return probe;
+    }
+
     /**
      * Voicebanks directory: stores extracted .sfs_model voicebanks permanently.
      * Each voicebank is a sub-folder containing config.json + ONNX files.

@@ -1,6 +1,8 @@
 #include "NoteSplitter.h"
 #include "../../Utils/Constants.h"
+#include "../../Utils/CurveResampler.h"
 #include <algorithm>
+#include <cmath>
 
 Note* NoteSplitter::findNoteAt(float x, float y) {
     if (!project || !coordMapper)
@@ -32,13 +34,23 @@ bool NoteSplitter::splitNoteAtFrame(Note* note, int splitFrame) {
 
     int startFrame = note->getStartFrame();
     int endFrame = note->getEndFrame();
-
+    int srcStartFrame = note->getSrcStartFrame();
+    int srcEndFrame = note->getSrcEndFrame();
     // Ensure split point is within note bounds (with margin)
     if (splitFrame <= startFrame + 5 || splitFrame >= endFrame - 5)
         return false;
 
     // Store original note data for undo
     Note originalNote = *note;
+
+    const int destLength = std::max(1, endFrame - startFrame);
+    const int srcLength = std::max(1, srcEndFrame - srcStartFrame);
+    const int splitSrcFrame = srcStartFrame +
+        static_cast<int>(std::llround(static_cast<double>(splitFrame - startFrame) *
+                                      static_cast<double>(srcLength) /
+                                      static_cast<double>(destLength)));
+    const int clampedSplitSrcFrame = std::max(srcStartFrame,
+        std::min(splitSrcFrame, srcEndFrame));
 
     // Ensure clip waveform exists before splitting
     if (!note->hasClipWaveform()) {
@@ -73,10 +85,40 @@ bool NoteSplitter::splitNoteAtFrame(Note* note, int splitFrame) {
         }
     }
 
+    auto& audioData = project->getAudioData();
+
+    if (!note->hasClipHarmonicWaveform() && audioData.harmonicWaveform.getNumSamples() > 0) {
+        int startSample = note->getSrcStartFrame() * HOP_SIZE;
+        int endSample = note->getSrcEndFrame() * HOP_SIZE;
+        startSample = std::max(0, std::min(startSample, audioData.harmonicWaveform.getNumSamples()));
+        endSample = std::max(startSample, std::min(endSample, audioData.harmonicWaveform.getNumSamples()));
+        std::vector<float> clip;
+        clip.reserve(static_cast<size_t>(endSample - startSample));
+        const float* src = audioData.harmonicWaveform.getReadPointer(0);
+        for (int i = startSample; i < endSample; ++i)
+            clip.push_back(src[i]);
+        note->setClipHarmonicWaveform(std::move(clip));
+    }
+
+    if (!note->hasClipNoiseWaveform() && audioData.noiseWaveform.getNumSamples() > 0) {
+        int startSample = note->getSrcStartFrame() * HOP_SIZE;
+        int endSample = note->getSrcEndFrame() * HOP_SIZE;
+        startSample = std::max(0, std::min(startSample, audioData.noiseWaveform.getNumSamples()));
+        endSample = std::max(startSample, std::min(endSample, audioData.noiseWaveform.getNumSamples()));
+        std::vector<float> clip;
+        clip.reserve(static_cast<size_t>(endSample - startSample));
+        const float* src = audioData.noiseWaveform.getReadPointer(0);
+        for (int i = startSample; i < endSample; ++i)
+            clip.push_back(src[i]);
+        note->setClipNoiseWaveform(std::move(clip));
+    }
+
     // Create the second note (right part)
     Note secondNote;
     secondNote.setStartFrame(splitFrame);
     secondNote.setEndFrame(endFrame);
+    secondNote.setSrcStartFrame(clampedSplitSrcFrame);
+    secondNote.setSrcEndFrame(srcEndFrame);
     secondNote.setMidiNote(note->getMidiNote());
     secondNote.setLyric(note->getLyric());
     secondNote.setPitchOffset(0.0f);
@@ -84,7 +126,7 @@ bool NoteSplitter::splitNoteAtFrame(Note* note, int splitFrame) {
     // Split clip waveform if available
     if (note->hasClipWaveform()) {
         const auto& clip = note->getClipWaveform();
-        int splitOffset = (splitFrame - startFrame) * HOP_SIZE;
+        int splitOffset = (clampedSplitSrcFrame - srcStartFrame) * HOP_SIZE;
         splitOffset = std::max(0, std::min(splitOffset, static_cast<int>(clip.size())));
         std::vector<float> leftClip(clip.begin(), clip.begin() + splitOffset);
         std::vector<float> rightClip(clip.begin() + splitOffset, clip.end());
@@ -95,7 +137,7 @@ bool NoteSplitter::splitNoteAtFrame(Note* note, int splitFrame) {
     // Split clip mel if available
     if (note->hasClipMel()) {
         const auto& mel = note->getClipMel();
-        int splitOffset = splitFrame - startFrame;
+        int splitOffset = clampedSplitSrcFrame - srcStartFrame;
         splitOffset = std::max(0, std::min(splitOffset, static_cast<int>(mel.size())));
         std::vector<std::vector<float>> leftMel(mel.begin(), mel.begin() + splitOffset);
         std::vector<std::vector<float>> rightMel(mel.begin() + splitOffset, mel.end());
@@ -103,8 +145,57 @@ bool NoteSplitter::splitNoteAtFrame(Note* note, int splitFrame) {
         secondNote.setClipMel(std::move(rightMel));
     }
 
+    if (note->hasClipHarmonicWaveform()) {
+        const auto& clip = note->getClipHarmonicWaveform();
+        int splitOffset = (clampedSplitSrcFrame - srcStartFrame) * HOP_SIZE;
+        splitOffset = std::max(0, std::min(splitOffset, static_cast<int>(clip.size())));
+        std::vector<float> leftClip(clip.begin(), clip.begin() + splitOffset);
+        std::vector<float> rightClip(clip.begin() + splitOffset, clip.end());
+        note->setClipHarmonicWaveform(std::move(leftClip));
+        secondNote.setClipHarmonicWaveform(std::move(rightClip));
+    }
+
+    if (note->hasClipNoiseWaveform()) {
+        const auto& clip = note->getClipNoiseWaveform();
+        int splitOffset = (clampedSplitSrcFrame - srcStartFrame) * HOP_SIZE;
+        splitOffset = std::max(0, std::min(splitOffset, static_cast<int>(clip.size())));
+        std::vector<float> leftClip(clip.begin(), clip.begin() + splitOffset);
+        std::vector<float> rightClip(clip.begin() + splitOffset, clip.end());
+        note->setClipNoiseWaveform(std::move(leftClip));
+        secondNote.setClipNoiseWaveform(std::move(rightClip));
+    }
+
+    const int originalLength = std::max(1, endFrame - startFrame);
+    const int leftLength = std::max(1, splitFrame - startFrame);
+    const int rightLength = std::max(1, endFrame - splitFrame);
+
+    if (note->hasVoicingCurve()) {
+        auto fitted = CurveResampler::resampleLinear(note->getVoicingCurve(), originalLength);
+        std::vector<float> leftCurve(fitted.begin(), fitted.begin() + leftLength);
+        std::vector<float> rightCurve(fitted.begin() + leftLength, fitted.end());
+        note->setVoicingCurve(std::move(leftCurve));
+        secondNote.setVoicingCurve(std::move(rightCurve));
+    }
+
+    if (note->hasBreathCurve()) {
+        auto fitted = CurveResampler::resampleLinear(note->getBreathCurve(), originalLength);
+        std::vector<float> leftCurve(fitted.begin(), fitted.begin() + leftLength);
+        std::vector<float> rightCurve(fitted.begin() + leftLength, fitted.end());
+        note->setBreathCurve(std::move(leftCurve));
+        secondNote.setBreathCurve(std::move(rightCurve));
+    }
+
+    if (note->hasTensionCurve()) {
+        auto fitted = CurveResampler::resampleLinear(note->getTensionCurve(), originalLength);
+        std::vector<float> leftCurve(fitted.begin(), fitted.begin() + leftLength);
+        std::vector<float> rightCurve(fitted.begin() + leftLength, fitted.end());
+        note->setTensionCurve(std::move(leftCurve));
+        secondNote.setTensionCurve(std::move(rightCurve));
+    }
+
     // Modify the first note (left part)
     note->setEndFrame(splitFrame);
+    note->setSrcEndFrame(clampedSplitSrcFrame);
 
     // Save first note BEFORE addNote (addNote may invalidate note pointer due to vector reallocation)
     Note firstNote = *note;
