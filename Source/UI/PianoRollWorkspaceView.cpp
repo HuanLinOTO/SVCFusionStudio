@@ -3,6 +3,15 @@
 #include "../Utils/Constants.h"
 #include <cmath>
 
+namespace {
+bool isMenuPopupActive() {
+  if (auto *modal = juce::Component::getCurrentlyModalComponent())
+    return modal->getName() == "menu";
+
+  return false;
+}
+}
+
 PianoRollWorkspaceView::PianoRollWorkspaceView(PianoRollComponent &piano)
     : pianoRoll(piano)
 {
@@ -221,6 +230,9 @@ void PianoRollWorkspaceView::updateOverviewVisibility()
 
 void PianoRollWorkspaceView::timerCallback()
 {
+  if (isMenuPopupActive())
+    return;
+
   const float pps = pianoRoll.getPixelsPerSecond();
   if (std::abs(zoomXSlider.getValue() - pps) > 0.05)
     zoomXSlider.setValue(pps, juce::dontSendNotification);

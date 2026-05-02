@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../JuceHeader.h"
+#include "StyledComponents.h"
 #include "../Utils/Constants.h"
 #include "../Utils/UI/Theme.h"
 
@@ -99,7 +100,8 @@ public:
     {
         g.fillAll(APP_COLOR_SURFACE_ALT);
         g.setColour(APP_COLOR_BORDER_SUBTLE);
-        g.drawLine(0, height - 1, width, height - 1);
+        g.drawLine(0.0f, static_cast<float>(height) - 0.5f,
+                   static_cast<float>(width), static_cast<float>(height) - 0.5f, 1.0f);
     }
 
     void drawMenuBarItem(juce::Graphics& g, int width, int height,
@@ -107,24 +109,22 @@ public:
                         bool isMouseOverItem, bool isMenuOpen,
                         bool, juce::MenuBarComponent&) override
     {
+        juce::ignoreUnused(itemIndex);
+
         if (isMenuOpen || isMouseOverItem)
         {
-            g.setColour(APP_COLOR_PRIMARY);
-            g.fillRect(0, 0, width, height);
+            g.setColour(APP_COLOR_PRIMARY.withAlpha(0.18f));
+            g.fillRoundedRectangle(juce::Rectangle<float>(1.0f, 2.0f,
+                static_cast<float>(width) - 2.0f, static_cast<float>(height) - 4.0f), 5.0f);
         }
 
         g.setColour(APP_COLOR_TEXT_PRIMARY);
-        // Use larger DPI-aware font size
-        float scaleFactor = juce::Desktop::getInstance().getGlobalScaleFactor();
-        g.setFont(
-            juce::Font(juce::FontOptions(height * 0.75f * scaleFactor)));
+        g.setFont(AppFont::getFont(static_cast<float>(height) * 0.6f));
         g.drawFittedText(itemText, 0, 0, width, height, juce::Justification::centred, 1);
     }
 
     juce::Font getPopupMenuFont() override
     {
-        // Use larger DPI-aware font size
-        float scaleFactor = juce::Desktop::getInstance().getGlobalScaleFactor();
-        return juce::Font(juce::FontOptions(16.0f * scaleFactor));
+        return AppFont::getFont(14.0f);
     }
 };

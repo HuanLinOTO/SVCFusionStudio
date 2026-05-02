@@ -81,6 +81,7 @@ VoicebankPanel::VoicebankPanel()
             activeIndex = selected;
             listBox.repaint();
             updateInfoDisplay();
+            startInfoAnimation(true);
 
             if (onVoicebankActivated)
                 onVoicebankActivated(voicebanks[static_cast<size_t>(activeIndex)]);
@@ -119,22 +120,57 @@ void VoicebankPanel::paint(juce::Graphics& g)
     drawCard(listCardBounds);
     drawCard(infoCardBounds);
 
+    if (infoAnimationActive && !infoCardBounds.isEmpty())
+    {
+        auto card = infoCardBounds.toFloat().reduced(1.5f);
+        const auto glowAlpha = activationBurst ? 0.22f : 0.14f;
+        const auto shimmerWidth = juce::jmax(46.0f, card.getWidth() * 0.22f);
+        const auto shimmerCentreX = juce::jmap(infoAnimationProgress, card.getX() - shimmerWidth,
+                                               card.getRight() + shimmerWidth);
+        juce::ColourGradient shimmer(
+            APP_COLOR_PRIMARY.withAlpha(0.0f), shimmerCentreX - shimmerWidth, card.getY(),
+            APP_COLOR_PRIMARY.withAlpha(0.0f), shimmerCentreX + shimmerWidth, card.getBottom(), false);
+        shimmer.addColour(0.5, juce::Colours::white.withAlpha(glowAlpha));
+        g.setGradientFill(shimmer);
+        g.fillRoundedRectangle(card, 10.0f);
+    }
+
     // Draw avatar in the info card
     if (!avatarBounds.isEmpty())
     {
+        auto avatarArea = avatarBounds.toFloat();
+        const auto entryScale = juce::jmap(infoAnimationProgress, 0.0f, 1.0f,
+                                           activationBurst ? 0.78f : 0.88f, 1.0f);
+        const auto overshoot = activationBurst
+                                   ? 1.0f + 0.07f * std::sin(infoAnimationProgress * juce::MathConstants<float>::pi)
+                                   : 1.0f;
+        const auto avatarScale = entryScale * overshoot;
+        const auto scaledWidth = avatarArea.getWidth() * avatarScale;
+        const auto scaledHeight = avatarArea.getHeight() * avatarScale;
+        avatarArea = juce::Rectangle<float>(scaledWidth, scaledHeight)
+                         .withCentre(avatarArea.getCentre())
+                         .translated(0.0f, juce::jmap(infoAnimationProgress, 10.0f, 0.0f));
+
+        if (infoAnimationActive)
+        {
+            const auto haloAlpha = activationBurst ? 0.32f : 0.18f;
+            g.setColour(APP_COLOR_PRIMARY.withAlpha(haloAlpha * (1.0f - infoAnimationProgress * 0.35f)));
+            g.fillEllipse(avatarArea.expanded(10.0f, 10.0f));
+        }
+
         if (avatarImage.isValid())
         {
-            g.drawImageWithin(avatarImage, avatarBounds.getX(), avatarBounds.getY(),
-                              avatarBounds.getWidth(), avatarBounds.getHeight(),
+            g.drawImageWithin(avatarImage, juce::roundToInt(avatarArea.getX()), juce::roundToInt(avatarArea.getY()),
+                              juce::roundToInt(avatarArea.getWidth()), juce::roundToInt(avatarArea.getHeight()),
                               juce::RectanglePlacement::centred | juce::RectanglePlacement::onlyReduceInSize);
         }
         else
         {
             // Placeholder circle
             g.setColour(APP_COLOR_SURFACE_ALT);
-            g.fillRoundedRectangle(avatarBounds.toFloat(), 8.0f);
+            g.fillRoundedRectangle(avatarArea, 8.0f);
             g.setColour(APP_COLOR_TEXT_MUTED.withAlpha(0.4f));
-            g.drawRoundedRectangle(avatarBounds.toFloat().reduced(0.5f), 8.0f, 1.0f);
+            g.drawRoundedRectangle(avatarArea.reduced(0.5f), 8.0f, 1.0f);
         }
     }
 
@@ -227,11 +263,27 @@ void VoicebankPanel::paintListBoxItem(int row, juce::Graphics& g,
     else if (row % 2 == 1)
         g.fillAll(APP_COLOR_SURFACE_ALT.withAlpha(0.3f));
 
+    if (infoAnimationActive && row == listBox.getSelectedRow())
+    {
+        const auto pulse = juce::jmap(std::sin(infoAnimationProgress * juce::MathConstants<float>::pi),
+                                      0.0f, 1.0f, 0.10f, activationBurst ? 0.30f : 0.20f);
+        juce::ColourGradient pulseGradient(APP_COLOR_PRIMARY.withAlpha(pulse), 0.0f, 0.0f,
+                                           juce::Colours::white.withAlpha(pulse * 0.7f),
+                                           static_cast<float>(width), static_cast<float>(height), false);
+        g.setGradientFill(pulseGradient);
+        g.fillRoundedRectangle(juce::Rectangle<float>(1.0f, 1.0f, static_cast<float>(width - 2),
+                                                      static_cast<float>(height - 2)), 8.0f);
+    }
+
     // Active indicator bar on the left
     if (isActive)
     {
         g.setColour(APP_COLOR_PRIMARY);
-        g.fillRect(0, 2, 3, height - 4);
+        const auto activeWidth = infoAnimationActive && activationBurst
+                                     ? static_cast<int>(juce::jmap(std::sin(infoAnimationProgress * juce::MathConstants<float>::pi),
+                                                                   3.0f, 7.0f))
+                                     : 3;
+        g.fillRect(0, 2, activeWidth, height - 4);
     }
 
     int textX = isActive ? 10 : 6;
@@ -266,7 +318,10 @@ void VoicebankPanel::paintListBoxItem(int row, juce::Graphics& g,
 void VoicebankPanel::listBoxItemClicked(int row, const juce::MouseEvent&)
 {
     if (row >= 0 && row < static_cast<int>(voicebanks.size()))
+    {
         updateInfoDisplay();
+        startInfoAnimation(false);
+    }
 }
 
 void VoicebankPanel::listBoxItemDoubleClicked(int row, const juce::MouseEvent&)
@@ -277,6 +332,7 @@ void VoicebankPanel::listBoxItemDoubleClicked(int row, const juce::MouseEvent&)
         activeIndex = row;
         listBox.repaint();
         updateInfoDisplay();
+        startInfoAnimation(true);
 
         if (onVoicebankActivated)
             onVoicebankActivated(voicebanks[static_cast<size_t>(activeIndex)]);
@@ -362,6 +418,7 @@ void VoicebankPanel::loadSfsModel(const juce::File& sfsFile)
         activeIndex = 0;
         listBox.selectRow(0);
         updateInfoDisplay();
+        startInfoAnimation(true);
     }
 
     listBox.repaint();
@@ -398,6 +455,7 @@ void VoicebankPanel::addVoicebank(const juce::File& directory)
         activeIndex = 0;
         listBox.selectRow(0);
         updateInfoDisplay();
+        startInfoAnimation(true);
     }
 
     listBox.repaint();
@@ -700,7 +758,88 @@ void VoicebankPanel::updateInfoDisplay()
         infoHiddenLabel.setText("", juce::dontSendNotification);
     }
 
+    displayedInfoIndex = info != nullptr ? (selected >= 0 ? selected : activeIndex) : -1;
+
+    applyInfoAnimationState();
+
     repaint(); // repaint for avatar
+}
+
+void VoicebankPanel::timerCallback()
+{
+    if (!infoAnimationActive)
+        return;
+
+    const auto elapsedMs = juce::Time::getMillisecondCounterHiRes() - infoAnimationStartTimeMs;
+    const auto t = juce::jlimit(0.0, 1.0, elapsedMs / static_cast<double>(infoAnimationDurationMs));
+    infoAnimationProgress = static_cast<float>(t * t * (3.0 - 2.0 * t));
+    applyInfoAnimationState();
+    listBox.repaint();
+    repaint();
+
+    if (t >= 1.0)
+    {
+        infoAnimationActive = false;
+        activationBurst = false;
+        infoAnimationProgress = 1.0f;
+        applyInfoAnimationState();
+        stopTimer();
+        listBox.repaint();
+        repaint();
+    }
+}
+
+void VoicebankPanel::startInfoAnimation(bool emphasizeActivation)
+{
+    if (displayedInfoIndex < 0)
+        return;
+
+    activationBurst = emphasizeActivation;
+    infoAnimationActive = true;
+    infoAnimationProgress = 0.0f;
+    infoAnimationStartTimeMs = juce::Time::getMillisecondCounterHiRes();
+    applyInfoAnimationState();
+    startTimerHz(60);
+}
+
+void VoicebankPanel::applyInfoAnimationState()
+{
+    const auto progress = infoAnimationActive ? infoAnimationProgress : 1.0f;
+    const auto baseOffset = juce::jmap(progress, 18.0f, 0.0f);
+    const auto descriptionOffset = juce::jmap(progress, 24.0f, 0.0f);
+    const auto alpha = progress;
+
+    infoNameLabel.setAlpha(alpha);
+    infoNameLabel.setTransform(juce::AffineTransform::translation(baseOffset, 0.0f));
+
+    infoDescriptionLabel.setAlpha(alpha);
+    infoDescriptionLabel.setTransform(juce::AffineTransform::translation(descriptionOffset, 0.0f));
+
+    for (auto* label : { &infoTypeLabel, &infoSpeakersLabel, &infoEncoderLabel,
+                         &infoSampleRateLabel, &infoHiddenLabel })
+    {
+        label->setAlpha(alpha);
+        label->setTransform(juce::AffineTransform::translation(baseOffset * 0.75f, 0.0f));
+    }
+
+    const auto buttonBounce = activationBurst && infoAnimationActive
+                                  ? 1.0f + 0.10f * std::sin(progress * juce::MathConstants<float>::pi)
+                                  : 1.0f;
+    activateButton.setTransform(juce::AffineTransform::scale(buttonBounce, buttonBounce,
+        static_cast<float>(activateButton.getBounds().getCentreX()),
+        static_cast<float>(activateButton.getBounds().getCentreY())));
+}
+
+int VoicebankPanel::getDisplayInfoIndex() const
+{
+    const auto selected = listBox.getSelectedRow();
+    if (selected >= 0 && selected < static_cast<int>(voicebanks.size()))
+        return selected;
+
+    if (activeIndex >= 0 && activeIndex < static_cast<int>(voicebanks.size()))
+        return activeIndex;
+
+    return -1;
 }
 
 juce::String VoicebankPanel::getModelTypeName(int typeIndex) const

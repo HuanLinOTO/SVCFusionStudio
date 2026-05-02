@@ -21,6 +21,13 @@
 namespace {
 enum class ExportFormat { wav, flac, aiff, ogg };
 
+static bool isMenuPopupActive() {
+  if (auto *modal = juce::Component::getCurrentlyModalComponent())
+    return modal->getName() == "menu";
+
+  return false;
+}
+
 struct ExportSettings {
   ExportFormat format = ExportFormat::wav;
   int sampleRate = SAMPLE_RATE;
@@ -350,6 +357,11 @@ MainComponent::MainComponent(bool enableAudioDevice)
   LOG("MainComponent: wiring up components...");
   menuHandler->setUndoManager(undoManager.get());
   menuHandler->setCommandManager(commandManager.get());
+  menuHandler->setCommandInfoProvider(
+      [this](juce::CommandID commandID, juce::ApplicationCommandInfo &info) {
+        this->getCommandInfo(commandID, info);
+        return info.shortName.isNotEmpty();
+      });
   menuHandler->setPluginMode(isPluginMode());
   recentFiles = settingsManager->getRecentFiles();
   refreshRecentFilesMenu();
@@ -817,6 +829,9 @@ void MainComponent::mouseDoubleClick(const juce::MouseEvent &e) {
 }
 
 void MainComponent::timerCallback() {
+  if (isMenuPopupActive())
+    return;
+
   // Handle throttled cursor updates (30Hz max)
   if (hasPendingCursorUpdate.load()) {
     double position = pendingCursorTime.load();

@@ -4,6 +4,7 @@
 #include "../Utils/UI/Theme.h"
 #include "../Utils/Localization.h"
 #include "../Utils/PlatformPaths.h"
+#include <cmath>
 #include <vector>
 
 /**
@@ -21,7 +22,8 @@
  */
 class VoicebankPanel : public juce::Component,
                        public juce::ListBoxModel,
-                       public juce::FileDragAndDropTarget
+                       public juce::FileDragAndDropTarget,
+                       private juce::Timer
 {
 public:
     struct VoicebankInfo
@@ -78,6 +80,10 @@ public:
     std::function<void()> onVoicebankRemoved;
 
 private:
+    void timerCallback() override;
+    void startInfoAnimation(bool emphasizeActivation);
+    void applyInfoAnimationState();
+    int getDisplayInfoIndex() const;
     void scanDirectory(const juce::File& dir, VoicebankInfo& info);
     bool parseSfsModelConfig(const juce::File& sfsFile, VoicebankInfo& info);
     void updateInfoDisplay();
@@ -108,6 +114,12 @@ private:
     juce::Rectangle<int> avatarBounds;
 
     bool isDragOver = false;
+    bool infoAnimationActive = false;
+    bool activationBurst = false;
+    float infoAnimationProgress = 1.0f;
+    double infoAnimationStartTimeMs = 0.0;
+    int infoAnimationDurationMs = 260;
+    int displayedInfoIndex = -1;
 
     std::unique_ptr<juce::FileChooser> fileChooser;
 

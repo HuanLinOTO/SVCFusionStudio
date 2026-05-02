@@ -1372,6 +1372,9 @@ SettingsOverlay::~SettingsOverlay() {
 }
 
 void SettingsOverlay::openAnimated() {
+  settingsComponent->setVisible(true);
+  closeButton.setVisible(true);
+
   if (!isVisible())
     setVisible(true);
 
@@ -1392,7 +1395,8 @@ void SettingsOverlay::paint(juce::Graphics &g) {
 
   const auto animatedBounds = getAnimatedContentBounds().getSmallestIntegerContainer();
   if (!animatedBounds.isEmpty()) {
-    juce::DropShadow shadow(APP_COLOR_OVERLAY_SHADOW, 18, {0, 10});
+    juce::DropShadow shadow(APP_COLOR_OVERLAY_SHADOW.withMultipliedAlpha(animationProgress),
+                            18, {0, 10});
     shadow.drawForRectangle(g, animatedBounds);
   }
 }
@@ -1455,10 +1459,12 @@ void SettingsOverlay::timerCallback() {
     stopTimer();
     animationProgress = animationTargetProgress;
     updateAnimatedState();
-    repaint();
 
-    if (animationTargetProgress <= 0.0f)
+    if (animationTargetProgress <= 0.0f) {
       setVisible(false);
+    } else {
+      repaint();
+    }
   }
 }
 
@@ -1475,6 +1481,9 @@ void SettingsOverlay::startAnimation(float nextTarget) {
   if (nextTarget > 0.0f && !isVisible())
     setVisible(true);
 
+  settingsComponent->setVisible(true);
+  closeButton.setVisible(true);
+
   animationStartProgress = animationProgress;
   animationTargetProgress = nextTarget;
   animationStartTimeMs = juce::Time::getMillisecondCounterHiRes();
@@ -1488,10 +1497,12 @@ void SettingsOverlay::updateAnimatedState() {
     return;
 
   const auto transform = getAnimatedTransform();
+  settingsComponent->setVisible(true);
   settingsComponent->setTransform(transform);
   settingsComponent->setAlpha(animationProgress);
   settingsComponent->setEnabled(animationProgress >= 0.999f);
 
+  closeButton.setVisible(true);
   closeButton.setTransform(transform);
   closeButton.setAlpha(animationProgress);
   closeButton.setEnabled(animationProgress >= 0.999f);
