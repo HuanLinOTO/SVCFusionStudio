@@ -12,7 +12,9 @@ void PanelContainer::paint(juce::Graphics& g)
         APP_COLOR_SURFACE_ALT, bounds.getX(), bounds.getY(),
         APP_COLOR_BACKGROUND, bounds.getX(), bounds.getBottom(), false);
     g.setGradientFill(bgGradient);
+    g.setOpacity(revealProgress);
     g.fillAll();
+    g.setOpacity(1.0f);
 }
 
 void PanelContainer::resized()
@@ -53,13 +55,24 @@ void PanelContainer::showPanel(const juce::String& panelId, bool show)
 
     if (show)
     {
+        if (activePanelId != panelId)
+        {
+            activePanelId = panelId;
+            startPanelSwitchAnimation();
+        }
+
         visiblePanels.insert(panelId);
         it->second->setVisible(true);
     }
     else
     {
         visiblePanels.erase(panelId);
-        it->second->setVisible(false);
+
+        if (activePanelId == panelId)
+            activePanelId = getFirstVisiblePanelId();
+
+        if (it->second != nullptr)
+            it->second->setVisible(false);
     }
 
     updateLayout();
@@ -76,23 +89,60 @@ DraggablePanel* PanelContainer::getPanel(const juce::String& panelId)
     return it != panels.end() ? it->second.get() : nullptr;
 }
 
+void PanelContainer::setRevealProgress(float progress)
+{
+    revealProgress = juce::jlimit(0.0f, 1.0f, progress);
+    updateLayout();
+    repaint();
+}
+
 void PanelContainer::updateLayout()
 {
     int width = getWidth();
     int height = getHeight();
 
-    // Single panel takes full size
-    for (const auto& id : panelOrder)
-    {
-        if (visiblePanels.find(id) == visiblePanels.end())
-            continue;
+    if (activePanelId.isEmpty())
+        activePanelId = getFirstVisiblePanelId();
 
-        auto* panel = panels[id].get();
+    const auto contentAlpha = revealProgress * (switchAnimationActive ? switchAnimationProgress : 1.0f);
+    const auto contentOffset = (1.0f - (switchAnimationActive ? switchAnimationProgress : 1.0f)) * 18.0f;
+
+    for (auto& entry : panels)
+    {
+        auto* panel = entry.second.get();
         if (panel == nullptr)
             continue;
 
+        const bool isActive = !activePanelId.isEmpty() && entry.first == activePanelId;
         panel->setBounds(0, 0, width, height);
-        break;
+        panel->setVisible(isActive && width > 0 && height > 0 && contentAlpha > 0.001f);
+        panel->setAlpha(isActive ? contentAlpha : 1.0f);
+        panel->setTransform(isActive
+                                ? juce::AffineTransform::translation(contentOffset, 0.0f)
+                                : juce::AffineTransform());
+        panel->setEnabled(isActive && revealProgress >= 0.999f &&
+                          (!switchAnimationActive || switchAnimationProgress >= 0.999f));
+    }
+}
+
+void PanelContainer::timerCallback()
+{
+    if (!switchAnimationActive)
+        return;
+
+    const auto elapsedMs = juce::Time::getMillisecondCounterHiRes() - switchAnimationStartTimeMs;
+    const auto t = juce::jlimit(0.0, 1.0, elapsedMs / static_cast<double>(switchAnimationDurationMs));
+    switchAnimationProgress = static_cast<float>(t * t * (3.0 - 2.0 * t));
+    updateLayout();
+    repaint();
+
+    if (t >= 1.0)
+    {
+        switchAnimationActive = false;
+        switchAnimationProgress = 1.0f;
+        stopTimer();
+        updateLayout();
+        repaint();
     }
 }
 
@@ -180,4 +230,23 @@ int PanelContainer::findPanelIndexAt(int y) const
 void PanelContainer::reorderPanels()
 {
     updateLayout();
+}
+
+juce::String PanelContainer::getFirstVisiblePanelId() const
+{
+    for (const auto& id : panelOrder)
+    {
+        if (visiblePanels.find(id) != visiblePanels.end())
+            return id;
+    }
+
+    return {};
+}
+
+void PanelContainer::startPanelSwitchAnimation()
+{
+    switchAnimationActive = true;
+    switchAnimationProgress = 0.0f;
+    switchAnimationStartTimeMs = juce::Time::getMillisecondCounterHiRes();
+    startTimerHz(60);
 }

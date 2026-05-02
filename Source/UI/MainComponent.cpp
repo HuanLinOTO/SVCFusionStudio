@@ -2150,7 +2150,7 @@ void MainComponent::showSettings() {
     settingsOverlay->setVisible(false);
     settingsOverlay->onClose = [this]() {
       if (settingsOverlay)
-        settingsOverlay->setVisible(false);
+        settingsOverlay->closeAnimated();
     };
 
     settingsOverlay->getSettingsComponent()->onSettingsChanged = [this]() {
@@ -2206,9 +2206,7 @@ void MainComponent::showSettings() {
   }
 
   settingsOverlay->setBounds(getLocalBounds());
-  settingsOverlay->setVisible(true);
-  settingsOverlay->toFront(true);
-  settingsOverlay->grabKeyboardFocus();
+  settingsOverlay->openAnimated();
 }
 
 bool MainComponent::isInterestedInFileDrag(const juce::StringArray &files) {

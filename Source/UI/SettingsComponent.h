@@ -90,6 +90,11 @@ private:
   void updateTabButtonStyles();
   void updateTabVisibility();
   bool shouldShowGpuDeviceList() const;
+  bool isTabAvailable(SettingsTab tab) const;
+  void layoutGeneralTab(juce::Rectangle<int> content);
+  void layoutAudioTab(juce::Rectangle<int> content);
+  void applyTabAnimationState();
+  void startTabTransition(SettingsTab fromTab, SettingsTab toTab);
 
   bool pluginMode = false;
   juce::AudioDeviceManager *deviceManager = nullptr;
@@ -150,12 +155,17 @@ private:
   bool showUvInterpolationDebug = false;
   bool showActualF0Debug = false;
   SettingsTab activeTab = SettingsTab::General;
+  SettingsTab previousTab = SettingsTab::General;
   juce::TextButton generalTabButton;
   juce::TextButton audioTabButton;
   juce::Rectangle<int> cardBounds;
   juce::Rectangle<int> sidebarBounds;
   juce::Array<int> separatorYs;
   float cornerRadius = 10.0f;
+  bool tabAnimationActive = false;
+  float tabAnimationProgress = 1.0f;
+  double tabAnimationStartTimeMs = 0.0;
+  int tabAnimationDurationMs = 160;
 
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(SettingsComponent)
 };
@@ -163,7 +173,7 @@ private:
 /**
  * Settings overlay panel (in-window modal).
  */
-class SettingsOverlay : public juce::Component {
+class SettingsOverlay : public juce::Component, private juce::Timer {
 public:
   SettingsOverlay(SettingsManager *settingsManager,
                   juce::AudioDeviceManager *audioDeviceManager = nullptr);
@@ -174,16 +184,29 @@ public:
   void mouseDown(const juce::MouseEvent &e) override;
   bool keyPressed(const juce::KeyPress &key) override;
 
+  void openAnimated();
+  void closeAnimated();
+
   SettingsComponent *getSettingsComponent() { return settingsComponent.get(); }
 
   std::function<void()> onClose;
 
 private:
+  void timerCallback() override;
+  void startAnimation(float nextTarget);
+  void updateAnimatedState();
+  juce::Rectangle<float> getAnimatedContentBounds() const;
+  juce::AffineTransform getAnimatedTransform() const;
   void closeIfPossible();
 
   std::unique_ptr<SettingsComponent> settingsComponent;
   juce::TextButton closeButton{"X"};
   juce::Rectangle<int> contentBounds;
+  float animationProgress = 0.0f;
+  float animationStartProgress = 0.0f;
+  float animationTargetProgress = 0.0f;
+  double animationStartTimeMs = 0.0;
+  int animationDurationMs = 170;
 
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(SettingsOverlay)
 };

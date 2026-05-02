@@ -2,6 +2,7 @@
 #include "../Utils/Constants.h"
 #include "../Utils/UI/Theme.h"
 #include "../Utils/Localization.h"
+#include <cmath>
 
 #ifdef HAVE_ONNXRUNTIME
 #include <onnxruntime_cxx_api.h>
@@ -327,7 +328,25 @@ void SettingsComponent::changeListenerCallback(
 }
 
 void SettingsComponent::timerCallback() {
-  // Disabled polling to avoid UI stalls from device enumeration on some drivers.
+  if (!tabAnimationActive)
+    return;
+
+  const auto elapsedMs =
+      juce::Time::getMillisecondCounterHiRes() - tabAnimationStartTimeMs;
+  const auto t = juce::jlimit(
+      0.0, 1.0, elapsedMs / static_cast<double>(tabAnimationDurationMs));
+  tabAnimationProgress = static_cast<float>(t * t * (3.0 - 2.0 * t));
+  applyTabAnimationState();
+  repaint();
+
+  if (t >= 1.0) {
+    tabAnimationActive = false;
+    tabAnimationProgress = 1.0f;
+    previousTab = activeTab;
+    applyTabAnimationState();
+    repaint();
+    stopTimer();
+  }
 }
 
 void SettingsComponent::paint(juce::Graphics &g) {
@@ -398,6 +417,35 @@ void SettingsComponent::resized() {
   const int labelWidth = 150;
   const int controlWidth = 190;
 
+  auto setupRowMetrics = [&](juce::Rectangle<int> area) {
+    auto localContent = area;
+    return std::tuple<juce::Rectangle<int>, int, int, int, int>(
+        localContent, rowHeight, rowGap, labelWidth, controlWidth);
+  };
+
+  juce::ignoreUnused(setupRowMetrics);
+
+  layoutGeneralTab(content);
+
+  if (isTabAvailable(SettingsTab::Audio))
+    layoutAudioTab(content);
+
+  const auto separatorY = activeTab == SettingsTab::Audio &&
+                                  isTabAvailable(SettingsTab::Audio)
+                              ? audioSectionLabel.getBottom() + 6
+                              : generalSectionLabel.getBottom() + 6;
+  if (separatorY > 0)
+    separatorYs.add(separatorY);
+
+  applyTabAnimationState();
+}
+
+void SettingsComponent::layoutGeneralTab(juce::Rectangle<int> content) {
+  const int rowHeight = 32;
+  const int rowGap = 8;
+  const int labelWidth = 150;
+  const int controlWidth = 190;
+
   auto layoutRow = [&](juce::Label &label, juce::Component &control) {
     auto row = content.removeFromTop(rowHeight);
     auto labelArea = row.removeFromLeft(labelWidth);
@@ -407,40 +455,47 @@ void SettingsComponent::resized() {
     content.removeFromTop(rowGap);
   };
 
-  if (activeTab == SettingsTab::General) {
-    generalSectionLabel.setBounds(content.removeFromTop(20));
-    separatorYs.add(generalSectionLabel.getBottom() + 6);
-    content.removeFromTop(10);
+  generalSectionLabel.setBounds(content.removeFromTop(20));
+  content.removeFromTop(10);
 
-    layoutRow(languageLabel, languageComboBox);
-    layoutRow(deviceLabel, deviceComboBox);
+  layoutRow(languageLabel, languageComboBox);
+  layoutRow(deviceLabel, deviceComboBox);
 
-    if (gpuDeviceLabel.isVisible()) {
-      layoutRow(gpuDeviceLabel, gpuDeviceComboBox);
-    }
+  if (shouldShowGpuDeviceList())
+    layoutRow(gpuDeviceLabel, gpuDeviceComboBox);
 
-    layoutRow(pitchDetectorLabel, pitchDetectorComboBox);
-    layoutRow(someSegmentsDebugLabel, someSegmentsDebugToggle);
-    layoutRow(someValuesDebugLabel, someValuesDebugToggle);
-    layoutRow(uvInterpolationDebugLabel, uvInterpolationDebugToggle);
-    layoutRow(actualF0DebugLabel, actualF0DebugToggle);
+  layoutRow(pitchDetectorLabel, pitchDetectorComboBox);
+  layoutRow(someSegmentsDebugLabel, someSegmentsDebugToggle);
+  layoutRow(someValuesDebugLabel, someValuesDebugToggle);
+  layoutRow(uvInterpolationDebugLabel, uvInterpolationDebugToggle);
+  layoutRow(actualF0DebugLabel, actualF0DebugToggle);
 
-    infoLabel.setBounds(content.removeFromTop(56));
-    content.removeFromTop(12);
-  }
+  infoLabel.setBounds(content.removeFromTop(56));
+}
 
-  if (!pluginMode && deviceManager != nullptr &&
-      activeTab == SettingsTab::Audio) {
-    audioSectionLabel.setBounds(content.removeFromTop(20));
-    separatorYs.add(audioSectionLabel.getBottom() + 6);
-    content.removeFromTop(10);
+void SettingsComponent::layoutAudioTab(juce::Rectangle<int> content) {
+  const int rowHeight = 32;
+  const int rowGap = 8;
+  const int labelWidth = 150;
+  const int controlWidth = 190;
 
-    layoutRow(audioDeviceTypeLabel, audioDeviceTypeComboBox);
-    layoutRow(audioOutputLabel, audioOutputComboBox);
-    layoutRow(sampleRateLabel, sampleRateComboBox);
-    layoutRow(bufferSizeLabel, bufferSizeComboBox);
-    layoutRow(outputChannelsLabel, outputChannelsComboBox);
-  }
+  auto layoutRow = [&](juce::Label &label, juce::Component &control) {
+    auto row = content.removeFromTop(rowHeight);
+    auto labelArea = row.removeFromLeft(labelWidth);
+    auto controlArea = row.removeFromRight(controlWidth);
+    label.setBounds(labelArea);
+    control.setBounds(controlArea.reduced(0, 2));
+    content.removeFromTop(rowGap);
+  };
+
+  audioSectionLabel.setBounds(content.removeFromTop(20));
+  content.removeFromTop(10);
+
+  layoutRow(audioDeviceTypeLabel, audioDeviceTypeComboBox);
+  layoutRow(audioOutputLabel, audioOutputComboBox);
+  layoutRow(sampleRateLabel, sampleRateComboBox);
+  layoutRow(bufferSizeLabel, bufferSizeComboBox);
+  layoutRow(outputChannelsLabel, outputChannelsComboBox);
 }
 
 void SettingsComponent::comboBoxChanged(juce::ComboBox *comboBox) {
@@ -566,16 +621,28 @@ bool SettingsComponent::shouldShowGpuDeviceList() const {
   return currentDevice == "CUDA" || currentDevice == "DirectML";
 }
 
+bool SettingsComponent::isTabAvailable(SettingsTab tab) const {
+  if (tab == SettingsTab::Audio)
+    return !pluginMode && deviceManager != nullptr;
+
+  return true;
+}
+
 void SettingsComponent::setActiveTab(SettingsTab tab) {
+  if (!isTabAvailable(tab))
+    tab = SettingsTab::General;
+
   if (activeTab == tab)
     return;
 
+  const auto fromTab = activeTab;
   activeTab = tab;
 
-  if (activeTab == SettingsTab::Audio && !pluginMode && deviceManager != nullptr)
+  if (activeTab == SettingsTab::Audio && isTabAvailable(SettingsTab::Audio))
     updateAudioOutputDevices(true);
 
   updateTabButtonStyles();
+  startTabTransition(fromTab, activeTab);
   updateTabVisibility();
   resized();
   repaint();
@@ -601,47 +668,106 @@ void SettingsComponent::updateTabButtonStyles() {
 }
 
 void SettingsComponent::updateTabVisibility() {
-  const bool showGeneral = (activeTab == SettingsTab::General);
-  const bool showAudio =
-      (!pluginMode && deviceManager != nullptr &&
-       activeTab == SettingsTab::Audio);
-  const bool showGpuDeviceList = shouldShowGpuDeviceList();
+  if (!isTabAvailable(SettingsTab::Audio) && activeTab == SettingsTab::Audio) {
+    activeTab = SettingsTab::General;
+    previousTab = SettingsTab::General;
+    tabAnimationActive = false;
+    tabAnimationProgress = 1.0f;
+  }
 
-  generalSectionLabel.setVisible(showGeneral);
-  languageLabel.setVisible(showGeneral);
-  languageComboBox.setVisible(showGeneral);
-  deviceLabel.setVisible(showGeneral);
-  deviceComboBox.setVisible(showGeneral);
-  gpuDeviceLabel.setVisible(showGeneral && showGpuDeviceList);
-  gpuDeviceComboBox.setVisible(showGeneral && showGpuDeviceList);
-  pitchDetectorLabel.setVisible(showGeneral);
-  pitchDetectorComboBox.setVisible(showGeneral);
-  someSegmentsDebugLabel.setVisible(showGeneral);
-  someSegmentsDebugToggle.setVisible(showGeneral);
-  someValuesDebugLabel.setVisible(showGeneral);
-  someValuesDebugToggle.setVisible(showGeneral);
-  uvInterpolationDebugLabel.setVisible(showGeneral);
-  uvInterpolationDebugToggle.setVisible(showGeneral);
-  actualF0DebugLabel.setVisible(showGeneral);
-  actualF0DebugToggle.setVisible(showGeneral);
-  infoLabel.setVisible(showGeneral);
+  audioTabButton.setVisible(isTabAvailable(SettingsTab::Audio));
+  applyTabAnimationState();
+}
 
-  audioSectionLabel.setVisible(showAudio);
-  audioDeviceTypeLabel.setVisible(showAudio);
-  audioDeviceTypeComboBox.setVisible(showAudio);
-  audioOutputLabel.setVisible(showAudio);
-  audioOutputComboBox.setVisible(showAudio);
-  sampleRateLabel.setVisible(showAudio);
-  sampleRateComboBox.setVisible(showAudio);
-  bufferSizeLabel.setVisible(showAudio);
-  bufferSizeComboBox.setVisible(showAudio);
-  outputChannelsLabel.setVisible(showAudio);
-  outputChannelsComboBox.setVisible(showAudio);
+void SettingsComponent::applyTabAnimationState() {
+  const auto progressFor = [this](SettingsTab tab) {
+    if (!isTabAvailable(tab))
+      return 0.0f;
 
-  audioTabButton.setVisible(!pluginMode && deviceManager != nullptr);
+    if (!tabAnimationActive)
+      return activeTab == tab ? 1.0f : 0.0f;
 
-  if (pluginMode || deviceManager == nullptr)
-    setActiveTab(SettingsTab::General);
+    if (tab == activeTab)
+      return tabAnimationProgress;
+
+    if (tab == previousTab)
+      return 1.0f - tabAnimationProgress;
+
+    return 0.0f;
+  };
+
+  const auto offsetFor = [this](SettingsTab tab) {
+    if (!tabAnimationActive)
+      return 0.0f;
+
+    constexpr float kOffsetPx = 22.0f;
+    if (tab == activeTab)
+      return (1.0f - tabAnimationProgress) * kOffsetPx;
+
+    if (tab == previousTab)
+      return -tabAnimationProgress * kOffsetPx;
+
+    return 0.0f;
+  };
+
+  const auto applyState = [](std::initializer_list<juce::Component *> components,
+                             float alpha, float offsetX, bool enabled) {
+    const bool visible = alpha > 0.001f;
+    const auto transform = juce::AffineTransform::translation(offsetX, 0.0f);
+
+    for (auto *component : components) {
+      if (component == nullptr)
+        continue;
+
+      component->setVisible(visible);
+      component->setAlpha(alpha);
+      component->setTransform(transform);
+      component->setEnabled(enabled);
+    }
+  };
+
+  const auto generalAlpha = progressFor(SettingsTab::General);
+  const auto audioAlpha = progressFor(SettingsTab::Audio);
+  const auto generalEnabled = !tabAnimationActive && activeTab == SettingsTab::General;
+  const auto audioEnabled = !tabAnimationActive && activeTab == SettingsTab::Audio;
+  const auto showGpu = shouldShowGpuDeviceList();
+
+  applyState({&generalSectionLabel, &languageLabel, &languageComboBox,
+              &deviceLabel, &deviceComboBox, &gpuDeviceLabel,
+              &gpuDeviceComboBox, &pitchDetectorLabel, &pitchDetectorComboBox,
+              &someSegmentsDebugLabel, &someSegmentsDebugToggle,
+              &someValuesDebugLabel, &someValuesDebugToggle,
+              &uvInterpolationDebugLabel, &uvInterpolationDebugToggle,
+              &actualF0DebugLabel, &actualF0DebugToggle, &infoLabel},
+             generalAlpha, offsetFor(SettingsTab::General), generalEnabled);
+
+  if (!showGpu) {
+    gpuDeviceLabel.setVisible(false);
+    gpuDeviceComboBox.setVisible(false);
+  }
+
+  applyState({&audioSectionLabel, &audioDeviceTypeLabel,
+              &audioDeviceTypeComboBox, &audioOutputLabel,
+              &audioOutputComboBox, &sampleRateLabel, &sampleRateComboBox,
+              &bufferSizeLabel, &bufferSizeComboBox, &outputChannelsLabel,
+              &outputChannelsComboBox},
+             audioAlpha, offsetFor(SettingsTab::Audio), audioEnabled);
+}
+
+void SettingsComponent::startTabTransition(SettingsTab fromTab, SettingsTab toTab) {
+  if (fromTab == toTab || !isTabAvailable(fromTab) || !isTabAvailable(toTab)) {
+    tabAnimationActive = false;
+    tabAnimationProgress = 1.0f;
+    previousTab = toTab;
+    stopTimer();
+    return;
+  }
+
+  previousTab = fromTab;
+  tabAnimationActive = true;
+  tabAnimationProgress = 0.0f;
+  tabAnimationStartTimeMs = juce::Time::getMillisecondCounterHiRes();
+  startTimerHz(60);
 }
 
 void SettingsComponent::updateDeviceList() {
@@ -1240,14 +1366,34 @@ SettingsOverlay::SettingsOverlay(SettingsManager *settingsManager,
   addAndMakeVisible(closeButton);
 }
 
-SettingsOverlay::~SettingsOverlay() { closeButton.setLookAndFeel(nullptr); }
+SettingsOverlay::~SettingsOverlay() {
+  stopTimer();
+  closeButton.setLookAndFeel(nullptr);
+}
+
+void SettingsOverlay::openAnimated() {
+  if (!isVisible())
+    setVisible(true);
+
+  toFront(true);
+  grabKeyboardFocus();
+  startAnimation(1.0f);
+}
+
+void SettingsOverlay::closeAnimated() {
+  if (!isVisible() && animationProgress <= 0.0f)
+    return;
+
+  startAnimation(0.0f);
+}
 
 void SettingsOverlay::paint(juce::Graphics &g) {
-  g.fillAll(APP_COLOR_OVERLAY_DIM);
+  g.fillAll(APP_COLOR_OVERLAY_DIM.withMultipliedAlpha(animationProgress));
 
-  if (!contentBounds.isEmpty()) {
+  const auto animatedBounds = getAnimatedContentBounds().getSmallestIntegerContainer();
+  if (!animatedBounds.isEmpty()) {
     juce::DropShadow shadow(APP_COLOR_OVERLAY_SHADOW, 18, {0, 10});
-    shadow.drawForRectangle(g, contentBounds);
+    shadow.drawForRectangle(g, animatedBounds);
   }
 }
 
@@ -1268,11 +1414,14 @@ void SettingsOverlay::resized() {
     const int buttonSize = 24;
     closeButton.setBounds(contentBounds.getRight() - buttonSize - 10,
                           contentBounds.getY() + 8, buttonSize, buttonSize);
+
+    updateAnimatedState();
   }
 }
 
 void SettingsOverlay::mouseDown(const juce::MouseEvent &e) {
-  if (!contentBounds.contains(e.getPosition()))
+  if (!getAnimatedContentBounds().getSmallestIntegerContainer().contains(
+          e.getPosition()))
     closeIfPossible();
 }
 
@@ -1285,8 +1434,93 @@ bool SettingsOverlay::keyPressed(const juce::KeyPress &key) {
 }
 
 void SettingsOverlay::closeIfPossible() {
-  if (onClose)
+  if (onClose) {
     onClose();
+    return;
+  }
+
+  closeAnimated();
+}
+
+void SettingsOverlay::timerCallback() {
+  const auto elapsedMs = juce::Time::getMillisecondCounterHiRes() - animationStartTimeMs;
+  const auto t = juce::jlimit(0.0, 1.0, elapsedMs / static_cast<double>(animationDurationMs));
+  const auto eased = static_cast<float>(t * t * (3.0 - 2.0 * t));
+
+  animationProgress = juce::jmap(eased, animationStartProgress, animationTargetProgress);
+  updateAnimatedState();
+  repaint();
+
+  if (t >= 1.0) {
+    stopTimer();
+    animationProgress = animationTargetProgress;
+    updateAnimatedState();
+    repaint();
+
+    if (animationTargetProgress <= 0.0f)
+      setVisible(false);
+  }
+}
+
+void SettingsOverlay::startAnimation(float nextTarget) {
+  if (std::abs(animationProgress - nextTarget) <= 0.001f &&
+      std::abs(animationTargetProgress - nextTarget) <= 0.001f) {
+    if (nextTarget <= 0.0f)
+      setVisible(false);
+    else
+      updateAnimatedState();
+    return;
+  }
+
+  if (nextTarget > 0.0f && !isVisible())
+    setVisible(true);
+
+  animationStartProgress = animationProgress;
+  animationTargetProgress = nextTarget;
+  animationStartTimeMs = juce::Time::getMillisecondCounterHiRes();
+  startTimerHz(60);
+  updateAnimatedState();
+  repaint();
+}
+
+void SettingsOverlay::updateAnimatedState() {
+  if (settingsComponent == nullptr || contentBounds.isEmpty())
+    return;
+
+  const auto transform = getAnimatedTransform();
+  settingsComponent->setTransform(transform);
+  settingsComponent->setAlpha(animationProgress);
+  settingsComponent->setEnabled(animationProgress >= 0.999f);
+
+  closeButton.setTransform(transform);
+  closeButton.setAlpha(animationProgress);
+  closeButton.setEnabled(animationProgress >= 0.999f);
+}
+
+juce::Rectangle<float> SettingsOverlay::getAnimatedContentBounds() const {
+  auto animatedBounds = contentBounds.toFloat();
+  const auto scale = juce::jmap(animationProgress, 0.0f, 1.0f, 0.97f, 1.0f);
+  const auto translateY = juce::jmap(animationProgress, 0.0f, 1.0f, 14.0f, 0.0f);
+  const auto reducedWidth = animatedBounds.getWidth() * (1.0f - scale);
+  const auto reducedHeight = animatedBounds.getHeight() * (1.0f - scale);
+
+  animatedBounds = animatedBounds.reduced(reducedWidth * 0.5f, reducedHeight * 0.5f);
+  animatedBounds.translate(0.0f, translateY);
+  return animatedBounds;
+}
+
+juce::AffineTransform SettingsOverlay::getAnimatedTransform() const {
+  if (contentBounds.isEmpty())
+    return {};
+
+  const auto scale = juce::jmap(animationProgress, 0.0f, 1.0f, 0.97f, 1.0f);
+  const auto translateY = juce::jmap(animationProgress, 0.0f, 1.0f, 14.0f, 0.0f);
+  const auto centreX = static_cast<float>(contentBounds.getCentreX());
+  const auto centreY = static_cast<float>(contentBounds.getCentreY());
+
+  return juce::AffineTransform::translation(-centreX, -centreY)
+      .scaled(scale, scale)
+      .translated(centreX, centreY + translateY);
 }
 
 //==============================================================================
