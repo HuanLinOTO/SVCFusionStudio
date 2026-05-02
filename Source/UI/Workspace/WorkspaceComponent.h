@@ -46,7 +46,7 @@ private:
     float panelAnimationStartProgress = 0.0f;
     float panelAnimationTargetProgress = 0.0f;
     double panelAnimationStartTimeMs = 0.0;
-    int panelAnimationDurationMs = 170;
+    int panelAnimationDurationMs = 210;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(WorkspaceComponent)
 };

@@ -1,5 +1,19 @@
 #include "WorkspaceComponent.h"
 
+namespace {
+float easeOutCubic(float t)
+{
+    const auto inv = 1.0f - juce::jlimit(0.0f, 1.0f, t);
+    return 1.0f - inv * inv * inv;
+}
+
+float easeInCubic(float t)
+{
+    t = juce::jlimit(0.0f, 1.0f, t);
+    return t * t * t;
+}
+}
+
 WorkspaceComponent::WorkspaceComponent()
 {
     setOpaque(true);
@@ -42,22 +56,19 @@ void WorkspaceComponent::resized()
     // No sidebar; main content starts after outer margin
 
     const auto clampedProgress = juce::jlimit(0.0f, 1.0f, panelAnimationProgress);
-    const auto animatedPanelWidth = static_cast<int>(std::round(panelContainerWidth * clampedProgress));
-    const auto animatedGap = static_cast<int>(std::round(margin * clampedProgress));
+    const auto reservedWidth = static_cast<int>(std::round((panelContainerWidth + margin) * clampedProgress));
+    const auto panelBounds = bounds.withLeft(juce::jmax(bounds.getX(), bounds.getRight() - panelContainerWidth));
 
-    if (animatedPanelWidth > 0)
-    {
-        // Panel on right, consistent margin between sidebar and panel
-        auto panelBounds = bounds.removeFromRight(animatedPanelWidth);
-        bounds.removeFromRight(animatedGap); // Gap between piano roll and panel
-        panelContainer.setBounds(panelBounds);
-    }
-    else
-    {
-        panelContainer.setBounds({});
-    }
+    if (reservedWidth > 0)
+        bounds.removeFromRight(reservedWidth);
 
-    // Main content card
+    panelContainer.setBounds(panelBounds);
+
+    const auto slideOffset = static_cast<float>(panelContainerWidth + margin) * (1.0f - clampedProgress);
+    panelContainer.setTransform(juce::AffineTransform::translation(slideOffset, 0.0f));
+    panelContainer.setAlpha(juce::jmap(clampedProgress, 0.86f, 1.0f));
+
+    // Main content remains stable while the side panel overlays its right edge.
     mainCard.setBounds(bounds);
 }
 
@@ -129,8 +140,12 @@ void WorkspaceComponent::updatePanelContainerVisibility()
 void WorkspaceComponent::timerCallback()
 {
     const auto elapsedMs = juce::Time::getMillisecondCounterHiRes() - panelAnimationStartTimeMs;
-    const auto t = juce::jlimit(0.0, 1.0, elapsedMs / static_cast<double>(panelAnimationDurationMs));
-    const auto eased = static_cast<float>(t * t * (3.0 - 2.0 * t));
+    const auto duration = panelAnimationDurationMs > 0 ? panelAnimationDurationMs : 1;
+    const auto t = juce::jlimit(0.0, 1.0, elapsedMs / static_cast<double>(duration));
+    const auto tFloat = static_cast<float>(t);
+    const auto eased = panelAnimationTargetProgress >= panelAnimationStartProgress
+                           ? easeOutCubic(tFloat)
+                           : easeInCubic(tFloat);
 
     panelAnimationProgress = juce::jmap(eased, panelAnimationStartProgress, panelAnimationTargetProgress);
     panelContainer.setRevealProgress(panelAnimationProgress);
@@ -162,10 +177,14 @@ void WorkspaceComponent::startPanelAnimation(float nextTarget)
     }
 
     if (nextTarget > 0.0f)
+    {
         panelContainer.setVisible(true);
+        panelContainer.toFront(false);
+    }
 
     panelAnimationStartProgress = panelAnimationProgress;
     panelAnimationTargetProgress = nextTarget;
+    panelAnimationDurationMs = nextTarget > panelAnimationProgress ? 210 : 160;
     panelAnimationStartTimeMs = juce::Time::getMillisecondCounterHiRes();
     startTimerHz(60);
 }

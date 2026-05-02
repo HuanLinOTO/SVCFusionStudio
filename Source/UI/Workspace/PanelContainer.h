@@ -53,7 +53,7 @@ private:
     bool switchAnimationActive = false;
     float switchAnimationProgress = 1.0f;
     double switchAnimationStartTimeMs = 0.0;
-    int switchAnimationDurationMs = 150;
+    int switchAnimationDurationMs = 130;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PanelContainer)
 };
