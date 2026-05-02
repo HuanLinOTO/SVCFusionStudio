@@ -9,6 +9,7 @@
 #include "CustomMenuBarLookAndFeel.h"
 #include "CustomTitleBar.h"
 #include "Commands.h"
+#include "AppMenuBarComponent.h"
 #include "Main/MenuHandler.h"
 #include "Main/SettingsManager.h"
 #include "ParameterPanel.h"
@@ -175,7 +176,7 @@ private:
   const bool enableAudioDeviceFlag;
 
   CustomMenuBarLookAndFeel menuBarLookAndFeel;
-  juce::MenuBarComponent menuBar;
+  AppMenuBarComponent menuBar;
   ToolbarComponent toolbar;
   WorkspaceComponent workspace;
   PianoRollComponent pianoRoll;

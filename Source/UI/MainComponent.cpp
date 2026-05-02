@@ -400,11 +400,13 @@ MainComponent::MainComponent(bool enableAudioDevice)
     juce::MenuBarModel::setMacMainMenu(menuHandler.get());
 #else
   menuBar.setModel(menuHandler.get());
-  menuBar.setLookAndFeel(&menuBarLookAndFeel);
   addAndMakeVisible(menuBar);
 #endif
   addAndMakeVisible(toolbar);
   addAndMakeVisible(workspace);
+#if !JUCE_MAC
+  menuBar.toFront(false);
+#endif
 
   // Setup workspace with stacked piano roll + overview cards
   workspace.setMainContent(&pianoRollView);
@@ -769,7 +771,6 @@ MainComponent::~MainComponent() {
   juce::MenuBarModel::setMacMainMenu(nullptr);
 #else
   menuBar.setModel(nullptr);
-  menuBar.setLookAndFeel(nullptr);
 #endif
   removeKeyListener(commandManager->getKeyMappings());
   stopTimer();
@@ -799,8 +800,10 @@ void MainComponent::resized() {
   auto bounds = getLocalBounds();
 
 #if !JUCE_MAC
-  // Menu bar at top for non-mac platforms
-  menuBar.setBounds(bounds.removeFromTop(24));
+  // The custom menu layer spans the window so its in-component popup is not
+  // clipped. Its hitTest lets normal clicks pass through when the menu is shut.
+  menuBar.setBounds(getLocalBounds());
+  bounds.removeFromTop(24);
 #endif
 
   // Toolbar

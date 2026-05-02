@@ -1,5 +1,33 @@
 #include "MenuHandler.h"
 
+namespace {
+juce::String normaliseShortcutText(juce::String text) {
+    text = text.replace(" + ", "+").replace(" +", "+").replace("+ ", "+");
+    juce::StringArray parts;
+    parts.addTokens(text, "+", "");
+
+    for (auto& part : parts) {
+        part = part.trim();
+        if (part.equalsIgnoreCase("ctrl") || part.equalsIgnoreCase("control"))
+            part = "Ctrl";
+        else if (part.equalsIgnoreCase("cmd") || part.equalsIgnoreCase("command"))
+            part = "Cmd";
+        else if (part.equalsIgnoreCase("shift"))
+            part = "Shift";
+        else if (part.equalsIgnoreCase("alt") || part.equalsIgnoreCase("option"))
+            part = "Alt";
+        else if (part.equalsIgnoreCase("escape"))
+            part = "Esc";
+        else if (part.equalsIgnoreCase("return"))
+            part = "Enter";
+        else if (part.length() == 1)
+            part = part.toUpperCase();
+    }
+
+    return parts.joinIntoString("+");
+}
+}
+
 MenuHandler::MenuHandler() = default;
 
 juce::StringArray MenuHandler::getMenuBarNames() {
@@ -39,7 +67,8 @@ void MenuHandler::addCommandMenuItem(juce::PopupMenu& menu, juce::CommandID comm
     item.setTicked((info.flags & juce::ApplicationCommandInfo::isTicked) != 0);
 
     if (commandManager != nullptr && !info.defaultKeypresses.isEmpty())
-        item.shortcutKeyDescription = info.defaultKeypresses.getFirst().getTextDescription();
+        item.shortcutKeyDescription =
+            normaliseShortcutText(info.defaultKeypresses.getFirst().getTextDescription());
 
     menu.addItem(std::move(item));
 }
