@@ -1656,7 +1656,7 @@ void MainComponent::exportFile() {
               juce::AudioFormatManager formatManager;
               formatManager.registerBasicFormats();
               auto *format = findFormatForExtension(
-                  formatManager, getFormatExtension(settings.format));
+                  formatManager, juce::String(".") + getFormatExtension(settings.format));
               if (!format) {
                 error = "No exporter is available for format: " +
                         getFormatDisplayName(settings.format);

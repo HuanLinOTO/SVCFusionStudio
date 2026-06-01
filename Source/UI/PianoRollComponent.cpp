@@ -1649,21 +1649,16 @@ void PianoRollComponent::mouseDown(const juce::MouseEvent &e) {
   }
 
   if (editMode == EditMode::Draw) {
-    // Start drawing
-    isDrawing = true;
+    isDrawing = false;
+    isPendingDraw = true;
     drawingEdits.clear();
     drawingEditIndexByFrame.clear();
     drawCurves.clear();
     activeDrawCurve = nullptr;
     lastDrawFrame = -1;
     lastDrawValueCents = 0;
-
-    applyPitchDrawing(adjustedX, adjustedY);
-
-    if (onPitchEdited)
-      onPitchEdited();
-
-    repaint();
+    pendingDrawStartX = adjustedX;
+    pendingDrawStartY = adjustedY;
     return;
   }
 
@@ -1968,6 +1963,15 @@ void PianoRollComponent::mouseDrag(const juce::MouseEvent &e) {
     return;
   }
 
+  if (editMode == EditMode::Draw && isPendingDraw) {
+    isPendingDraw = false;
+    isDrawing = true;
+    applyPitchDrawing(pendingDrawStartX, pendingDrawStartY);
+
+    if (onPitchEdited)
+      onPitchEdited();
+  }
+
   if (editMode == EditMode::Draw && isDrawing) {
     applyPitchDrawing(adjustedX, adjustedY);
 
@@ -2129,6 +2133,18 @@ void PianoRollComponent::mouseUp(const juce::MouseEvent &e) {
       if (onLoopRangeChanged)
         onLoopRangeChanged(project->getLoopRange());
     }
+    repaint();
+    return;
+  }
+
+  if (editMode == EditMode::Draw && isPendingDraw) {
+    isPendingDraw = false;
+    drawingEdits.clear();
+    drawingEditIndexByFrame.clear();
+    lastDrawFrame = -1;
+    lastDrawValueCents = 0;
+    activeDrawCurve = nullptr;
+    drawCurves.clear();
     repaint();
     return;
   }
@@ -2580,9 +2596,7 @@ void PianoRollComponent::mouseWheelMove(const juce::MouseEvent &e,
   if (!e.mods.isCommandDown() && !e.mods.isCtrlDown()) {
     // Over piano keys: vertical zoom
     if (isOverPianoKeys) {
-      // Calculate MIDI note at mouse position before zoom
       float mouseY = e.y - headerHeight;
-      float midiAtMouse = (mouseY + scrollY) / pixelsPerSemitone;
 
       float zoomFactor = 1.0f + wheel.deltaY * 0.3f;
       if (zoomFactor < 1.0f)
@@ -2593,17 +2607,7 @@ void PianoRollComponent::mouseWheelMove(const juce::MouseEvent &e,
       }
       float newPps = pixelsPerSemitone * zoomFactor;
       newPps = juce::jlimit(minPps, MAX_PIXELS_PER_SEMITONE, newPps);
-      pixelsPerSemitone = newPps;
-      coordMapper->setPixelsPerSemitone(newPps);
-
-      // Adjust scroll position to keep MIDI note at mouse position fixed
-      double newScrollY = midiAtMouse * pixelsPerSemitone - mouseY;
-      newScrollY = std::max(0.0, newScrollY);
-      scrollY = newScrollY;
-      coordMapper->setScrollY(newScrollY);
-
-      updateScrollBars();
-      repaint();
+      setPixelsPerSemitone(newPps, mouseY);
       return;
     }
 
@@ -2662,8 +2666,6 @@ void PianoRollComponent::mouseWheelMove(const juce::MouseEvent &e,
     if (e.mods.isShiftDown()) {
       // Vertical zoom - center on mouse position
       float mouseY = static_cast<float>(e.y - headerHeight);
-      float midiAtMouse = yToMidi(mouseY + static_cast<float>(scrollY));
-
       float newPps = pixelsPerSemitone * zoomFactor;
       if (zoomFactor < 1.0f)
       {
@@ -2672,16 +2674,7 @@ void PianoRollComponent::mouseWheelMove(const juce::MouseEvent &e,
         newPps = pixelsPerSemitone * (1.0f + (zoomFactor - 1.0f) * t);
       }
       newPps = juce::jlimit(minPps, MAX_PIXELS_PER_SEMITONE, newPps);
-
-      // Adjust scroll to keep mouse position stable
-      float newMouseY = midiToY(midiAtMouse);
-      scrollY = std::max(0.0, static_cast<double>(newMouseY - mouseY));
-      coordMapper->setScrollY(scrollY);
-
-      pixelsPerSemitone = newPps;
-      coordMapper->setPixelsPerSemitone(newPps);
-      updateScrollBars();
-      repaint();
+      setPixelsPerSemitone(newPps, mouseY);
     } else {
       // Horizontal zoom - center on mouse position
       float mouseX = static_cast<float>(e.x - pianoKeysWidth);
@@ -2824,6 +2817,9 @@ void PianoRollComponent::setCursorTime(double time) {
 
   // Repaint NEW cursor position
   repaint(getCursorRect(cursorTime));
+
+  if (onCursorMoved)
+    onCursorMoved();
 }
 
 void PianoRollComponent::setPixelsPerSecond(float pps, bool centerOnCursor) {
@@ -2862,7 +2858,8 @@ void PianoRollComponent::setPixelsPerSecond(float pps, bool centerOnCursor) {
   // The caller is responsible for synchronizing other components
 }
 
-void PianoRollComponent::setPixelsPerSemitone(float pps) {
+void PianoRollComponent::setPixelsPerSemitone(float pps, float anchorContentY) {
+  const float oldPps = pixelsPerSemitone;
   const int visibleHeight = getVisibleContentHeight();
   const float minPpsForFill =
       visibleHeight > 0
@@ -2870,9 +2867,32 @@ void PianoRollComponent::setPixelsPerSemitone(float pps) {
           : MIN_PIXELS_PER_SEMITONE;
   const float minPps = std::max(MIN_PIXELS_PER_SEMITONE, minPpsForFill);
 
-  pixelsPerSemitone =
-      juce::jlimit(minPps, MAX_PIXELS_PER_SEMITONE, pps);
+  const float newPps = juce::jlimit(minPps, MAX_PIXELS_PER_SEMITONE, pps);
+  if (std::abs(oldPps - newPps) < 0.01f)
+    return;
+
+  float effectiveAnchorY = anchorContentY;
+  if (effectiveAnchorY < 0.0f)
+    effectiveAnchorY = static_cast<float>(visibleHeight) * 0.5f;
+  effectiveAnchorY = juce::jlimit(0.0f, static_cast<float>(visibleHeight),
+                                  effectiveAnchorY);
+
+  const float midiAtAnchor =
+      MAX_MIDI_NOTE -
+      (effectiveAnchorY + static_cast<float>(scrollY)) / oldPps;
+
+  pixelsPerSemitone = newPps;
   coordMapper->setPixelsPerSemitone(pixelsPerSemitone);
+
+  const double totalHeight =
+      (MAX_MIDI_NOTE - MIN_MIDI_NOTE + 1) * pixelsPerSemitone;
+  const double maxScrollY =
+      std::max(0.0, totalHeight - static_cast<double>(visibleHeight));
+  const double anchoredScrollY =
+      (MAX_MIDI_NOTE - midiAtAnchor) * pixelsPerSemitone - effectiveAnchorY;
+  scrollY = juce::jlimit(0.0, maxScrollY, anchoredScrollY);
+  coordMapper->setScrollY(scrollY);
+
   updateScrollBars();
   repaint();
 }
@@ -4173,6 +4193,18 @@ void PianoRollComponent::commitPitchDrawing() {
 }
 
 void PianoRollComponent::cancelDrawing() {
+  if (isPendingDraw) {
+    isPendingDraw = false;
+    drawingEdits.clear();
+    drawingEditIndexByFrame.clear();
+    lastDrawFrame = -1;
+    lastDrawValueCents = 0;
+    activeDrawCurve = nullptr;
+    drawCurves.clear();
+    repaint();
+    return;
+  }
+
   if (!isDrawing)
     return;
 
@@ -4194,6 +4226,7 @@ void PianoRollComponent::cancelDrawing() {
 
   // Clear drawing state
   isDrawing = false;
+  isPendingDraw = false;
   drawingEdits.clear();
   drawingEditIndexByFrame.clear();
   lastDrawFrame = -1;

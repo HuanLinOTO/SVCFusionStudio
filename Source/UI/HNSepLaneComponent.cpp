@@ -88,14 +88,50 @@ private:
 } // namespace
 
 HNSepLaneComponent::HNSepLaneComponent()
-    : lanes{LaneInfo{LaneType::Voicing, "Voicing", juce::Colour(0xff6ed3cf),
-                     0.0f, 200.0f, HNSepCurveProcessor::kDefaultVoicing},
-            LaneInfo{LaneType::Breath, "Breath", juce::Colour(0xfff2b370),
-                     0.0f, 200.0f, HNSepCurveProcessor::kDefaultBreath},
-            LaneInfo{LaneType::Tension, "Tension", juce::Colour(0xfff06f5a),
-                     -100.0f, 100.0f, HNSepCurveProcessor::kDefaultTension}} {
+    : lanes{LaneInfo{LaneType::Voicing, TR("hnsep.lane.voicing"), juce::Colour(0xff6ed3cf),
+                      0.0f, 200.0f, HNSepCurveProcessor::kDefaultVoicing},
+            LaneInfo{LaneType::Breath, TR("hnsep.lane.breath"), juce::Colour(0xfff2b370),
+                      0.0f, 200.0f, HNSepCurveProcessor::kDefaultBreath},
+            LaneInfo{LaneType::Tension, TR("hnsep.lane.tension"), juce::Colour(0xfff06f5a),
+                      -100.0f, 100.0f, HNSepCurveProcessor::kDefaultTension}} {
   setOpaque(true);
   setWantsKeyboardFocus(false);
+
+  auto setupEnergyDropdown = [this](juce::ComboBox &dropdown, float &targetDb,
+                                    int selectedId) {
+    dropdown.addItem(TR("hnsep.energy.max.-60"), 1);
+    dropdown.addItem(TR("hnsep.energy.max.-45"), 2);
+    dropdown.addItem(TR("hnsep.energy.max.-30"), 3);
+    dropdown.addItem(TR("hnsep.energy.max.-12"), 4);
+    dropdown.addItem(TR("hnsep.energy.max.-3"), 5);
+    dropdown.setSelectedId(selectedId, juce::dontSendNotification);
+    dropdown.setColour(juce::ComboBox::backgroundColourId,
+                       APP_COLOR_SURFACE_RAISED.withAlpha(0.9f));
+    dropdown.setColour(juce::ComboBox::outlineColourId,
+                       APP_COLOR_BORDER_SUBTLE.withAlpha(0.6f));
+    dropdown.setColour(juce::ComboBox::textColourId, APP_COLOR_TEXT_PRIMARY);
+    dropdown.onChange = [&dropdown, &targetDb, this]() {
+      static constexpr float dbValues[] = {-60.0f, -45.0f, -30.0f, -12.0f, -3.0f};
+      const int idx = dropdown.getSelectedId() - 1;
+      if (idx >= 0 && idx < static_cast<int>(std::size(dbValues))) {
+        targetDb = dbValues[idx];
+        repaint();
+      }
+    };
+    addAndMakeVisible(dropdown);
+  };
+
+  auto setupEnergyToggle = [this](StyledToggleButton &toggle) {
+    toggle.setButtonText(TR("hnsep.energy.show"));
+    toggle.setToggleState(true, juce::dontSendNotification);
+    toggle.onClick = [this]() { repaint(); };
+    addAndMakeVisible(toggle);
+  };
+
+  setupEnergyDropdown(voicingEnergyDropdown, voicingEnergyMaxDb, 5);
+  setupEnergyDropdown(breathEnergyDropdown, breathEnergyMaxDb, 4);
+  setupEnergyToggle(voicingEnergyVisibilityToggle);
+  setupEnergyToggle(breathEnergyVisibilityToggle);
 }
 
 void HNSepLaneComponent::setProject(Project *proj) {
@@ -132,7 +168,9 @@ void HNSepLaneComponent::paint(juce::Graphics &g) {
   }
 }
 
-void HNSepLaneComponent::resized() {}
+void HNSepLaneComponent::resized() { updateControlBounds(); }
+
+void HNSepLaneComponent::visibilityChanged() { updateControlBounds(); }
 
 void HNSepLaneComponent::mouseDown(const juce::MouseEvent &e) {
   if (!project)
@@ -141,28 +179,54 @@ void HNSepLaneComponent::mouseDown(const juce::MouseEvent &e) {
   const int laneIndex = getLaneIndexAt(e.position);
   if (laneIndex < 0)
     return;
+  if (!e.mods.isLeftButtonDown() && !e.mods.isRightButtonDown())
+    return;
 
   activeLaneIndex = laneIndex;
-  isDrawing = true;
-  isResetting = e.mods.isRightButtonDown();
+  isDrawing = false;
+  isResetting = false;
+  isGesturePending = true;
+  pendingGestureResetting = e.mods.isRightButtonDown();
   pendingEdits.clear();
   pendingEditIndexByFrame.clear();
   lastDrawFrame = -1;
   lastDrawValue = lanes[static_cast<size_t>(laneIndex)].defaultValue;
-  applyGesturePoint(e.position.x, e.position.y);
+  pendingGestureStart = e.position;
 }
 
 void HNSepLaneComponent::mouseDrag(const juce::MouseEvent &e) {
-  if (!isDrawing || activeLaneIndex < 0)
+  if (isGesturePending) {
+    isGesturePending = false;
+    isDrawing = !pendingGestureResetting;
+    isResetting = pendingGestureResetting;
+    applyGesturePoint(pendingGestureStart.x, pendingGestureStart.y);
+  }
+
+  if ((!isDrawing && !isResetting) || activeLaneIndex < 0)
     return;
   applyGesturePoint(e.position.x, e.position.y);
 }
 
 void HNSepLaneComponent::mouseUp(const juce::MouseEvent &) {
-  if (!isDrawing)
+  if (isGesturePending) {
+    isGesturePending = false;
+    pendingGestureResetting = false;
+    isDrawing = false;
+    isResetting = false;
+    activeLaneIndex = -1;
+    lastDrawFrame = -1;
+    lastDrawValue = 0.0f;
+    pendingEdits.clear();
+    pendingEditIndexByFrame.clear();
+    return;
+  }
+
+  if (!isDrawing && !isResetting)
     return;
 
   isDrawing = false;
+  isResetting = false;
+  pendingGestureResetting = false;
   activeLaneIndex = -1;
   lastDrawFrame = -1;
   commitPendingEdits();
@@ -221,12 +285,53 @@ float HNSepLaneComponent::valueToY(float value, const LaneInfo &lane,
 }
 
 float HNSepLaneComponent::yToValue(float y, const LaneInfo &lane,
-                                   const juce::Rectangle<int> &bounds) const {
+                                    const juce::Rectangle<int> &bounds) const {
   const float normalized = juce::jlimit(
       0.0f, 1.0f,
       (static_cast<float>(bounds.getBottom()) - y) /
           std::max(1.0f, static_cast<float>(bounds.getHeight())));
   return lane.minValue + normalized * (lane.maxValue - lane.minValue);
+}
+
+void HNSepLaneComponent::updateControlBounds() {
+  const int margin = 6;
+  for (int laneIndex = 0; laneIndex < static_cast<int>(lanes.size()); ++laneIndex) {
+    auto bounds = getLaneBounds(laneIndex).withTrimmedLeft(pianoKeysWidth);
+    const auto lane = lanes[static_cast<size_t>(laneIndex)].type;
+    juce::ComboBox *dropdown = nullptr;
+    StyledToggleButton *toggle = nullptr;
+    if (lane == LaneType::Voicing) {
+      dropdown = &voicingEnergyDropdown;
+      toggle = &voicingEnergyVisibilityToggle;
+    } else if (lane == LaneType::Breath) {
+      dropdown = &breathEnergyDropdown;
+      toggle = &breathEnergyVisibilityToggle;
+    }
+
+    if (!dropdown || !toggle)
+      continue;
+
+    dropdown->setBounds(bounds.getX() + margin, bounds.getY() + margin,
+                        energyDropdownWidth, energyControlHeight);
+    toggle->setBounds(dropdown->getRight() + 4, bounds.getY() + margin,
+                      energyToggleWidth, energyControlHeight);
+  }
+}
+
+float HNSepLaneComponent::getEnergyMaxDb(LaneType lane) const {
+  if (lane == LaneType::Voicing)
+    return voicingEnergyMaxDb;
+  if (lane == LaneType::Breath)
+    return breathEnergyMaxDb;
+  return -3.0f;
+}
+
+bool HNSepLaneComponent::isEnergyOverlayVisible(LaneType lane) const {
+  if (lane == LaneType::Voicing)
+    return voicingEnergyVisibilityToggle.getToggleState();
+  if (lane == LaneType::Breath)
+    return breathEnergyVisibilityToggle.getToggleState();
+  return false;
 }
 
 std::vector<float> *HNSepLaneComponent::curveForLane(AudioData &audioData,
@@ -344,6 +449,8 @@ void HNSepLaneComponent::drawEnergyOverlay(juce::Graphics &g,
                                            LaneType lane) const {
   if (!project)
     return;
+  if (!isEnergyOverlayVisible(lane))
+    return;
 
   const juce::AudioBuffer<float> *buffer = nullptr;
   juce::Colour colour = APP_COLOR_TEXT_MUTED.withAlpha(0.16f);
@@ -362,11 +469,17 @@ void HNSepLaneComponent::drawEnergyOverlay(juce::Graphics &g,
   bool started = false;
   const int startFrame = std::max(0, xToFrame(static_cast<float>(bounds.getX())));
   const int endFrame = std::max(startFrame + 1, xToFrame(static_cast<float>(bounds.getRight())) + 1);
+  const float pixelsPerFrame = framesToSeconds(1) * pixelsPerSecond;
+  const int frameStep = juce::jmax(
+      1, static_cast<int>(std::ceil(1.0f / juce::jmax(0.001f, pixelsPerFrame))));
 
-  for (int frame = startFrame; frame < endFrame; ++frame) {
+  for (int frame = startFrame; frame < endFrame; frame += frameStep) {
     const float x = frameToX(frame);
     const float db = computeFrameRmsDb(*buffer, frame);
-    const float normalized = juce::jlimit(0.0f, 1.0f, (db + 72.0f) / 72.0f);
+    const float maxDb = getEnergyMaxDb(lane);
+    const float normalized = juce::jlimit(
+        0.0f, 1.0f,
+        (db - energyMinDb) / std::max(0.001f, maxDb - energyMinDb));
     const float y = bounds.getBottom() - normalized * bounds.getHeight();
     if (!started) {
       path.startNewSubPath(x, y);
@@ -396,14 +509,22 @@ void HNSepLaneComponent::drawCurve(juce::Graphics &g,
                                          xToFrame(static_cast<float>(bounds.getRight())) + 1));
   if (endFrame <= startFrame)
     return;
+  const float pixelsPerFrame = framesToSeconds(1) * pixelsPerSecond;
+  const int frameStep = juce::jmax(
+      1, static_cast<int>(std::ceil(1.0f / juce::jmax(0.001f, pixelsPerFrame))));
 
   juce::Path path;
   path.startNewSubPath(frameToX(startFrame),
                        valueToY(curve[static_cast<size_t>(startFrame)], lane,
-                                bounds));
-  for (int frame = startFrame + 1; frame < endFrame; ++frame) {
+                                 bounds));
+  for (int frame = startFrame + frameStep; frame < endFrame; frame += frameStep) {
     path.lineTo(frameToX(frame),
                 valueToY(curve[static_cast<size_t>(frame)], lane, bounds));
+  }
+
+  if ((endFrame - 1 - startFrame) % frameStep != 0) {
+    path.lineTo(frameToX(endFrame - 1),
+                valueToY(curve[static_cast<size_t>(endFrame - 1)], lane, bounds));
   }
 
   g.setColour(lane.colour.withAlpha(0.16f));

@@ -2,7 +2,9 @@
 
 #include "../JuceHeader.h"
 #include "../Models/Project.h"
+#include "../UI/StyledComponents.h"
 #include "../Utils/Constants.h"
+#include "../Utils/Localization.h"
 #include "../Utils/UndoManager.h"
 
 #include <array>
@@ -29,6 +31,7 @@ public:
   void mouseUp(const juce::MouseEvent &e) override;
   void mouseWheelMove(const juce::MouseEvent &e,
                       const juce::MouseWheelDetails &wheel) override;
+  void visibilityChanged() override;
 
   void setProject(Project *proj);
   Project *getProject() const { return project; }
@@ -73,9 +76,12 @@ private:
   void drawNoteOverlay(juce::Graphics &g,
                        const juce::Rectangle<int> &bounds) const;
   void drawEnergyOverlay(juce::Graphics &g, const juce::Rectangle<int> &bounds,
-                         LaneType lane) const;
+                          LaneType lane) const;
   void drawCurve(juce::Graphics &g, const juce::Rectangle<int> &bounds,
-                 const LaneInfo &lane, const std::vector<float> &curve) const;
+                  const LaneInfo &lane, const std::vector<float> &curve) const;
+  void updateControlBounds();
+  float getEnergyMaxDb(LaneType lane) const;
+  bool isEnergyOverlayVisible(LaneType lane) const;
 
   void applyGesturePoint(float localX, float localY);
   void applyValueAtFrame(int frameIndex, float value);
@@ -90,18 +96,32 @@ private:
   float pixelsPerSecond = DEFAULT_PIXELS_PER_SECOND;
   double scrollX = 0.0;
   int pianoKeysWidth = 60;
+  float voicingEnergyMaxDb = -3.0f;
+  float breathEnergyMaxDb = -12.0f;
+
+  juce::ComboBox voicingEnergyDropdown;
+  juce::ComboBox breathEnergyDropdown;
+  StyledToggleButton voicingEnergyVisibilityToggle;
+  StyledToggleButton breathEnergyVisibilityToggle;
 
   bool isDrawing = false;
   bool isResetting = false;
+  bool isGesturePending = false;
+  bool pendingGestureResetting = false;
   int activeLaneIndex = -1;
   int lastDrawFrame = -1;
   float lastDrawValue = 0.0f;
+  juce::Point<float> pendingGestureStart;
   std::vector<CurveEdit> pendingEdits;
   std::map<int, size_t> pendingEditIndexByFrame;
 
   static constexpr int lanePadding = 8;
   static constexpr int labelWidth = 64;
   static constexpr int separatorThickness = 1;
+  static constexpr int energyDropdownWidth = 76;
+  static constexpr int energyToggleWidth = 72;
+  static constexpr int energyControlHeight = 20;
+  static constexpr float energyMinDb = -90.0f;
 
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(HNSepLaneComponent)
 };

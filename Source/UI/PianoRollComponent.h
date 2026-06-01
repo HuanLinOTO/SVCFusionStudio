@@ -82,7 +82,7 @@ public:
 
   // Zoom with optional center point
   void setPixelsPerSecond(float pps, bool centerOnCursor = false);
-  void setPixelsPerSemitone(float pps);
+  void setPixelsPerSemitone(float pps, float anchorContentY = -1.0f);
   float getPixelsPerSecond() const { return pixelsPerSecond; }
   float getPixelsPerSemitone() const { return pixelsPerSemitone; }
 
@@ -137,6 +137,7 @@ public:
   std::function<void(Note *)> onNoteSelected;
   std::function<void()> onPitchEdited;
   std::function<void()> onPitchEditFinished; // Called when dragging ends
+  std::function<void()> onCursorMoved;
   std::function<void(double)> onSeek;
   std::function<void(float)> onZoomChanged;
   std::function<void(double)> onScrollChanged;
@@ -297,6 +298,9 @@ private:
 
   // Pitch drawing state
   bool isDrawing = false;
+  bool isPendingDraw = false;
+  float pendingDrawStartX = 0.0f;
+  float pendingDrawStartY = 0.0f;
   std::vector<F0FrameEdit> drawingEdits; // unique edits per frame
   std::unordered_map<int, size_t> drawingEditIndexByFrame;
   int lastDrawFrame = -1;

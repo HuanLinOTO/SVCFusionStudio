@@ -10,6 +10,40 @@ bool isMenuPopupActive() {
 
   return false;
 }
+
+class PianoRollPlayheadOverlay final : public juce::Component {
+public:
+  explicit PianoRollPlayheadOverlay(PianoRollComponent &piano) : pianoRoll(piano) {
+    setInterceptsMouseClicks(false, false);
+    setOpaque(false);
+  }
+
+  void paint(juce::Graphics &g) override {
+    constexpr int scrollBarSize = 8;
+    constexpr float cornerRadius = 10.0f;
+
+    juce::Path clipPath;
+    clipPath.addRoundedRectangle(getLocalBounds().toFloat(), cornerRadius);
+    g.reduceClipRegion(clipPath);
+
+    const int pianoKeysWidth = pianoRoll.getPianoKeysWidth();
+    const float x = static_cast<float>(pianoKeysWidth) +
+                    static_cast<float>(pianoRoll.getCursorTime() *
+                                       pianoRoll.getPixelsPerSecond()) -
+                    static_cast<float>(pianoRoll.getScrollX());
+    const float cursorBottom = static_cast<float>(getHeight() - scrollBarSize);
+
+    if (x < static_cast<float>(pianoKeysWidth) ||
+        x >= static_cast<float>(getWidth() - scrollBarSize))
+      return;
+
+    g.setColour(APP_COLOR_PRIMARY);
+    g.fillRect(x - 0.5f, 0.0f, 1.0f, cursorBottom);
+  }
+
+private:
+  PianoRollComponent &pianoRoll;
+};
 }
 
 PianoRollWorkspaceView::PianoRollWorkspaceView(PianoRollComponent &piano)
@@ -71,6 +105,11 @@ PianoRollWorkspaceView::PianoRollWorkspaceView(PianoRollComponent &piano)
     if (pianoRoll.onZoomChanged)
       pianoRoll.onZoomChanged(pianoRoll.getPixelsPerSecond());
   };
+  pianoRoll.onCursorMoved = [this]()
+  {
+    if (playheadOverlay != nullptr && hnsepVisible)
+      playheadOverlay->repaint();
+  };
 
   zoomYSlider.setSliderStyle(juce::Slider::LinearVertical);
   zoomYSlider.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
@@ -82,7 +121,9 @@ PianoRollWorkspaceView::PianoRollWorkspaceView(PianoRollComponent &piano)
   zoomYSlider.setColour(juce::Slider::thumbColourId, APP_COLOR_PRIMARY);
   zoomYSlider.onValueChange = [this]()
   {
-    pianoRoll.setPixelsPerSemitone(static_cast<float>(zoomYSlider.getValue()));
+    pianoRoll.setPixelsPerSemitone(static_cast<float>(zoomYSlider.getValue()),
+                                   static_cast<float>(pianoRoll.getVisibleContentHeight()) *
+                                       0.5f);
   };
 
   overviewToggleButton.setClickingTogglesState(true);
@@ -105,6 +146,9 @@ PianoRollWorkspaceView::PianoRollWorkspaceView(PianoRollComponent &piano)
 
   addAndMakeVisible(pianoCard);
   addChildComponent(hnsepCard);
+  playheadOverlay = std::make_unique<PianoRollPlayheadOverlay>(pianoRoll);
+  addChildComponent(*playheadOverlay);
+  playheadOverlay->setVisible(hnsepVisible);
   addAndMakeVisible(overviewCard);
   addAndMakeVisible(overviewToggleButton);
   addAndMakeVisible(zoomXSlider);
@@ -157,6 +201,9 @@ void PianoRollWorkspaceView::resized()
   }
 
   pianoCard.setBounds(bounds);
+
+  if (playheadOverlay != nullptr)
+    playheadOverlay->setBounds(pianoCard.getBounds());
 
   auto overlay = pianoCard.getBounds();
   const int sliderBottom = overlay.getBottom() - toggleMargin;
@@ -218,6 +265,8 @@ void PianoRollWorkspaceView::setHNSepVisible(bool show)
   hnsepVisible = show;
   hnsepCard.setVisible(show);
   hnsepLane.setVisible(show);
+  if (playheadOverlay != nullptr)
+    playheadOverlay->setVisible(show);
   resized();
   repaint();
 }
@@ -238,6 +287,8 @@ void PianoRollWorkspaceView::timerCallback()
     zoomXSlider.setValue(pps, juce::dontSendNotification);
   hnsepLane.setPixelsPerSecond(pps);
   hnsepLane.setScrollX(pianoRoll.getScrollX());
+  if (playheadOverlay != nullptr && hnsepVisible)
+    playheadOverlay->repaint();
 
   const float ppsY = pianoRoll.getPixelsPerSemitone();
   if (std::abs(zoomYSlider.getValue() - ppsY) > 0.05)

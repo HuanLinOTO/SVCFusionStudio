@@ -28,7 +28,8 @@ public:
     // Programmatic control
     void setScrollX(double x);
     void setPixelsPerSecond(float pps, bool centerOnCursor = false, double cursorTime = 0.0);
-    void setPixelsPerSemitone(float pps);
+    void setPixelsPerSemitone(float pps, float anchorContentY = -1.0f,
+                              int visibleHeight = 0);
     void centerOnPitchRange(float minMidi, float maxMidi, int visibleHeight);
 
     // Update scrollbar ranges

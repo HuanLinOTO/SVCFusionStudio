@@ -54,7 +54,6 @@ void ScrollZoomController::handleMouseWheel(const juce::MouseEvent& e, const juc
         if (isOverPianoKeys) {
             // Vertical zoom
             float mouseY = e.y - headerHeight;
-            float midiAtMouse = (mouseY + coordMapper->getScrollY()) / coordMapper->getPixelsPerSemitone();
 
             float zoomFactor = 1.0f + wheel.deltaY * 0.3f;
             float newPps = coordMapper->getPixelsPerSemitone() * zoomFactor;
@@ -72,10 +71,8 @@ void ScrollZoomController::handleMouseWheel(const juce::MouseEvent& e, const juc
                 newPps = currentPps * (1.0f + (zoomFactor - 1.0f) * t);
             }
             newPps = juce::jlimit(minPps, MAX_PIXELS_PER_SEMITONE, newPps);
-            coordMapper->setPixelsPerSemitone(newPps);
-
-            double newScrollY = midiAtMouse * newPps - mouseY;
-            coordMapper->setScrollY(std::max(0.0, newScrollY));
+            setPixelsPerSemitone(newPps, mouseY,
+                                 componentHeight - headerHeight - 14);
 
             updateScrollBars(componentWidth - pianoKeysWidth - 14, componentHeight - headerHeight - 14);
             if (onRepaintNeeded) onRepaintNeeded();
@@ -133,7 +130,6 @@ void ScrollZoomController::handleMouseWheel(const juce::MouseEvent& e, const juc
 
         // Get current position under mouse
         double timeAtMouse = coordMapper->xToTime(mouseX + static_cast<float>(coordMapper->getScrollX()));
-        float midiAtMouse = (mouseY + static_cast<float>(coordMapper->getScrollY())) / coordMapper->getPixelsPerSemitone();
 
         // Apply horizontal zoom
         float newPpsX = coordMapper->getPixelsPerSecond() * zoomFactor;
@@ -158,14 +154,12 @@ void ScrollZoomController::handleMouseWheel(const juce::MouseEvent& e, const juc
             }
             newPpsY = juce::jlimit(minPps, MAX_PIXELS_PER_SEMITONE, newPpsY);
         }
-        coordMapper->setPixelsPerSemitone(newPpsY);
+        setPixelsPerSemitone(newPpsY, mouseY,
+                             componentHeight - headerHeight - 14);
 
         // Adjust scroll to keep mouse position stable
         float newMouseX = static_cast<float>(timeAtMouse * newPpsX);
         coordMapper->setScrollX(std::max(0.0, static_cast<double>(newMouseX - mouseX)));
-
-        double newScrollY = midiAtMouse * newPpsY - mouseY;
-        coordMapper->setScrollY(std::max(0.0, newScrollY));
 
         updateScrollBars(componentWidth - pianoKeysWidth - 14, componentHeight - headerHeight - 14);
         if (onRepaintNeeded) onRepaintNeeded();
@@ -226,11 +220,44 @@ void ScrollZoomController::setPixelsPerSecond(float pps, bool centerOnCursor, do
     if (onRepaintNeeded) onRepaintNeeded();
 }
 
-void ScrollZoomController::setPixelsPerSemitone(float pps) {
+void ScrollZoomController::setPixelsPerSemitone(float pps, float anchorContentY,
+                                                int visibleHeight) {
     if (!coordMapper)
         return;
 
-    coordMapper->setPixelsPerSemitone(juce::jlimit(MIN_PIXELS_PER_SEMITONE, MAX_PIXELS_PER_SEMITONE, pps));
+    const float oldPps = coordMapper->getPixelsPerSemitone();
+    const int effectiveVisibleHeight = visibleHeight > 0 ? visibleHeight
+                                                         : static_cast<int>(verticalScrollBar.getCurrentRangeSize());
+    const float minPpsForFill =
+        effectiveVisibleHeight > 0
+            ? static_cast<float>(effectiveVisibleHeight) /
+                  (MAX_MIDI_NOTE - MIN_MIDI_NOTE + 1)
+            : MIN_PIXELS_PER_SEMITONE;
+    const float minPps = std::max(MIN_PIXELS_PER_SEMITONE, minPpsForFill);
+    const float newPps = juce::jlimit(minPps, MAX_PIXELS_PER_SEMITONE, pps);
+    if (std::abs(oldPps - newPps) < 0.01f)
+        return;
+
+    float effectiveAnchorY = anchorContentY;
+    if (effectiveAnchorY < 0.0f)
+        effectiveAnchorY = static_cast<float>(effectiveVisibleHeight) * 0.5f;
+    effectiveAnchorY = juce::jlimit(0.0f, static_cast<float>(effectiveVisibleHeight),
+                                    effectiveAnchorY);
+
+    const float midiAtAnchor =
+        MAX_MIDI_NOTE -
+        (effectiveAnchorY + static_cast<float>(coordMapper->getScrollY())) / oldPps;
+
+    coordMapper->setPixelsPerSemitone(newPps);
+
+    const double totalHeight =
+        (MAX_MIDI_NOTE - MIN_MIDI_NOTE + 1) * coordMapper->getPixelsPerSemitone();
+    const double maxScrollY =
+        std::max(0.0, totalHeight - static_cast<double>(effectiveVisibleHeight));
+    const double anchoredScrollY =
+        (MAX_MIDI_NOTE - midiAtAnchor) * coordMapper->getPixelsPerSemitone() -
+        effectiveAnchorY;
+    coordMapper->setScrollY(juce::jlimit(0.0, maxScrollY, anchoredScrollY));
 
     if (onRepaintNeeded) onRepaintNeeded();
 }
