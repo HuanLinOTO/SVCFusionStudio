@@ -15,8 +15,8 @@ env:
   BUILD_TYPE: Release
   ONNXRUNTIME_VERSION: "1.17.3"
   DIRECTML_VERSION: "1.15.4"
-  MODEL_ARCHIVE_URL: "https://huggingface.co/SVCFusion/things/resolve/main/SVCFusionStudio-Models.7z?download=true"
-  MODEL_CACHE_KEY: "svcfusion-models-v1"
+  MODEL_BASE_URL: "https://huggingface.co/SVCFusion/things/resolve/main"
+  MODEL_CACHE_KEY: "svcfusion-models-v3"
 
 jobs:
   # ===========================================
@@ -35,25 +35,41 @@ jobs:
           key: ${{ env.MODEL_CACHE_KEY }}
           enableCrossOsArchive: true
 
-      - name: Download and Extract Models
+      - name: Download Models
         if: steps.models-cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
 
-          mkdir -p .ci-model-cache/extracted
-          sudo apt-get update
-          sudo apt-get install -y p7zip-full
-
-          curl -L --retry 3 --fail \
-            -o .ci-model-cache/SVCFusionStudio-Models.7z \
-            "${{ env.MODEL_ARCHIVE_URL }}"
-
           rm -rf .ci-model-cache/extracted
           mkdir -p .ci-model-cache/extracted
-          7z x .ci-model-cache/SVCFusionStudio-Models.7z -o.ci-model-cache/extracted -y >/dev/null
+
+          while IFS= read -r rel_path; do
+            [ -n "${rel_path}" ] || continue
+            mkdir -p ".ci-model-cache/extracted/$(dirname "${rel_path}")"
+            curl -L --retry 3 --fail \
+              -o ".ci-model-cache/extracted/${rel_path}" \
+              "${{ env.MODEL_BASE_URL }}/${rel_path}?download=true"
+          done <<'EOF'
+          cent_table.bin
+          contentvec768l12.onnx
+          fcpe.onnx
+          mel_filterbank.bin
+          pc_nsf_hifigan.onnx
+          rmvpe.onnx
+          some.onnx
+          GAME/bd2dur.onnx
+          GAME/config.json
+          GAME/dur2bd.onnx
+          GAME/encoder.onnx
+          GAME/estimator.onnx
+          GAME/segmenter.onnx
+          hnsep/config.json
+          hnsep/hnsep_VR.onnx
+          EOF
 
           test -f .ci-model-cache/extracted/pc_nsf_hifigan.onnx
           test -f .ci-model-cache/extracted/cent_table.bin
+          test -f .ci-model-cache/extracted/hnsep/hnsep_VR.onnx
 
   # ===========================================
   # Windows CPU Build
@@ -150,7 +166,7 @@ jobs:
 
           $onnxFiles = Get-ChildItem -Path $extractDir -Recurse -File -Filter *.onnx
           if (-not $onnxFiles) {
-            throw "No ONNX files found in model archive"
+            throw "No ONNX files found in model cache"
           }
 
           $onnxMap = @{}
@@ -369,7 +385,7 @@ jobs:
 
           $onnxFiles = Get-ChildItem -Path $extractDir -Recurse -File -Filter *.onnx
           if (-not $onnxFiles) {
-            throw "No ONNX files found in model archive"
+            throw "No ONNX files found in model cache"
           }
 
           $onnxMap = @{}
@@ -578,7 +594,7 @@ jobs:
 
           $onnxFiles = Get-ChildItem -Path $extractDir -Recurse -File -Filter *.onnx
           if (-not $onnxFiles) {
-            throw "No ONNX files found in model archive"
+            throw "No ONNX files found in model cache"
           }
 
           $onnxMap = @{}
@@ -771,7 +787,7 @@ jobs:
 
           onnx_count=$(find "${extract_dir}" -type f -name "*.onnx" | wc -l | tr -d ' ')
           if [ "${onnx_count}" -eq 0 ]; then
-            echo "No ONNX files found in model archive" >&2
+            echo "No ONNX files found in model cache" >&2
             exit 1
           fi
 
@@ -1053,7 +1069,7 @@ jobs:
 
           onnx_count=$(find "${extract_dir}" -type f -name "*.onnx" | wc -l | tr -d ' ')
           if [ "${onnx_count}" -eq 0 ]; then
-            echo "No ONNX files found in model archive" >&2
+            echo "No ONNX files found in model cache" >&2
             exit 1
           fi
 
@@ -1268,7 +1284,7 @@ jobs:
 
           onnx_count=$(find "${extract_dir}" -type f -name "*.onnx" | wc -l | tr -d ' ')
           if [ "${onnx_count}" -eq 0 ]; then
-            echo "No ONNX files found in model archive" >&2
+            echo "No ONNX files found in model cache" >&2
             exit 1
           fi
 

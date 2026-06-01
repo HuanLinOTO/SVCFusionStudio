@@ -1,0 +1,40 @@
+name: Publish Models To Hugging Face
+
+on:
+  workflow_dispatch:
+    inputs:
+      keep_legacy_archives:
+        description: Keep legacy 7z archives in the repo
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  publish-models:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Verify Hugging Face token
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          test -n "${HF_TOKEN}"
+          uvx hf auth whoami
+
+      - name: Publish model tree
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        shell: pwsh
+        run: |
+          $keepLegacy = "${{ inputs.keep_legacy_archives }}" -eq "true"
+          ./scripts/sync-hf-models.ps1 -KeepLegacyArchives:$keepLegacy
