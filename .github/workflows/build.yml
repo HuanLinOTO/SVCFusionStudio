@@ -16,7 +16,7 @@ env:
   ONNXRUNTIME_VERSION: "1.17.3"
   DIRECTML_VERSION: "1.15.4"
   MODEL_BASE_URL: "https://huggingface.co/SVCFusion/things/resolve/main"
-  MODEL_CACHE_KEY: "svcfusion-models-v3"
+  MODEL_CACHE_KEY: "svcfusion-models-v4"
 
 jobs:
   # ===========================================
@@ -65,11 +65,17 @@ jobs:
           GAME/segmenter.onnx
           hnsep/config.json
           hnsep/hnsep_VR.onnx
+          hnsep/hnsep_VR_convstft.onnx
+          hnsep/split/hnsep_pre.onnx
+          hnsep/split/hnsep_core.onnx
+          hnsep/split/hnsep_post.onnx
           EOF
 
           test -f .ci-model-cache/extracted/pc_nsf_hifigan.onnx
           test -f .ci-model-cache/extracted/cent_table.bin
           test -f .ci-model-cache/extracted/hnsep/hnsep_VR.onnx
+          test -f .ci-model-cache/extracted/hnsep/hnsep_VR_convstft.onnx
+          test -f .ci-model-cache/extracted/hnsep/split/hnsep_core.onnx
 
   # ===========================================
   # Windows CPU Build
@@ -219,6 +225,23 @@ jobs:
               throw "$binName not found in model cache"
             }
           }
+
+          $hnsepSource = Join-Path $extractDir "hnsep"
+          $hnsepDest = Join-Path $dstModels "hnsep"
+          if (-not (Test-Path $hnsepSource)) {
+            throw "hnsep model directory not found in model cache: $hnsepSource"
+          }
+          if (Test-Path $hnsepDest) {
+            Remove-Item -Recurse -Force $hnsepDest
+          }
+          Copy-Item -Path $hnsepSource -Destination $hnsepDest -Recurse -Force
+          foreach ($requiredHNSep in @("hnsep_VR.onnx", "hnsep_VR_convstft.onnx", "split/hnsep_pre.onnx", "split/hnsep_core.onnx", "split/hnsep_post.onnx")) {
+            $requiredPath = Join-Path $hnsepDest $requiredHNSep
+            if (-not (Test-Path $requiredPath)) {
+              throw "Required HNSep model missing after copy: $requiredPath"
+            }
+          }
+          Write-Host "Prepared HNSep model directory <= $hnsepSource"
 
           Write-Host "Prepared build models in $dstModels"
 
@@ -439,6 +462,23 @@ jobs:
             }
           }
 
+          $hnsepSource = Join-Path $extractDir "hnsep"
+          $hnsepDest = Join-Path $dstModels "hnsep"
+          if (-not (Test-Path $hnsepSource)) {
+            throw "hnsep model directory not found in model cache: $hnsepSource"
+          }
+          if (Test-Path $hnsepDest) {
+            Remove-Item -Recurse -Force $hnsepDest
+          }
+          Copy-Item -Path $hnsepSource -Destination $hnsepDest -Recurse -Force
+          foreach ($requiredHNSep in @("hnsep_VR.onnx", "hnsep_VR_convstft.onnx", "split/hnsep_pre.onnx", "split/hnsep_core.onnx", "split/hnsep_post.onnx")) {
+            $requiredPath = Join-Path $hnsepDest $requiredHNSep
+            if (-not (Test-Path $requiredPath)) {
+              throw "Required HNSep model missing after copy: $requiredPath"
+            }
+          }
+          Write-Host "Prepared HNSep model directory <= $hnsepSource"
+
           Write-Host "Prepared build models in $dstModels"
 
       - name: Configure CMake
@@ -647,6 +687,23 @@ jobs:
               throw "$binName not found in model cache"
             }
           }
+
+          $hnsepSource = Join-Path $extractDir "hnsep"
+          $hnsepDest = Join-Path $dstModels "hnsep"
+          if (-not (Test-Path $hnsepSource)) {
+            throw "hnsep model directory not found in model cache: $hnsepSource"
+          }
+          if (Test-Path $hnsepDest) {
+            Remove-Item -Recurse -Force $hnsepDest
+          }
+          Copy-Item -Path $hnsepSource -Destination $hnsepDest -Recurse -Force
+          foreach ($requiredHNSep in @("hnsep_VR.onnx", "hnsep_VR_convstft.onnx", "split/hnsep_pre.onnx", "split/hnsep_core.onnx", "split/hnsep_post.onnx")) {
+            $requiredPath = Join-Path $hnsepDest $requiredHNSep
+            if (-not (Test-Path $requiredPath)) {
+              throw "Required HNSep model missing after copy: $requiredPath"
+            }
+          }
+          Write-Host "Prepared HNSep model directory <= $hnsepSource"
 
           Write-Host "Prepared build models in $dstModels"
 

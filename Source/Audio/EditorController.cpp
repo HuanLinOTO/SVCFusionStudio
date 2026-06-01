@@ -764,7 +764,11 @@ void EditorController::reloadInferenceModels(bool async) {
     }
 
     if (self->hnsepModel && hnsepPath.isDirectory()) {
-      auto hnsepFile = hnsepPath.getChildFile("hnsep_VR.onnx");
+      const auto hnsepCpuFile = hnsepPath.getChildFile("hnsep_VR.onnx");
+      const auto hnsepDmlFile = hnsepPath.getChildFile("hnsep_VR_convstft.onnx");
+      auto hnsepFile = provider == GPUProvider::DirectML && hnsepDmlFile.existsAsFile()
+                           ? hnsepDmlFile
+                           : hnsepCpuFile;
       if (hnsepFile.existsAsFile()) {
         LOG("EditorController: loading hnsep model from " +
             hnsepFile.getFullPathName() + " (device " + device + ", id " +
@@ -772,6 +776,16 @@ void EditorController::reloadInferenceModels(bool async) {
         if (self->hnsepModel->loadModel(hnsepFile, provider,
                                         resolvedDeviceId)) {
           LOG("hnsep model loaded successfully");
+        } else if (provider == GPUProvider::DirectML && hnsepFile != hnsepCpuFile &&
+                   hnsepCpuFile.existsAsFile()) {
+          LOG("Retrying hnsep with CPU fallback model: " +
+              hnsepCpuFile.getFullPathName());
+          if (self->hnsepModel->loadModel(hnsepCpuFile, GPUProvider::CPU, 0)) {
+            LOG("hnsep CPU fallback model loaded successfully");
+          } else {
+            LOG("Failed to load hnsep CPU fallback model from " +
+                hnsepCpuFile.getFullPathName());
+          }
         } else {
           LOG("Failed to load hnsep model from " +
               hnsepFile.getFullPathName());
