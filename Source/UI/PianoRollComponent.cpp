@@ -203,6 +203,79 @@ void PianoRollComponent::resized() {
   updateScrollBars();
 }
 
+void PianoRollComponent::rebuildWaveformPeakCacheIfNeeded(
+    const AudioData &audioData) {
+  const auto &waveform = audioData.waveform;
+  const int numSamples = waveform.getNumSamples();
+  const int numChannels = waveform.getNumChannels();
+  const int sampleRate = audioData.sampleRate > 0 ? audioData.sampleRate
+                                                  : SAMPLE_RATE;
+
+  if (numSamples <= 0 || numChannels <= 0) {
+    waveformPeakCache = {};
+    return;
+  }
+
+  if (waveformPeakCache.valid &&
+      waveformPeakCache.sourceNumSamples == numSamples &&
+      waveformPeakCache.sourceSampleRate == sampleRate &&
+      waveformPeakCache.sourceNumChannels == numChannels) {
+    return;
+  }
+
+  constexpr int samplesPerPeak = 256;
+  const int peakCount = (numSamples + samplesPerPeak - 1) / samplesPerPeak;
+  waveformPeakCache.peaks.assign(static_cast<size_t>(peakCount), 0.0f);
+
+  const float *samples = waveform.getReadPointer(0);
+  for (int peak = 0; peak < peakCount; ++peak) {
+    const int start = peak * samplesPerPeak;
+    const int end = std::min(start + samplesPerPeak, numSamples);
+    float maxVal = 0.0f;
+    for (int i = start; i < end; ++i)
+      maxVal = std::max(maxVal, std::abs(samples[i]));
+    waveformPeakCache.peaks[static_cast<size_t>(peak)] = maxVal;
+  }
+
+  waveformPeakCache.samplesPerPeak = samplesPerPeak;
+  waveformPeakCache.sourceNumSamples = numSamples;
+  waveformPeakCache.sourceSampleRate = sampleRate;
+  waveformPeakCache.sourceNumChannels = numChannels;
+  waveformPeakCache.valid = true;
+}
+
+float PianoRollComponent::getWaveformPeakForSampleRange(
+    const AudioData &audioData, int startSample, int endSample) const {
+  const auto &waveform = audioData.waveform;
+  const int numSamples = waveform.getNumSamples();
+  if (numSamples <= 0 || waveform.getNumChannels() <= 0)
+    return 0.0f;
+
+  startSample = juce::jlimit(0, numSamples - 1, startSample);
+  endSample = juce::jlimit(startSample + 1, numSamples, endSample);
+
+  const int sampleSpan = endSample - startSample;
+  if (waveformPeakCache.valid && !waveformPeakCache.peaks.empty() &&
+      sampleSpan >= waveformPeakCache.samplesPerPeak) {
+    const int firstPeak = startSample / waveformPeakCache.samplesPerPeak;
+    const int lastPeak = (endSample - 1) / waveformPeakCache.samplesPerPeak;
+    float maxVal = 0.0f;
+    const int peakCount = static_cast<int>(waveformPeakCache.peaks.size());
+    for (int peak = firstPeak; peak <= lastPeak && peak < peakCount;
+         ++peak) {
+      maxVal = std::max(maxVal,
+                        waveformPeakCache.peaks[static_cast<size_t>(peak)]);
+    }
+    return maxVal;
+  }
+
+  const float *samples = waveform.getReadPointer(0);
+  float maxVal = 0.0f;
+  for (int i = startSample; i < endSample; ++i)
+    maxVal = std::max(maxVal, std::abs(samples[i]));
+  return maxVal;
+}
+
 void PianoRollComponent::drawBackgroundWaveform(
     juce::Graphics &g, const juce::Rectangle<int> &visibleArea) {
   if (!project)
@@ -211,6 +284,11 @@ void PianoRollComponent::drawBackgroundWaveform(
   const auto &audioData = project->getAudioData();
   if (audioData.waveform.getNumSamples() == 0)
     return;
+
+  if (visibleArea.getWidth() <= 0 || visibleArea.getHeight() <= 0)
+    return;
+
+  rebuildWaveformPeakCacheIfNeeded(audioData);
 
   // Check if we can use cached waveform
   bool cacheValid = waveformCache.isValid() &&
@@ -229,9 +307,6 @@ void PianoRollComponent::drawBackgroundWaveform(
                               visibleArea.getHeight(), true);
   juce::Graphics cacheGraphics(waveformCache);
 
-  const float *samples = audioData.waveform.getReadPointer(0);
-  int numSamples = audioData.waveform.getNumSamples();
-
   // Draw waveform filling the visible area height
   float visibleHeight = static_cast<float>(visibleArea.getHeight());
   float centerY = visibleHeight * 0.5f;
@@ -239,22 +314,21 @@ void PianoRollComponent::drawBackgroundWaveform(
 
   juce::Path waveformPath;
   int visibleWidth = visibleArea.getWidth();
+  const int sampleRate = audioData.sampleRate > 0 ? audioData.sampleRate
+                                                  : SAMPLE_RATE;
+  std::vector<float> visiblePeaks(static_cast<size_t>(visibleWidth), 0.0f);
 
   waveformPath.startNewSubPath(0.0f, centerY);
 
   // Draw only the visible portion
   for (int px = 0; px < visibleWidth; ++px) {
-    double time = (scrollX + px) / pixelsPerSecond;
-    int startSample = static_cast<int>(time * SAMPLE_RATE);
-    int endSample =
-        static_cast<int>((time + 1.0 / pixelsPerSecond) * SAMPLE_RATE);
-
-    startSample = std::max(0, std::min(startSample, numSamples - 1));
-    endSample = std::max(startSample + 1, std::min(endSample, numSamples));
-
-    float maxVal = 0.0f;
-    for (int i = startSample; i < endSample; ++i)
-      maxVal = std::max(maxVal, std::abs(samples[i]));
+    const double startTime = (scrollX + px) / pixelsPerSecond;
+    const double endTime = (scrollX + px + 1.0) / pixelsPerSecond;
+    const int startSample = static_cast<int>(std::floor(startTime * sampleRate));
+    const int endSample = static_cast<int>(std::ceil(endTime * sampleRate));
+    const float maxVal =
+        getWaveformPeakForSampleRange(audioData, startSample, endSample);
+    visiblePeaks[static_cast<size_t>(px)] = maxVal;
 
     float y = centerY - maxVal * waveformHeight * 0.5f;
     waveformPath.lineTo(static_cast<float>(px), y);
@@ -262,18 +336,7 @@ void PianoRollComponent::drawBackgroundWaveform(
 
   // Bottom half (reverse)
   for (int px = visibleWidth - 1; px >= 0; --px) {
-    double time = (scrollX + px) / pixelsPerSecond;
-    int startSample = static_cast<int>(time * SAMPLE_RATE);
-    int endSample =
-        static_cast<int>((time + 1.0 / pixelsPerSecond) * SAMPLE_RATE);
-
-    startSample = std::max(0, std::min(startSample, numSamples - 1));
-    endSample = std::max(startSample + 1, std::min(endSample, numSamples));
-
-    float maxVal = 0.0f;
-    for (int i = startSample; i < endSample; ++i)
-      maxVal = std::max(maxVal, std::abs(samples[i]));
-
+    const float maxVal = visiblePeaks[static_cast<size_t>(px)];
     float y = centerY + maxVal * waveformHeight * 0.5f;
     waveformPath.lineTo(static_cast<float>(px), y);
   }
@@ -295,8 +358,10 @@ void PianoRollComponent::drawBackgroundWaveform(
 
 void PianoRollComponent::drawGrid(juce::Graphics &g) {
   float duration = project ? project->getAudioData().getDuration() : 60.0f;
-  float width =
-      std::max(duration * pixelsPerSecond, static_cast<float>(getWidth()));
+  const float visibleLeft = std::max(0.0f, static_cast<float>(scrollX));
+  const float visibleRight =
+      visibleLeft + static_cast<float>(std::max(1, getVisibleContentWidth()));
+  const float width = std::max(duration * pixelsPerSecond, visibleRight);
   float height = (MAX_MIDI_NOTE - MIN_MIDI_NOTE + 1) * pixelsPerSemitone;
 
   // Fill black key rows with semi-transparent darker background
@@ -308,7 +373,8 @@ void PianoRollComponent::drawGrid(juce::Graphics &g) {
          noteInOctave == 8 || noteInOctave == 10);
     if (isBlack) {
       float y = midiToY(static_cast<float>(midi));
-      g.fillRect(0.0f, y, width, pixelsPerSemitone);
+      g.fillRect(visibleLeft, y, visibleRight - visibleLeft,
+                 pixelsPerSemitone);
     }
   }
 
@@ -322,10 +388,10 @@ void PianoRollComponent::drawGrid(juce::Graphics &g) {
     if (noteInOctave == 0) // C
     {
       g.setColour(APP_COLOR_GRID_BAR);
-      g.drawHorizontalLine(static_cast<int>(y), 0, width);
+      g.drawHorizontalLine(static_cast<int>(y), visibleLeft, visibleRight);
       g.setColour(APP_COLOR_GRID);
     } else {
-      g.drawHorizontalLine(static_cast<int>(y), 0, width);
+      g.drawHorizontalLine(static_cast<int>(y), visibleLeft, visibleRight);
     }
   }
 
@@ -333,7 +399,17 @@ void PianoRollComponent::drawGrid(juce::Graphics &g) {
   float secondsPerBeat = 60.0f / 120.0f; // Assuming 120 BPM
   float pixelsPerBeat = secondsPerBeat * pixelsPerSecond;
 
-  for (float x = 0; x < width; x += pixelsPerBeat) {
+  if (pixelsPerBeat <= 0.0f)
+    return;
+
+  const int firstBeat =
+      std::max(0, static_cast<int>(std::floor(visibleLeft / pixelsPerBeat)));
+  const int lastBeat = static_cast<int>(std::ceil(visibleRight / pixelsPerBeat));
+
+  for (int beat = firstBeat; beat <= lastBeat; ++beat) {
+    const float x = static_cast<float>(beat) * pixelsPerBeat;
+    if (x > width)
+      break;
     g.setColour(APP_COLOR_GRID);
     g.drawVerticalLine(static_cast<int>(x), 0, height);
   }
@@ -762,6 +838,9 @@ void PianoRollComponent::drawNotes(juce::Graphics &g) {
   const bool isMultiDragging = pitchEditor && pitchEditor->isDraggingMultiNotes();
   const std::vector<Note *> *draggedNotes =
       isMultiDragging ? &pitchEditor->getDraggedNotes() : nullptr;
+  const bool reducedWaveformQuality =
+      isDragging || isMultiDragging || isDrawing || stretchDrag.active ||
+      isDeltaScaleDragging || isDeltaOffsetDragging;
 
   auto drawSelectedNoteOutline = [&g](float x, float y, float w, float h) {
     constexpr float localOutlinePadding = 2.0f;
@@ -813,7 +892,9 @@ void PianoRollComponent::drawNotes(juce::Graphics &g) {
 
   // Calculate visible time range for culling
   double visibleStartTime = scrollX / pixelsPerSecond;
-  double visibleEndTime = (scrollX + getWidth()) / pixelsPerSecond;
+  double visibleEndTime =
+      (scrollX + static_cast<double>(std::max(1, getVisibleContentWidth()))) /
+      pixelsPerSecond;
 
   for (auto &note : project->getNotes()) {
     // Skip rest notes (they have no pitch)
@@ -863,24 +944,37 @@ void PianoRollComponent::drawNotes(juce::Graphics &g) {
                            std::min(endSample, totalSamples));
     }
 
-    if (samples && totalSamples > 0 && w > 2.0f &&
+    if (samples && totalSamples > 0 && w >= 14.0f && pixelsPerSemitone >= 6.0f &&
         endSample > startSample) {
       // Draw waveform slice inside note
       int numNoteSamples = endSample - startSample;
-      int samplesPerPixel = std::max(1, static_cast<int>(numNoteSamples / w));
 
       float centerY = y + h * 0.5f;
       float waveHeight = h * 3.0f;
 
-      // Build waveform data with increased resolution for smoother curves
-      std::vector<float> waveValues;
-      // Increase point density for smoother curves (up to 800 points)
-      float step = std::max(0.5f, w / 1024.0f);
+      const int maxWavePoints = reducedWaveformQuality
+                                    ? 48
+                                    : (w < 80.0f ? 48
+                                                 : (w < 240.0f ? 96 : 192));
+      const int targetPoints = std::max(
+          2, std::min(maxWavePoints, static_cast<int>(std::ceil(w * 0.5f))));
+      const int samplesPerPoint = std::max(1, numNoteSamples / targetPoints);
 
-      for (float px = 0; px <= w; px += step) {
+      // Build a bounded envelope. The old path used up to ~1024 points plus
+      // spline subdivisions per note, which made audio-loaded paints expensive.
+      std::vector<float> waveValues;
+      waveValues.reserve(static_cast<size_t>(targetPoints));
+
+      for (int point = 0; point < targetPoints; ++point) {
+        const float px = targetPoints > 1
+                             ? (static_cast<float>(point) /
+                                static_cast<float>(targetPoints - 1)) *
+                                   w
+                             : 0.0f;
         int sampleIdx =
             startSample + static_cast<int>((px / w) * numNoteSamples);
-        int sampleEnd = std::min(sampleIdx + samplesPerPixel, endSample);
+        sampleIdx = std::min(sampleIdx, endSample - 1);
+        int sampleEnd = std::min(sampleIdx + samplesPerPoint, endSample);
 
         float maxVal = 0.0f;
         for (int i = sampleIdx; i < sampleEnd; ++i)
@@ -890,7 +984,7 @@ void PianoRollComponent::drawNotes(juce::Graphics &g) {
       }
 
       // Apply smoothing filter to reduce aliasing artifacts
-      if (waveValues.size() > 2) {
+      if (!reducedWaveformQuality && waveValues.size() > 2) {
         std::vector<float> smoothed(waveValues.size());
         smoothed[0] = waveValues[0];
         for (size_t i = 1; i + 1 < waveValues.size(); ++i) {
@@ -928,7 +1022,8 @@ void PianoRollComponent::drawNotes(juce::Graphics &g) {
                                             waveValues[0] * waveHeight * 0.5f);
 
         // Use cubic curves for smooth interpolation
-        const int curveSegments = 4; // Interpolate 4 points between each pair
+        const int curveSegments =
+            reducedWaveformQuality || numPoints > 128 ? 1 : 2;
         for (size_t i = 0; i + 1 < numPoints; ++i) {
           float px1 =
               (static_cast<float>(i) / static_cast<float>(numPoints - 1)) * w;
@@ -1243,26 +1338,35 @@ void PianoRollComponent::drawPitchCurves(juce::Graphics &g) {
 
   // Get global pitch offset (applied to display only)
   float globalOffset = project->getGlobalPitchOffset();
+  const int totalFrames = static_cast<int>(audioData.f0.size());
+  const int sampleRate = audioData.sampleRate > 0 ? audioData.sampleRate
+                                                  : SAMPLE_RATE;
+  const double visibleStartTime = scrollX / pixelsPerSecond;
+  const double visibleEndTime =
+      (scrollX + static_cast<double>(std::max(1, getVisibleContentWidth()))) /
+      pixelsPerSecond;
+  const int visibleStartFrame = std::max(
+      0, static_cast<int>(visibleStartTime * sampleRate / HOP_SIZE));
+  const int visibleEndFrame = std::min(
+      totalFrames,
+      static_cast<int>(visibleEndTime * sampleRate / HOP_SIZE) + 1);
+  const double framesPerPixel =
+      static_cast<double>(sampleRate) / HOP_SIZE /
+      std::max(1.0f, pixelsPerSecond);
+  const int curveFrameStep =
+      std::max(1, static_cast<int>(std::floor(framesPerPixel * 0.5)));
 
   // Draw pitch curves per note with their pitch offsets applied (delta pitch)
   if (showDeltaPitch) {
     g.setColour(APP_COLOR_PITCH_CURVE);
     if (showUvInterpolationDebug) {
-      const double visibleStartTime = scrollX / pixelsPerSecond;
-      const double visibleEndTime = (scrollX + getWidth()) / pixelsPerSecond;
-      const int visStartFrame = std::max(
-          0,
-          static_cast<int>(visibleStartTime * audioData.sampleRate / HOP_SIZE));
-      const int visEndFrame = std::min(
-          static_cast<int>(audioData.f0.size()),
-          static_cast<int>(visibleEndTime * audioData.sampleRate / HOP_SIZE) + 1);
-
       const auto &chunkRanges = audioData.someChunkRanges;
       size_t chunkIdx = 0;
 
       juce::Path path;
       bool pathStarted = false;
-      for (int i = visStartFrame; i < visEndFrame; ++i) {
+      for (int i = visibleStartFrame; i < visibleEndFrame;
+           i += curveFrameStep) {
         bool inChunk = true;
         if (!chunkRanges.empty()) {
           while (chunkIdx < chunkRanges.size() &&
@@ -1323,11 +1427,12 @@ void PianoRollComponent::drawPitchCurves(juce::Graphics &g) {
         juce::Path path;
         bool pathStarted = false;
 
-        int startFrame = note.getStartFrame();
-        int endFrame =
-            std::min(note.getEndFrame(), static_cast<int>(audioData.f0.size()));
+        int startFrame = std::max(note.getStartFrame(), visibleStartFrame);
+        int endFrame = std::min(note.getEndFrame(), visibleEndFrame);
+        if (endFrame <= startFrame)
+          continue;
 
-        for (int i = startFrame; i < endFrame; ++i) {
+        for (int i = startFrame; i < endFrame; i += curveFrameStep) {
           float baseMidi =
               (i < static_cast<int>(audioData.basePitch.size()))
                   ? audioData.basePitch[static_cast<size_t>(i)]
@@ -1362,20 +1467,12 @@ void PianoRollComponent::drawPitchCurves(juce::Graphics &g) {
   }
 
   if (showActualF0Debug) {
-    const double visibleStartTime = scrollX / pixelsPerSecond;
-    const double visibleEndTime = (scrollX + getWidth()) / pixelsPerSecond;
-    const int visStartFrame =
-        std::max(0, static_cast<int>(visibleStartTime * audioData.sampleRate /
-                                     HOP_SIZE));
-    const int visEndFrame = std::min(
-        static_cast<int>(audioData.f0.size()),
-        static_cast<int>(visibleEndTime * audioData.sampleRate / HOP_SIZE) + 1);
-
     g.setColour(juce::Colours::aqua.withAlpha(0.90f));
     juce::Path actualPath;
     bool pathStarted = false;
 
-    for (int i = visStartFrame; i < visEndFrame; ++i) {
+    for (int i = visibleStartFrame; i < visibleEndFrame;
+         i += curveFrameStep) {
       const float f0 = audioData.f0[static_cast<size_t>(i)];
       if (f0 <= 0.0f) {
         if (pathStarted) {
@@ -1413,16 +1510,10 @@ void PianoRollComponent::drawPitchCurves(juce::Graphics &g) {
     const auto &basePitchCurve =
         useLiveBasePreview ? audioData.basePitch : cachedBasePitch;
     if (!basePitchCurve.empty()) {
-      // Calculate visible frame range
-      double visibleStartTime = scrollX / pixelsPerSecond;
-      double visibleEndTime = (scrollX + getWidth()) / pixelsPerSecond;
-      int visStartFrame =
-          std::max(0, static_cast<int>(visibleStartTime * audioData.sampleRate /
-                                       HOP_SIZE));
-      int visEndFrame = std::min(
-          static_cast<int>(basePitchCurve.size()),
-          static_cast<int>(visibleEndTime * audioData.sampleRate / HOP_SIZE) +
-              1);
+      const int baseStartFrame =
+          std::min(visibleStartFrame, static_cast<int>(basePitchCurve.size()));
+      const int baseEndFrame =
+          std::min(visibleEndFrame, static_cast<int>(basePitchCurve.size()));
 
       // Draw base pitch curve with dashed line
       g.setColour(
@@ -1430,7 +1521,7 @@ void PianoRollComponent::drawPitchCurves(juce::Graphics &g) {
       juce::Path basePath;
       bool basePathStarted = false;
 
-      for (int i = visStartFrame; i < visEndFrame; ++i) {
+      for (int i = baseStartFrame; i < baseEndFrame; i += curveFrameStep) {
         if (i >= 0 && i < static_cast<int>(basePitchCurve.size())) {
           float baseMidi = basePitchCurve[static_cast<size_t>(i)];
           if (baseMidi > 0.0f) {
@@ -2758,6 +2849,7 @@ void PianoRollComponent::setProject(Project *proj) {
   // Clear all caches when project changes to free memory
   invalidateBasePitchCache();
   waveformCache = juce::Image(); // Clear waveform cache
+  waveformPeakCache = {};
   cachedScrollX = -1.0;
   cachedPixelsPerSecond = -1.0f;
   cachedWidth = 0;
@@ -3486,6 +3578,7 @@ void PianoRollComponent::invalidateWaveformCache() {
   // Also clear PianoRollComponent's own background waveform cache so that
   // drawBackgroundWaveform() redraws from the updated audioData.waveform.
   waveformCache = {};
+  waveformPeakCache = {};
   cachedScrollX = -1.0;
   cachedPixelsPerSecond = -1.0f;
   cachedWidth = 0;

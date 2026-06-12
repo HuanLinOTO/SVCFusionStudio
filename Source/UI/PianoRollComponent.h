@@ -170,6 +170,10 @@ private:
 
   Note *findNoteAt(float x, float y);
   void updateScrollBars();
+  void rebuildWaveformPeakCacheIfNeeded(const AudioData &audioData);
+  float getWaveformPeakForSampleRange(const AudioData &audioData,
+                                      int startSample,
+                                      int endSample) const;
   void updateBasePitchCacheIfNeeded();
   void reapplyBasePitchForNote(
       Note *note); // Recalculate F0 from base pitch + delta after undo/redo
@@ -347,6 +351,15 @@ private:
   float cachedPixelsPerSecond = -1.0f;
   int cachedWidth = 0;
   int cachedHeight = 0;
+
+  struct WaveformPeakCache {
+    std::vector<float> peaks;
+    int samplesPerPeak = 256;
+    int sourceNumSamples = 0;
+    int sourceSampleRate = 0;
+    int sourceNumChannels = 0;
+    bool valid = false;
+  } waveformPeakCache;
 
   // Base pitch curve cache for performance
   // Only recalculates when notes change, not on every repaint
