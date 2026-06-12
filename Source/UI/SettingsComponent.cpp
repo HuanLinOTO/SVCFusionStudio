@@ -219,6 +219,41 @@ SettingsComponent::SettingsComponent(
   };
   addAndMakeVisible(actualF0DebugToggle);
 
+  fpsOverlayLabel.setText("Show FPS overlay", juce::dontSendNotification);
+  configureRowLabel(fpsOverlayLabel);
+  addAndMakeVisible(fpsOverlayLabel);
+
+  fpsOverlayToggle.setButtonText("");
+  fpsOverlayToggle.setClickingTogglesState(true);
+  fpsOverlayToggle.onClick = [this]() {
+    showFpsOverlay = fpsOverlayToggle.getToggleState();
+    if (settingsManager) {
+      settingsManager->setShowFpsOverlay(showFpsOverlay);
+      settingsManager->saveConfig();
+    }
+    if (onShowFpsOverlayChanged)
+      onShowFpsOverlayChanged(showFpsOverlay);
+  };
+  addAndMakeVisible(fpsOverlayToggle);
+
+  backgroundWaveformLabel.setText("Show background waveform",
+                                  juce::dontSendNotification);
+  configureRowLabel(backgroundWaveformLabel);
+  addAndMakeVisible(backgroundWaveformLabel);
+
+  backgroundWaveformToggle.setButtonText("");
+  backgroundWaveformToggle.setClickingTogglesState(true);
+  backgroundWaveformToggle.onClick = [this]() {
+    showBackgroundWaveform = backgroundWaveformToggle.getToggleState();
+    if (settingsManager) {
+      settingsManager->setShowBackgroundWaveform(showBackgroundWaveform);
+      settingsManager->saveConfig();
+    }
+    if (onShowBackgroundWaveformChanged)
+      onShowBackgroundWaveformChanged(showBackgroundWaveform);
+  };
+  addAndMakeVisible(backgroundWaveformToggle);
+
   // Info label
   infoLabel.setColour(juce::Label::textColourId, APP_COLOR_TEXT_MUTED);
   infoLabel.setFont(AppFont::getFont(13.0f));
@@ -319,6 +354,8 @@ SettingsComponent::~SettingsComponent() {
   someValuesDebugToggle.setLookAndFeel(nullptr);
   uvInterpolationDebugToggle.setLookAndFeel(nullptr);
   actualF0DebugToggle.setLookAndFeel(nullptr);
+  fpsOverlayToggle.setLookAndFeel(nullptr);
+  backgroundWaveformToggle.setLookAndFeel(nullptr);
 }
 
 void SettingsComponent::changeListenerCallback(
@@ -469,6 +506,8 @@ void SettingsComponent::layoutGeneralTab(juce::Rectangle<int> content) {
   layoutRow(someValuesDebugLabel, someValuesDebugToggle);
   layoutRow(uvInterpolationDebugLabel, uvInterpolationDebugToggle);
   layoutRow(actualF0DebugLabel, actualF0DebugToggle);
+  layoutRow(fpsOverlayLabel, fpsOverlayToggle);
+  layoutRow(backgroundWaveformLabel, backgroundWaveformToggle);
 
   infoLabel.setBounds(content.removeFromTop(56));
 }
@@ -738,7 +777,9 @@ void SettingsComponent::applyTabAnimationState() {
               &someSegmentsDebugLabel, &someSegmentsDebugToggle,
               &someValuesDebugLabel, &someValuesDebugToggle,
               &uvInterpolationDebugLabel, &uvInterpolationDebugToggle,
-              &actualF0DebugLabel, &actualF0DebugToggle, &infoLabel},
+              &actualF0DebugLabel, &actualF0DebugToggle, &fpsOverlayLabel,
+              &fpsOverlayToggle, &backgroundWaveformLabel,
+              &backgroundWaveformToggle, &infoLabel},
              generalAlpha, offsetFor(SettingsTab::General), generalEnabled);
 
   if (!showGpu) {
@@ -1070,6 +1111,8 @@ void SettingsComponent::loadSettings() {
     showSomeValuesDebug = settingsManager->getShowSomeValuesDebug();
     showUvInterpolationDebug = settingsManager->getShowUvInterpolationDebug();
     showActualF0Debug = settingsManager->getShowActualF0Debug();
+    showFpsOverlay = settingsManager->getShowFpsOverlay();
+    showBackgroundWaveform = settingsManager->getShowBackgroundWaveform();
 
     auto langCode = settingsManager->getLanguage();
     if (langCode == "auto") {
@@ -1119,6 +1162,9 @@ void SettingsComponent::loadSettings() {
                                             juce::dontSendNotification);
   actualF0DebugToggle.setToggleState(showActualF0Debug,
                                      juce::dontSendNotification);
+  fpsOverlayToggle.setToggleState(showFpsOverlay, juce::dontSendNotification);
+  backgroundWaveformToggle.setToggleState(showBackgroundWaveform,
+                                          juce::dontSendNotification);
 
   hasLoadedSettings = true;
   lastConfirmedDevice = currentDevice;
@@ -1152,6 +1198,8 @@ void SettingsComponent::saveSettings() {
     settingsManager->setShowSomeValuesDebug(showSomeValuesDebug);
     settingsManager->setShowUvInterpolationDebug(showUvInterpolationDebug);
     settingsManager->setShowActualF0Debug(showActualF0Debug);
+    settingsManager->setShowFpsOverlay(showFpsOverlay);
+    settingsManager->setShowBackgroundWaveform(showBackgroundWaveform);
     settingsManager->setFollowSystemAudioOutput(followSystemAudioOutput);
     settingsManager->saveConfig();
   }

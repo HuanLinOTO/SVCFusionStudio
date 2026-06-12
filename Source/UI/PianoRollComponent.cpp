@@ -112,6 +112,22 @@ int PianoRollComponent::getVisibleContentHeight() const {
 }
 
 void PianoRollComponent::paint(juce::Graphics &g) {
+  const bool interactivePaint = isDragging ||
+                                (pitchEditor && pitchEditor->isDraggingMultiNotes()) ||
+                                isDrawing || stretchDrag.active ||
+                                isDeltaScaleDragging || isDeltaOffsetDragging ||
+                                boxSelector->isSelecting() ||
+                                loopDragMode != LoopDragMode::None;
+  const auto fpsOverlayBounds = getFpsOverlayBounds();
+  if (showFpsOverlay && fpsOverlayBounds.expanded(2).contains(g.getClipBounds())) {
+    recordFpsSample();
+    drawFpsOverlay(g);
+    return;
+  }
+
+  if (showFpsOverlay)
+    recordFpsSample();
+
   // Apply rounded corner clipping
   const float cornerRadius = 8.0f;
   juce::Path clipPath;
@@ -131,29 +147,24 @@ void PianoRollComponent::paint(juce::Graphics &g) {
                       .withTrimmedBottom(scrollBarSize)
                       .withTrimmedRight(scrollBarSize);
 
-  // Draw background waveform (only horizontal scroll, fills visible height)
-  {
-    juce::Graphics::ScopedSaveState saveState(g);
-    g.reduceClipRegion(mainArea);
-    drawBackgroundWaveform(g, mainArea);
-  }
+  drawStaticPianoLayer(g, mainArea);
 
-  // Draw scrolled content (grid, notes, pitch curves)
+  // Dynamic overlays that should not be baked into the static layer.
   {
     juce::Graphics::ScopedSaveState saveState(g);
     g.reduceClipRegion(mainArea);
     g.setOrigin(pianoKeysWidth - static_cast<int>(scrollX),
                 headerHeight - static_cast<int>(scrollY));
-
-    drawGrid(g);
-    drawSomeSegmentDebugOverlay(g);
-    drawLoopOverlay(g);
-    drawNotes(g);
+    if (isDragging && draggedNote)
+      drawDragPitchOverlay(g);
+    else if ((pitchEditor && pitchEditor->isDraggingMultiNotes()) ||
+             isDeltaScaleDragging || isDeltaOffsetDragging)
+      drawPitchCurves(g);
     drawStretchGuides(g);
-    drawPitchCurves(g);
-    drawSomeValuesDebugOverlay(g);
     drawSelectionRect(g);
   }
+
+  drawDragOverlay(g);
 
   // Draw timeline (above grid, scrolls horizontally)
   drawTimeline(g);
@@ -186,9 +197,13 @@ void PianoRollComponent::paint(juce::Graphics &g) {
 
   // Draw piano keys
   drawPianoKeys(g);
+
+  if (showFpsOverlay)
+    drawFpsOverlay(g);
 }
 
 void PianoRollComponent::resized() {
+  invalidateStaticPianoLayer();
   auto bounds = getLocalBounds();
   constexpr int scrollBarSize = 8;
 
@@ -224,6 +239,7 @@ void PianoRollComponent::rebuildWaveformPeakCacheIfNeeded(
   }
 
   constexpr int samplesPerPeak = 256;
+  constexpr int peaksPerCoarsePeak = 16;
   const int peakCount = (numSamples + samplesPerPeak - 1) / samplesPerPeak;
   waveformPeakCache.peaks.assign(static_cast<size_t>(peakCount), 0.0f);
 
@@ -237,7 +253,22 @@ void PianoRollComponent::rebuildWaveformPeakCacheIfNeeded(
     waveformPeakCache.peaks[static_cast<size_t>(peak)] = maxVal;
   }
 
+  const int coarsePeakCount =
+      (peakCount + peaksPerCoarsePeak - 1) / peaksPerCoarsePeak;
+  waveformPeakCache.coarsePeaks.assign(static_cast<size_t>(coarsePeakCount),
+                                       0.0f);
+  for (int coarse = 0; coarse < coarsePeakCount; ++coarse) {
+    const int startPeak = coarse * peaksPerCoarsePeak;
+    const int endPeak = std::min(startPeak + peaksPerCoarsePeak, peakCount);
+    float maxVal = 0.0f;
+    for (int peak = startPeak; peak < endPeak; ++peak)
+      maxVal = std::max(maxVal,
+                        waveformPeakCache.peaks[static_cast<size_t>(peak)]);
+    waveformPeakCache.coarsePeaks[static_cast<size_t>(coarse)] = maxVal;
+  }
+
   waveformPeakCache.samplesPerPeak = samplesPerPeak;
+  waveformPeakCache.peaksPerCoarsePeak = peaksPerCoarsePeak;
   waveformPeakCache.sourceNumSamples = numSamples;
   waveformPeakCache.sourceSampleRate = sampleRate;
   waveformPeakCache.sourceNumChannels = numChannels;
@@ -257,12 +288,30 @@ float PianoRollComponent::getWaveformPeakForSampleRange(
   const int sampleSpan = endSample - startSample;
   if (waveformPeakCache.valid && !waveformPeakCache.peaks.empty() &&
       sampleSpan >= waveformPeakCache.samplesPerPeak) {
-    const int firstPeak = startSample / waveformPeakCache.samplesPerPeak;
+    int firstPeak = startSample / waveformPeakCache.samplesPerPeak;
     const int lastPeak = (endSample - 1) / waveformPeakCache.samplesPerPeak;
     float maxVal = 0.0f;
     const int peakCount = static_cast<int>(waveformPeakCache.peaks.size());
-    for (int peak = firstPeak; peak <= lastPeak && peak < peakCount;
-         ++peak) {
+    const int peaksPerCoarsePeak = waveformPeakCache.peaksPerCoarsePeak;
+
+    while (firstPeak <= lastPeak && firstPeak < peakCount &&
+           (firstPeak % peaksPerCoarsePeak) != 0) {
+      maxVal = std::max(maxVal,
+                        waveformPeakCache.peaks[static_cast<size_t>(firstPeak)]);
+      ++firstPeak;
+    }
+
+    while (firstPeak + peaksPerCoarsePeak - 1 <= lastPeak &&
+           firstPeak < peakCount && !waveformPeakCache.coarsePeaks.empty()) {
+      const int coarseIndex = firstPeak / peaksPerCoarsePeak;
+      if (coarseIndex >= static_cast<int>(waveformPeakCache.coarsePeaks.size()))
+        break;
+      maxVal = std::max(
+          maxVal, waveformPeakCache.coarsePeaks[static_cast<size_t>(coarseIndex)]);
+      firstPeak += peaksPerCoarsePeak;
+    }
+
+    for (int peak = firstPeak; peak <= lastPeak && peak < peakCount; ++peak) {
       maxVal = std::max(maxVal,
                         waveformPeakCache.peaks[static_cast<size_t>(peak)]);
     }
@@ -278,7 +327,7 @@ float PianoRollComponent::getWaveformPeakForSampleRange(
 
 void PianoRollComponent::drawBackgroundWaveform(
     juce::Graphics &g, const juce::Rectangle<int> &visibleArea) {
-  if (!project)
+  if (!showBackgroundWaveform || !project)
     return;
 
   const auto &audioData = project->getAudioData();
@@ -290,20 +339,34 @@ void PianoRollComponent::drawBackgroundWaveform(
 
   rebuildWaveformPeakCacheIfNeeded(audioData);
 
-  // Check if we can use cached waveform
+  const int renderStepPx = pixelsPerSecond < 45.0f  ? 24
+                           : pixelsPerSecond < 90.0f ? 16
+                           : pixelsPerSecond < 180.0f ? 10
+                                                       : 6;
+  const int overscanPx = std::max(64, renderStepPx * 8);
+  const int bucketPx = std::max(64, renderStepPx * 8);
+  const double bucketScrollX =
+      std::floor(scrollX / static_cast<double>(bucketPx)) *
+      static_cast<double>(bucketPx);
+  const int cacheRenderWidth = visibleArea.getWidth() + overscanPx * 2;
+
+  // Check if we can use cached waveform. Bucketed scroll avoids rebuilding the
+  // path for every 1px horizontal scroll.
   bool cacheValid = waveformCache.isValid() &&
-                    std::abs(cachedScrollX - scrollX) < 1.0 &&
+                    std::abs(cachedWaveformBucketScrollX - bucketScrollX) < 1.0 &&
                     std::abs(cachedPixelsPerSecond - pixelsPerSecond) < 0.01f &&
-                    cachedWidth == visibleArea.getWidth() &&
+                    cachedWidth == cacheRenderWidth &&
                     cachedHeight == visibleArea.getHeight();
 
   if (cacheValid) {
-    g.drawImageAt(waveformCache, visibleArea.getX(), visibleArea.getY());
+    const int imageX = visibleArea.getX() - overscanPx -
+                       static_cast<int>(std::round(scrollX - bucketScrollX));
+    g.drawImageAt(waveformCache, imageX, visibleArea.getY());
     return;
   }
 
   // Render waveform to cache
-  waveformCache = juce::Image(juce::Image::ARGB, visibleArea.getWidth(),
+  waveformCache = juce::Image(juce::Image::ARGB, cacheRenderWidth,
                               visibleArea.getHeight(), true);
   juce::Graphics cacheGraphics(waveformCache);
 
@@ -312,55 +375,57 @@ void PianoRollComponent::drawBackgroundWaveform(
   float centerY = visibleHeight * 0.5f;
   float waveformHeight = visibleHeight * 0.8f;
 
-  juce::Path waveformPath;
-  int visibleWidth = visibleArea.getWidth();
+  int visibleWidth = cacheRenderWidth;
   const int sampleRate = audioData.sampleRate > 0 ? audioData.sampleRate
                                                   : SAMPLE_RATE;
-  std::vector<float> visiblePeaks(static_cast<size_t>(visibleWidth), 0.0f);
+  const double renderStartX = bucketScrollX - static_cast<double>(overscanPx);
 
-  waveformPath.startNewSubPath(0.0f, centerY);
+  cacheGraphics.setColour(APP_COLOR_WAVEFORM);
 
-  // Draw only the visible portion
-  for (int px = 0; px < visibleWidth; ++px) {
-    const double startTime = (scrollX + px) / pixelsPerSecond;
-    const double endTime = (scrollX + px + 1.0) / pixelsPerSecond;
+  // Draw a deliberately low-detail envelope. Avoid Path::fillPath here: wide,
+  // tall filled paths are the hotspot when the background waveform is enabled.
+  for (int px = 0; px <= visibleWidth; px += renderStepPx) {
+    const double startTime = (renderStartX + px) / pixelsPerSecond;
+    const double endTime =
+        (renderStartX + px + static_cast<double>(renderStepPx)) /
+        pixelsPerSecond;
     const int startSample = static_cast<int>(std::floor(startTime * sampleRate));
     const int endSample = static_cast<int>(std::ceil(endTime * sampleRate));
     const float maxVal =
         getWaveformPeakForSampleRange(audioData, startSample, endSample);
-    visiblePeaks[static_cast<size_t>(px)] = maxVal;
-
-    float y = centerY - maxVal * waveformHeight * 0.5f;
-    waveformPath.lineTo(static_cast<float>(px), y);
+    const int top = static_cast<int>(std::round(centerY - maxVal * waveformHeight * 0.5f));
+    const int bottom = static_cast<int>(std::round(centerY + maxVal * waveformHeight * 0.5f));
+    const int barX = std::min(px, visibleWidth - 1);
+    const int barWidth = std::max(2, renderStepPx - 2);
+    cacheGraphics.fillRect(barX, top, std::min(barWidth, visibleWidth - barX),
+                           std::max(1, bottom - top));
   }
-
-  // Bottom half (reverse)
-  for (int px = visibleWidth - 1; px >= 0; --px) {
-    const float maxVal = visiblePeaks[static_cast<size_t>(px)];
-    float y = centerY + maxVal * waveformHeight * 0.5f;
-    waveformPath.lineTo(static_cast<float>(px), y);
-  }
-
-  waveformPath.closeSubPath();
-
-  cacheGraphics.setColour(APP_COLOR_WAVEFORM);
-  cacheGraphics.fillPath(waveformPath);
 
   // Update cache metadata
   cachedScrollX = scrollX;
+  cachedWaveformBucketScrollX = bucketScrollX;
   cachedPixelsPerSecond = pixelsPerSecond;
-  cachedWidth = visibleArea.getWidth();
+  cachedWidth = cacheRenderWidth;
   cachedHeight = visibleArea.getHeight();
 
   // Draw cached image
-  g.drawImageAt(waveformCache, visibleArea.getX(), visibleArea.getY());
+  const int imageX = visibleArea.getX() - overscanPx -
+                     static_cast<int>(std::round(scrollX - bucketScrollX));
+  g.drawImageAt(waveformCache, imageX, visibleArea.getY());
 }
 
 void PianoRollComponent::drawGrid(juce::Graphics &g) {
   float duration = project ? project->getAudioData().getDuration() : 60.0f;
-  const float visibleLeft = std::max(0.0f, static_cast<float>(scrollX));
-  const float visibleRight =
-      visibleLeft + static_cast<float>(std::max(1, getVisibleContentWidth()));
+  const auto clipBounds = g.getClipBounds();
+  const float viewportLeft = std::max(0.0f, static_cast<float>(scrollX));
+  const float viewportRight =
+      viewportLeft + static_cast<float>(std::max(1, getVisibleContentWidth()));
+  const float visibleLeft = std::max(
+      viewportLeft, static_cast<float>(clipBounds.getX()) - 8.0f);
+  const float visibleRight = std::min(
+      viewportRight, static_cast<float>(clipBounds.getRight()) + 8.0f);
+  if (visibleRight <= visibleLeft)
+    return;
   const float width = std::max(duration * pixelsPerSecond, visibleRight);
   float height = (MAX_MIDI_NOTE - MIN_MIDI_NOTE + 1) * pixelsPerSemitone;
 
@@ -680,6 +745,431 @@ void PianoRollComponent::drawSomeValuesDebugOverlay(juce::Graphics &g) {
   }
 }
 
+void PianoRollComponent::recordFpsSample() {
+  const double nowMs = juce::Time::getMillisecondCounterHiRes();
+  if (lastFpsSampleTimeMs <= 0.0) {
+    lastFpsSampleTimeMs = nowMs;
+    return;
+  }
+
+  const double deltaMs = nowMs - lastFpsSampleTimeMs;
+  lastFpsSampleTimeMs = nowMs;
+  if (deltaMs <= 0.0 || deltaMs > 2000.0)
+    return;
+
+  currentFps = static_cast<float>(1000.0 / deltaMs);
+  fpsHistory[static_cast<size_t>(fpsHistoryIndex)] = currentFps;
+  fpsHistoryIndex = (fpsHistoryIndex + 1) % fpsHistorySize;
+  fpsHistoryCount = std::min(fpsHistoryCount + 1, fpsHistorySize);
+}
+
+juce::Rectangle<int> PianoRollComponent::getFpsOverlayBounds() const {
+  constexpr int overlayWidth = 168;
+  constexpr int overlayHeight = 74;
+  constexpr int margin = 12;
+  auto bounds = juce::Rectangle<int>(getWidth() - overlayWidth - margin,
+                                     headerHeight + margin, overlayWidth,
+                                     overlayHeight);
+  if (bounds.getX() < pianoKeysWidth + margin)
+    bounds.setX(pianoKeysWidth + margin);
+  return bounds;
+}
+
+void PianoRollComponent::drawFpsOverlay(juce::Graphics &g) {
+  auto bounds = getFpsOverlayBounds();
+
+  g.setColour(APP_COLOR_BACKGROUND);
+  g.fillRoundedRectangle(bounds.toFloat(), 7.0f);
+  g.setColour(APP_COLOR_BORDER.withAlpha(0.9f));
+  g.drawRoundedRectangle(bounds.toFloat().reduced(0.5f), 7.0f, 1.0f);
+
+  const auto label = "FPS " + juce::String(currentFps, 1);
+  g.setFont(juce::FontOptions(13.0f, juce::Font::bold));
+  g.setColour(APP_COLOR_TEXT_PRIMARY);
+  g.drawText(label, bounds.reduced(10, 6).removeFromTop(16),
+             juce::Justification::centredLeft);
+
+  auto graph = bounds.reduced(10, 8).withTrimmedTop(22);
+  g.setColour(APP_COLOR_SURFACE_RAISED.withAlpha(0.7f));
+  g.fillRoundedRectangle(graph.toFloat(), 4.0f);
+
+  g.setColour(APP_COLOR_BORDER_SUBTLE.withAlpha(0.8f));
+  const float y60 = graph.getY() + graph.getHeight() * 0.5f;
+  g.drawHorizontalLine(static_cast<int>(std::round(y60)),
+                       static_cast<float>(graph.getX()),
+                       static_cast<float>(graph.getRight()));
+
+  if (fpsHistoryCount < 2)
+    return;
+
+  juce::Path curve;
+  const int first = (fpsHistoryIndex - fpsHistoryCount + fpsHistorySize) %
+                    fpsHistorySize;
+  constexpr float maxFps = 120.0f;
+  for (int i = 0; i < fpsHistoryCount; ++i) {
+    const int historyIndex = (first + i) % fpsHistorySize;
+    const float fps = juce::jlimit(0.0f, maxFps,
+                                   fpsHistory[static_cast<size_t>(historyIndex)]);
+    const float t = static_cast<float>(i) /
+                    static_cast<float>(std::max(1, fpsHistoryCount - 1));
+    const float x = static_cast<float>(graph.getX()) +
+                    t * static_cast<float>(graph.getWidth() - 1);
+    const float y = static_cast<float>(graph.getBottom()) -
+                    (fps / maxFps) * static_cast<float>(graph.getHeight() - 1);
+    if (i == 0)
+      curve.startNewSubPath(x, y);
+    else
+      curve.lineTo(x, y);
+  }
+
+  g.setColour(APP_COLOR_PRIMARY);
+  g.strokePath(curve, juce::PathStrokeType(1.6f));
+}
+
+void PianoRollComponent::timerCallback() {
+  if (!showFpsOverlay) {
+    stopTimer();
+    return;
+  }
+
+  repaint(getFpsOverlayBounds().expanded(1));
+}
+
+juce::Rectangle<int> PianoRollComponent::getNoteDirtyBounds(
+    const Note &note) const {
+  const float x = static_cast<float>(pianoKeysWidth) +
+                  framesToSeconds(note.getStartFrame()) * pixelsPerSecond -
+                  static_cast<float>(scrollX);
+  const float w = std::max(framesToSeconds(note.getDurationFrames()) *
+                               pixelsPerSecond,
+                           4.0f);
+  const float h = pixelsPerSemitone;
+  const float centerY = static_cast<float>(headerHeight) +
+                        midiToY(note.getMidiNote()) + h * 0.5f -
+                        note.getPitchOffset() * h - static_cast<float>(scrollY);
+
+  auto bounds = juce::Rectangle<float>(x, centerY - h * 1.55f, w, h * 3.1f);
+  bounds = bounds.expanded(32.0f, 36.0f);
+  return bounds.getSmallestIntegerContainer().getIntersection(getLocalBounds());
+}
+
+juce::Rectangle<int> PianoRollComponent::getDragPitchDirtyBounds() const {
+  if (!draggedNote || !showDeltaPitch || dragPitchPoints.empty())
+    return {};
+
+  int startFrame = dragPreviewStartFrame >= 0 ? dragPreviewStartFrame
+                                             : draggedNote->getStartFrame();
+  int endFrame = dragPreviewEndFrame > startFrame ? dragPreviewEndFrame
+                                                  : draggedNote->getEndFrame();
+  if (endFrame <= startFrame)
+    return {};
+
+  const float x1 = static_cast<float>(pianoKeysWidth) +
+                   framesToSeconds(startFrame) * pixelsPerSecond -
+                   static_cast<float>(scrollX);
+  const float x2 = static_cast<float>(pianoKeysWidth) +
+                   framesToSeconds(endFrame) * pixelsPerSecond -
+                   static_cast<float>(scrollX);
+  float minMidi = dragPreviewMinMidi;
+  float maxMidi = dragPreviewMaxMidi;
+  const float offset = draggedNote->getPitchOffset();
+  if (offset >= 0.0f)
+    maxMidi += offset;
+  else
+    minMidi += offset;
+
+  const float yA = static_cast<float>(headerHeight) + midiToY(minMidi) +
+                   pixelsPerSemitone * 0.5f - static_cast<float>(scrollY);
+  const float yB = static_cast<float>(headerHeight) + midiToY(maxMidi) +
+                   pixelsPerSemitone * 0.5f - static_cast<float>(scrollY);
+  const float minY = std::min(yA, yB);
+  const float maxY = std::max(yA, yB);
+
+  auto bounds = juce::Rectangle<float>(std::min(x1, x2), minY,
+                                       std::abs(x2 - x1),
+                                       std::max(1.0f, maxY - minY));
+  bounds = bounds.expanded(48.0f, 18.0f);
+  return bounds.getSmallestIntegerContainer().getIntersection(getLocalBounds());
+}
+
+void PianoRollComponent::invalidateStaticPianoLayer() {
+  staticPianoLayer = {};
+  staticPianoLayerValid = false;
+}
+
+bool PianoRollComponent::isStaticPianoLayerValid(
+    const juce::Rectangle<int> &mainArea) const {
+  const bool debugState = showSomeSegmentsDebug || showSomeValuesDebug ||
+                          showUvInterpolationDebug || showActualF0Debug;
+  const bool interactivePitch = isDragging ||
+                                (pitchEditor && pitchEditor->isDraggingMultiNotes()) ||
+                                isDeltaScaleDragging || isDeltaOffsetDragging;
+  return staticPianoLayerValid && staticPianoLayer.isValid() &&
+         staticPianoLayerWidth == mainArea.getWidth() &&
+         staticPianoLayerHeight == mainArea.getHeight() &&
+         std::abs(staticPianoLayerScrollX - scrollX) < 0.5 &&
+         std::abs(staticPianoLayerScrollY - scrollY) < 0.5 &&
+         std::abs(staticPianoLayerPixelsPerSecond - pixelsPerSecond) < 0.01f &&
+         std::abs(staticPianoLayerPixelsPerSemitone - pixelsPerSemitone) < 0.01f &&
+         staticPianoLayerShowBackgroundWaveform == showBackgroundWaveform &&
+         staticPianoLayerShowDeltaPitch == showDeltaPitch &&
+         staticPianoLayerShowBasePitch == showBasePitch &&
+         staticPianoLayerShowDebug == debugState &&
+         staticPianoLayerInteractivePitch == interactivePitch &&
+         staticPianoLayerSkippedDragNote == (isDragging ? draggedNote : nullptr);
+}
+
+void PianoRollComponent::rebuildStaticPianoLayer(
+    const juce::Rectangle<int> &mainArea) {
+  if (mainArea.isEmpty())
+    return;
+
+  staticPianoLayer = juce::Image(juce::Image::ARGB, mainArea.getWidth(),
+                                 mainArea.getHeight(), true);
+  juce::Graphics cacheGraphics(staticPianoLayer);
+
+  cacheGraphics.fillAll(APP_COLOR_BACKGROUND);
+
+  if (showBackgroundWaveform)
+    drawBackgroundWaveform(cacheGraphics,
+                           {0, 0, mainArea.getWidth(), mainArea.getHeight()});
+
+  {
+    juce::Graphics::ScopedSaveState saveState(cacheGraphics);
+    cacheGraphics.reduceClipRegion(staticPianoLayer.getBounds());
+    cacheGraphics.setOrigin(-static_cast<int>(scrollX),
+                            -static_cast<int>(scrollY));
+    skipDraggedNoteInStaticLayer = isDragging && draggedNote != nullptr;
+    drawGrid(cacheGraphics);
+    drawSomeSegmentDebugOverlay(cacheGraphics);
+    drawLoopOverlay(cacheGraphics);
+    drawNotes(cacheGraphics);
+    const bool singleNoteDrag = isDragging && draggedNote != nullptr;
+    if ((!isDragging || singleNoteDrag) &&
+        !(pitchEditor && pitchEditor->isDraggingMultiNotes()) &&
+        !isDeltaScaleDragging && !isDeltaOffsetDragging)
+      drawPitchCurves(cacheGraphics);
+    drawSomeValuesDebugOverlay(cacheGraphics);
+    skipDraggedNoteInStaticLayer = false;
+  }
+
+  staticPianoLayerValid = true;
+  staticPianoLayerWidth = mainArea.getWidth();
+  staticPianoLayerHeight = mainArea.getHeight();
+  staticPianoLayerScrollX = scrollX;
+  staticPianoLayerScrollY = scrollY;
+  staticPianoLayerPixelsPerSecond = pixelsPerSecond;
+  staticPianoLayerPixelsPerSemitone = pixelsPerSemitone;
+  staticPianoLayerShowBackgroundWaveform = showBackgroundWaveform;
+  staticPianoLayerShowDeltaPitch = showDeltaPitch;
+  staticPianoLayerShowBasePitch = showBasePitch;
+  staticPianoLayerShowDebug = showSomeSegmentsDebug || showSomeValuesDebug ||
+                              showUvInterpolationDebug || showActualF0Debug;
+  staticPianoLayerInteractivePitch = isDragging ||
+                                     (pitchEditor && pitchEditor->isDraggingMultiNotes()) ||
+                                     isDeltaScaleDragging || isDeltaOffsetDragging;
+  staticPianoLayerSkippedDragNote = isDragging ? draggedNote : nullptr;
+}
+
+void PianoRollComponent::drawStaticPianoLayer(
+    juce::Graphics &g, const juce::Rectangle<int> &mainArea) {
+  if (!isStaticPianoLayerValid(mainArea))
+    rebuildStaticPianoLayer(mainArea);
+
+  if (staticPianoLayer.isValid()) {
+    juce::Graphics::ScopedSaveState saveState(g);
+    g.reduceClipRegion(mainArea);
+    g.drawImageAt(staticPianoLayer, mainArea.getX(), mainArea.getY());
+  }
+}
+
+void PianoRollComponent::rebuildDragOverlayCache() {
+  dragOverlayImage = {};
+  dragOverlaySourceBounds = {};
+  if (!project || !draggedNote)
+    return;
+
+  const auto bounds = getNoteDirtyBounds(*draggedNote);
+  if (bounds.isEmpty())
+    return;
+
+  const auto &audioData = project->getAudioData();
+  const float *samples = nullptr;
+  int totalSamples = 0;
+  int startSample = 0;
+  int endSample = 0;
+  bool usingClipWaveform = false;
+
+  const auto &clipWaveform = draggedNote->getClipWaveform();
+  if (!clipWaveform.empty()) {
+    samples = clipWaveform.data();
+    totalSamples = static_cast<int>(clipWaveform.size());
+    startSample = 0;
+    endSample = totalSamples;
+    usingClipWaveform = true;
+  } else if (audioData.waveform.getNumSamples() > 0) {
+    samples = audioData.waveform.getReadPointer(0);
+    totalSamples = audioData.waveform.getNumSamples();
+    rebuildWaveformPeakCacheIfNeeded(audioData);
+    startSample = static_cast<int>(framesToSeconds(draggedNote->getStartFrame()) *
+                                   audioData.sampleRate);
+    endSample = static_cast<int>(framesToSeconds(draggedNote->getEndFrame()) *
+                                 audioData.sampleRate);
+    startSample = std::max(0, std::min(startSample, totalSamples - 1));
+    endSample = std::max(startSample + 1, std::min(endSample, totalSamples));
+  }
+
+  dragOverlayImage = juce::Image(juce::Image::ARGB, bounds.getWidth(),
+                                 bounds.getHeight(), true);
+  dragOverlaySourceBounds = bounds;
+  juce::Graphics cacheGraphics(dragOverlayImage);
+
+  const float screenX = static_cast<float>(pianoKeysWidth) +
+                        framesToSeconds(draggedNote->getStartFrame()) *
+                            pixelsPerSecond -
+                        static_cast<float>(scrollX);
+  const float w = std::max(framesToSeconds(draggedNote->getDurationFrames()) *
+                               pixelsPerSecond,
+                           4.0f);
+  const float h = pixelsPerSemitone;
+  const float centerY = static_cast<float>(headerHeight) +
+                        midiToY(draggedNote->getMidiNote()) + h * 0.5f -
+                        draggedNote->getPitchOffset() * h -
+                        static_cast<float>(scrollY);
+  const float x = screenX - static_cast<float>(bounds.getX());
+  const float y = centerY - h * 0.5f - static_cast<float>(bounds.getY());
+  const float localCenterY = y + h * 0.5f;
+  const auto noteColor = draggedNote->isSelected() ? APP_COLOR_NOTE_SELECTED
+                                                   : APP_COLOR_NOTE_NORMAL;
+
+  if (samples && totalSamples > 0 && endSample > startSample && w >= 4.0f) {
+    const int numNoteSamples = endSample - startSample;
+    const int maxWavePoints = w < 160.0f ? 64 : 128;
+    const int targetPoints = std::max(
+        2, std::min(maxWavePoints, static_cast<int>(std::ceil(w * 0.33f))));
+    const int samplesPerPoint = std::max(1, numNoteSamples / targetPoints);
+    std::vector<float> waveValues;
+    waveValues.reserve(static_cast<size_t>(targetPoints));
+
+    for (int point = 0; point < targetPoints; ++point) {
+      const float px = targetPoints > 1
+                           ? (static_cast<float>(point) /
+                              static_cast<float>(targetPoints - 1)) *
+                                 w
+                           : 0.0f;
+      int sampleIdx = startSample + static_cast<int>((px / w) * numNoteSamples);
+      sampleIdx = std::min(sampleIdx, endSample - 1);
+      int sampleEnd = std::min(sampleIdx + samplesPerPoint, endSample);
+      float maxVal = 0.0f;
+      if (!usingClipWaveform && samples == audioData.waveform.getReadPointer(0))
+        maxVal = getWaveformPeakForSampleRange(audioData, sampleIdx, sampleEnd);
+      else
+        for (int i = sampleIdx; i < sampleEnd; ++i)
+          maxVal = std::max(maxVal, std::abs(samples[i]));
+      waveValues.push_back(maxVal);
+    }
+
+    const float waveHeight = h * 3.0f;
+    juce::Path path;
+    path.startNewSubPath(x, localCenterY - waveValues.front() * waveHeight * 0.5f);
+    for (int i = 1; i < static_cast<int>(waveValues.size()); ++i) {
+      const float px = x + static_cast<float>(i) /
+                                static_cast<float>(waveValues.size() - 1) * w;
+      path.lineTo(px, localCenterY - waveValues[static_cast<size_t>(i)] *
+                              waveHeight * 0.5f);
+    }
+    for (int i = static_cast<int>(waveValues.size()) - 1; i >= 0; --i) {
+      const float px = x + static_cast<float>(i) /
+                                static_cast<float>(waveValues.size() - 1) * w;
+      path.lineTo(px, localCenterY + waveValues[static_cast<size_t>(i)] *
+                              waveHeight * 0.5f);
+    }
+    path.closeSubPath();
+    cacheGraphics.setColour(noteColor.withAlpha(0.88f));
+    cacheGraphics.fillPath(path);
+  } else {
+    cacheGraphics.setColour(noteColor.withAlpha(0.85f));
+    cacheGraphics.fillRoundedRectangle(x, y, w, h, 2.0f);
+  }
+
+  cacheGraphics.setColour(APP_COLOR_PRIMARY.withAlpha(0.95f));
+  cacheGraphics.drawRoundedRectangle(x - 2.0f, y - 2.0f, w + 4.0f, h + 4.0f,
+                                     3.5f, 1.5f);
+}
+
+void PianoRollComponent::drawDragOverlay(juce::Graphics &g) {
+  if (!isDragging || !draggedNote || !dragOverlayImage.isValid())
+    return;
+
+  const auto bounds = getNoteDirtyBounds(*draggedNote);
+  g.drawImageAt(dragOverlayImage, bounds.getX(), bounds.getY());
+
+  const float deltaSemitones = draggedNote->getPitchOffset();
+  if (std::abs(deltaSemitones) < 0.01f)
+    return;
+
+  const juce::String prefix = deltaSemitones >= 0.0f ? "+" : "";
+  const juce::String label = prefix + juce::String(deltaSemitones, 1) + " st";
+  constexpr float labelHeight = 16.0f;
+  const float labelWidth = std::max(44.0f, static_cast<float>(label.length()) * 7.2f);
+  const float labelX = static_cast<float>(bounds.getCentreX()) - labelWidth * 0.5f;
+  const float labelY = deltaSemitones > 0.0f
+                           ? static_cast<float>(bounds.getY()) + 12.0f
+                           : static_cast<float>(bounds.getBottom()) - labelHeight - 12.0f;
+  g.setColour(juce::Colours::black.withAlpha(0.72f));
+  g.fillRoundedRectangle(labelX, labelY, labelWidth, labelHeight, 4.0f);
+  g.setColour(juce::Colours::white);
+  g.setFont(juce::FontOptions(11.0f));
+  g.drawFittedText(label, static_cast<int>(labelX), static_cast<int>(labelY),
+                   static_cast<int>(labelWidth), static_cast<int>(labelHeight),
+                   juce::Justification::centred, 1);
+}
+
+void PianoRollComponent::drawDragPitchOverlay(juce::Graphics &g) {
+  if (!isDragging || !draggedNote || !project || !showDeltaPitch)
+    return;
+
+  if (dragPitchPoints.empty())
+    return;
+
+  const auto clipBounds = g.getClipBounds();
+  const float clipLeft = static_cast<float>(clipBounds.getX()) - 16.0f;
+  const float clipRight = static_cast<float>(clipBounds.getRight()) + 16.0f;
+  const float pitchOffset = draggedNote->getPitchOffset();
+  auto firstPoint = std::lower_bound(
+      dragPitchPoints.begin(), dragPitchPoints.end(), clipLeft,
+      [](const DragPitchPoint &point, float x) { return point.x < x; });
+  if (firstPoint != dragPitchPoints.begin())
+    --firstPoint;
+
+  juce::Path path;
+  bool pathStarted = false;
+  for (auto it = firstPoint; it != dragPitchPoints.end(); ++it) {
+    const auto &point = *it;
+    if (point.x > clipRight)
+      break;
+
+    const float finalMidi = point.midi + pitchOffset * point.weight;
+    if (finalMidi <= 0.0f) {
+      pathStarted = false;
+      continue;
+    }
+
+    const float y = midiToY(finalMidi) + pixelsPerSemitone * 0.5f;
+    if (!pathStarted) {
+      path.startNewSubPath(point.x, y);
+      pathStarted = true;
+    } else {
+      path.lineTo(point.x, y);
+    }
+  }
+
+  if (pathStarted) {
+    g.setColour(APP_COLOR_PITCH_CURVE);
+    g.strokePath(path, juce::PathStrokeType(1.5f));
+  }
+}
+
 void PianoRollComponent::drawTimeline(juce::Graphics &g) {
   constexpr int scrollBarSize = 8;
   auto timelineArea = juce::Rectangle<int>(
@@ -838,9 +1328,6 @@ void PianoRollComponent::drawNotes(juce::Graphics &g) {
   const bool isMultiDragging = pitchEditor && pitchEditor->isDraggingMultiNotes();
   const std::vector<Note *> *draggedNotes =
       isMultiDragging ? &pitchEditor->getDraggedNotes() : nullptr;
-  const bool reducedWaveformQuality =
-      isDragging || isMultiDragging || isDrawing || stretchDrag.active ||
-      isDeltaScaleDragging || isDeltaOffsetDragging;
 
   auto drawSelectedNoteOutline = [&g](float x, float y, float w, float h) {
     constexpr float localOutlinePadding = 2.0f;
@@ -889,23 +1376,51 @@ void PianoRollComponent::drawNotes(juce::Graphics &g) {
                                    ? audioData.waveform.getReadPointer(0)
                                    : nullptr;
   int globalTotalSamples = audioData.waveform.getNumSamples();
+  if (globalSamples && globalTotalSamples > 0)
+    rebuildWaveformPeakCacheIfNeeded(audioData);
 
-  // Calculate visible time range for culling
-  double visibleStartTime = scrollX / pixelsPerSecond;
-  double visibleEndTime =
-      (scrollX + static_cast<double>(std::max(1, getVisibleContentWidth()))) /
-      pixelsPerSecond;
+  // Calculate clipped time range for culling. Cursor/playhead repaints are
+  // narrow dirty rectangles, so viewport-only culling still does full-screen
+  // note waveform work at playback rate.
+  const auto clipBounds = g.getClipBounds();
+  const double viewportLeft = std::max(0.0, scrollX);
+  const double viewportRight =
+      viewportLeft + static_cast<double>(std::max(1, getVisibleContentWidth()));
+  const double clipLeft =
+      std::max(viewportLeft, static_cast<double>(clipBounds.getX()) - 32.0);
+  const double clipRight = std::min(
+      viewportRight, static_cast<double>(clipBounds.getRight()) + 32.0);
+  if (clipRight <= clipLeft)
+    return;
+  const float clipTop = static_cast<float>(clipBounds.getY()) - 48.0f;
+  const float clipBottom = static_cast<float>(clipBounds.getBottom()) + 48.0f;
+  const double visibleStartTime = clipLeft / pixelsPerSecond;
+  const double visibleEndTime = clipRight / pixelsPerSecond;
 
+  std::vector<Note *> visibleNotes;
+  visibleNotes.reserve(64);
   for (auto &note : project->getNotes()) {
-    // Skip rest notes (they have no pitch)
     if (note.isRest())
       continue;
 
-    // Viewport culling: skip notes outside visible area
-    double noteStartTime = framesToSeconds(note.getStartFrame());
-    double noteEndTime = framesToSeconds(note.getEndFrame());
+    const double noteStartTime = framesToSeconds(note.getStartFrame());
+    const double noteEndTime = framesToSeconds(note.getEndFrame());
     if (noteEndTime < visibleStartTime || noteStartTime > visibleEndTime)
       continue;
+
+    const float noteY = midiToY(note.getMidiNote()) -
+                        note.getPitchOffset() * pixelsPerSemitone;
+    if (noteY + pixelsPerSemitone * 3.0f >= clipTop &&
+        noteY - pixelsPerSemitone <= clipBottom)
+      visibleNotes.push_back(&note);
+  }
+
+  const bool useFastNoteBlocks = pixelsPerSecond < 80.0f;
+
+  for (auto *notePtr : visibleNotes) {
+    auto &note = *notePtr;
+
+    double noteStartTime = framesToSeconds(note.getStartFrame());
 
     float x = static_cast<float>(noteStartTime * pixelsPerSecond);
     float w = framesToSeconds(note.getDurationFrames()) * pixelsPerSecond;
@@ -924,40 +1439,60 @@ void PianoRollComponent::drawNotes(juce::Graphics &g) {
                                  ? APP_COLOR_NOTE_SELECTED
                                  : APP_COLOR_NOTE_NORMAL;
 
-    const float *samples = globalSamples;
-    int totalSamples = globalTotalSamples;
+    const bool isSingleDragged = isDragging && draggedNote == &note;
+    const bool isMultiDragged =
+        isMultiDragging && draggedNotes &&
+        std::find(draggedNotes->begin(), draggedNotes->end(), &note) !=
+            draggedNotes->end();
+    const bool isDraggedNote = isSingleDragged || isMultiDragged;
+    if (skipDraggedNoteInStaticLayer && isDraggedNote)
+      continue;
+
+    const bool allowDetailedForThisNote =
+        pixelsPerSecond >= 130.0f ||
+        (note.isSelected() && pixelsPerSecond >= 100.0f);
+    const bool drawDetailedWaveform = allowDetailedForThisNote;
+    const bool drawLowDetailWaveform = !drawDetailedWaveform &&
+                                       pixelsPerSemitone >= 4.0f &&
+                                       renderedWidth >= 3.0f;
+    const float *samples = nullptr;
+    int totalSamples = 0;
     int startSample = 0;
     int endSample = 0;
-    const auto &clipWaveform = note.getClipWaveform();
-    if (!clipWaveform.empty()) {
-      samples = clipWaveform.data();
-      totalSamples = static_cast<int>(clipWaveform.size());
-      startSample = 0;
-      endSample = totalSamples;
-    } else if (samples && totalSamples > 0) {
-      startSample = static_cast<int>(framesToSeconds(note.getStartFrame()) *
+    bool usingClipWaveform = false;
+    if (drawDetailedWaveform || drawLowDetailWaveform) {
+      samples = globalSamples;
+      totalSamples = globalTotalSamples;
+      const auto &clipWaveform = note.getClipWaveform();
+      if (!clipWaveform.empty()) {
+        samples = clipWaveform.data();
+        totalSamples = static_cast<int>(clipWaveform.size());
+        startSample = 0;
+        endSample = totalSamples;
+        usingClipWaveform = true;
+      } else if (samples && totalSamples > 0) {
+        startSample = static_cast<int>(framesToSeconds(note.getStartFrame()) *
+                                       audioData.sampleRate);
+        endSample = static_cast<int>(framesToSeconds(note.getEndFrame()) *
                                      audioData.sampleRate);
-      endSample = static_cast<int>(framesToSeconds(note.getEndFrame()) *
-                                   audioData.sampleRate);
-      startSample = std::max(0, std::min(startSample, totalSamples - 1));
-      endSample = std::max(startSample + 1,
-                           std::min(endSample, totalSamples));
+        startSample = std::max(0, std::min(startSample, totalSamples - 1));
+        endSample = std::max(startSample + 1,
+                             std::min(endSample, totalSamples));
+      }
     }
-
-    if (samples && totalSamples > 0 && w >= 14.0f && pixelsPerSemitone >= 6.0f &&
-        endSample > startSample) {
+    if (drawDetailedWaveform && samples && totalSamples > 0 && w >= 14.0f &&
+        pixelsPerSemitone >= 6.0f && endSample > startSample) {
       // Draw waveform slice inside note
       int numNoteSamples = endSample - startSample;
 
       float centerY = y + h * 0.5f;
       float waveHeight = h * 3.0f;
 
-      const int maxWavePoints = reducedWaveformQuality
-                                    ? 48
-                                    : (w < 80.0f ? 48
-                                                 : (w < 240.0f ? 96 : 192));
+      const int maxWavePoints = note.isSelected()
+                                    ? (w < 160.0f ? 64 : 128)
+                                    : (w < 120.0f ? 32 : 64);
       const int targetPoints = std::max(
-          2, std::min(maxWavePoints, static_cast<int>(std::ceil(w * 0.5f))));
+          2, std::min(maxWavePoints, static_cast<int>(std::ceil(w * 0.33f))));
       const int samplesPerPoint = std::max(1, numNoteSamples / targetPoints);
 
       // Build a bounded envelope. The old path used up to ~1024 points plus
@@ -977,14 +1512,19 @@ void PianoRollComponent::drawNotes(juce::Graphics &g) {
         int sampleEnd = std::min(sampleIdx + samplesPerPoint, endSample);
 
         float maxVal = 0.0f;
-        for (int i = sampleIdx; i < sampleEnd; ++i)
-          maxVal = std::max(maxVal, std::abs(samples[i]));
+        if (!usingClipWaveform && samples == globalSamples) {
+          maxVal = getWaveformPeakForSampleRange(audioData, sampleIdx,
+                                                 sampleEnd);
+        } else {
+          for (int i = sampleIdx; i < sampleEnd; ++i)
+            maxVal = std::max(maxVal, std::abs(samples[i]));
+        }
 
         waveValues.push_back(maxVal);
       }
 
-      // Apply smoothing filter to reduce aliasing artifacts
-      if (!reducedWaveformQuality && waveValues.size() > 2) {
+      // Apply smoothing only for selected notes; it allocates every paint.
+      if (note.isSelected() && waveValues.size() > 2) {
         std::vector<float> smoothed(waveValues.size());
         smoothed[0] = waveValues[0];
         for (size_t i = 1; i + 1 < waveValues.size(); ++i) {
@@ -1023,7 +1563,7 @@ void PianoRollComponent::drawNotes(juce::Graphics &g) {
 
         // Use cubic curves for smooth interpolation
         const int curveSegments =
-            reducedWaveformQuality || numPoints > 128 ? 1 : 2;
+            numPoints > 128 ? 1 : 2;
         for (size_t i = 0; i + 1 < numPoints; ++i) {
           float px1 =
               (static_cast<float>(i) / static_cast<float>(numPoints - 1)) * w;
@@ -1148,17 +1688,74 @@ void PianoRollComponent::drawNotes(juce::Graphics &g) {
         }
 
         outline.closeSubPath();
-        g.setColour(noteColor.brighter(0.2f));
-        // Use slightly thicker stroke with anti-aliasing for smoother
-        // appearance
-        g.strokePath(outline,
-                     juce::PathStrokeType(1.2f, juce::PathStrokeType::curved,
-                                          juce::PathStrokeType::rounded));
+        if (note.isSelected()) {
+          g.setColour(noteColor.brighter(0.2f));
+          g.strokePath(outline,
+                       juce::PathStrokeType(1.2f, juce::PathStrokeType::curved,
+                                            juce::PathStrokeType::rounded));
+        }
       }
+    } else if (drawLowDetailWaveform && samples && totalSamples > 0 &&
+               endSample > startSample) {
+      const int numNoteSamples = endSample - startSample;
+      const int pointCount = juce::jlimit(
+          2, note.isSelected() ? 28 : 18,
+          static_cast<int>(std::ceil(renderedWidth / 8.0f)) + 1);
+      const float centerY = y + h * 0.5f;
+      const float waveHeight = h * 3.0f;
+      std::vector<float> peaks;
+      peaks.reserve(static_cast<size_t>(pointCount));
+
+      for (int point = 0; point < pointCount; ++point) {
+        const double t0 = static_cast<double>(point) /
+                          static_cast<double>(pointCount);
+        const double t1 = static_cast<double>(point + 1) /
+                          static_cast<double>(pointCount);
+        const int sampleStart = startSample + static_cast<int>(std::floor(
+                                                t0 * numNoteSamples));
+        const int sampleEnd = startSample + static_cast<int>(std::ceil(
+                                              t1 * numNoteSamples));
+        float maxVal = 0.0f;
+        if (!usingClipWaveform && samples == globalSamples) {
+          maxVal = getWaveformPeakForSampleRange(audioData, sampleStart,
+                                                 sampleEnd);
+        } else {
+          const int boundedStart = juce::jlimit(startSample, endSample - 1,
+                                               sampleStart);
+          const int boundedEnd = juce::jlimit(boundedStart + 1, endSample,
+                                             sampleEnd);
+          for (int i = boundedStart; i < boundedEnd; ++i)
+            maxVal = std::max(maxVal, std::abs(samples[i]));
+        }
+        peaks.push_back(maxVal);
+      }
+
+      juce::Path lowPath;
+      lowPath.startNewSubPath(x, centerY);
+      for (int i = 0; i < static_cast<int>(peaks.size()); ++i) {
+        const float px = x + static_cast<float>(i) /
+                                  static_cast<float>(std::max(1, pointCount - 1)) *
+                                  renderedWidth;
+        lowPath.lineTo(px, centerY - peaks[static_cast<size_t>(i)] *
+                                  waveHeight * 0.5f);
+      }
+      for (int i = static_cast<int>(peaks.size()) - 1; i >= 0; --i) {
+        const float px = x + static_cast<float>(i) /
+                                  static_cast<float>(std::max(1, pointCount - 1)) *
+                                  renderedWidth;
+        lowPath.lineTo(px, centerY + peaks[static_cast<size_t>(i)] *
+                                  waveHeight * 0.5f);
+      }
+      lowPath.closeSubPath();
+      g.setColour(noteColor.withAlpha(note.isSelected() ? 0.88f : 0.76f));
+      g.fillPath(lowPath);
     } else {
-      // Fallback: simple rectangle for very short notes
+      // Fallback only when no audio samples are available for this note.
       g.setColour(noteColor.withAlpha(0.85f));
-      g.fillRoundedRectangle(x, y, renderedWidth, h, 2.0f);
+      if (useFastNoteBlocks && !note.isSelected())
+        g.fillRect(x, y, renderedWidth, h);
+      else
+        g.fillRoundedRectangle(x, y, renderedWidth, h, 2.0f);
     }
 
     if (note.isSelected()) {
@@ -1241,11 +1838,6 @@ void PianoRollComponent::drawNotes(juce::Graphics &g) {
       }
     }
 
-    const bool isSingleDragged = isDragging && draggedNote == &note;
-    const bool isMultiDragged =
-        isMultiDragging && draggedNotes &&
-        std::find(draggedNotes->begin(), draggedNotes->end(), &note) !=
-            draggedNotes->end();
     if (isSingleDragged || isMultiDragged) {
       const float deltaSemitones = note.getPitchOffset();
       if (std::abs(deltaSemitones) >= 0.01f) {
@@ -1341,10 +1933,18 @@ void PianoRollComponent::drawPitchCurves(juce::Graphics &g) {
   const int totalFrames = static_cast<int>(audioData.f0.size());
   const int sampleRate = audioData.sampleRate > 0 ? audioData.sampleRate
                                                   : SAMPLE_RATE;
-  const double visibleStartTime = scrollX / pixelsPerSecond;
-  const double visibleEndTime =
-      (scrollX + static_cast<double>(std::max(1, getVisibleContentWidth()))) /
-      pixelsPerSecond;
+  const auto clipBounds = g.getClipBounds();
+  const double viewportLeft = std::max(0.0, scrollX);
+  const double viewportRight =
+      viewportLeft + static_cast<double>(std::max(1, getVisibleContentWidth()));
+  const double clipLeft =
+      std::max(viewportLeft, static_cast<double>(clipBounds.getX()) - 32.0);
+  const double clipRight = std::min(
+      viewportRight, static_cast<double>(clipBounds.getRight()) + 32.0);
+  if (clipRight <= clipLeft)
+    return;
+  const double visibleStartTime = clipLeft / pixelsPerSecond;
+  const double visibleEndTime = clipRight / pixelsPerSecond;
   const int visibleStartFrame = std::max(
       0, static_cast<int>(visibleStartTime * sampleRate / HOP_SIZE));
   const int visibleEndFrame = std::min(
@@ -1353,8 +1953,27 @@ void PianoRollComponent::drawPitchCurves(juce::Graphics &g) {
   const double framesPerPixel =
       static_cast<double>(sampleRate) / HOP_SIZE /
       std::max(1.0f, pixelsPerSecond);
+  const bool staticDragLayer = skipDraggedNoteInStaticLayer && isDragging &&
+                               draggedNote != nullptr;
+  const bool isInteractivePaint = !staticDragLayer &&
+                                  (isDragging || pitchEditor->isDraggingMultiNotes() ||
+                                   isDrawing || stretchDrag.active ||
+                                   isDeltaScaleDragging || isDeltaOffsetDragging);
   const int curveFrameStep =
-      std::max(1, static_cast<int>(std::floor(framesPerPixel * 0.5)));
+      std::max(1, static_cast<int>(std::floor(
+                      framesPerPixel * (isInteractivePaint ? 2.0 : 1.0))));
+  std::vector<const Note *> visibleNotes;
+  visibleNotes.reserve(64);
+  for (const auto &note : project->getNotes()) {
+    if (note.isRest())
+      continue;
+
+    const int startFrame = std::max(note.getStartFrame(), visibleStartFrame);
+    const int endFrame = std::min(note.getEndFrame(), visibleEndFrame);
+    if (endFrame > startFrame)
+      visibleNotes.push_back(&note);
+  }
+  const auto deltaStroke = juce::PathStrokeType(isInteractivePaint ? 1.5f : 2.0f);
 
   // Draw pitch curves per note with their pitch offsets applied (delta pitch)
   if (showDeltaPitch) {
@@ -1413,15 +2032,18 @@ void PianoRollComponent::drawPitchCurves(juce::Graphics &g) {
           (isDragging || pitchEditor->isDraggingMultiNotes());
       const auto &draggedNotes = pitchEditor->getDraggedNotes();
 
-      for (const auto &note : project->getNotes()) {
-        if (note.isRest())
-          continue;
-
+      for (const auto *notePtr : visibleNotes) {
+        const auto &note = *notePtr;
         const bool isDraggedNote =
             (isDragging && draggedNote == &note) ||
             (pitchEditor->isDraggingMultiNotes() &&
              std::find(draggedNotes.begin(), draggedNotes.end(), &note) !=
                  draggedNotes.end());
+        if (skipDraggedNoteInStaticLayer && isDraggedNote)
+          continue;
+        if (isInteractivePaint && !note.isSelected())
+          continue;
+
         const bool applyNoteOffset = !(useLiveBasePreview && isDraggedNote);
 
         juce::Path path;
@@ -1461,7 +2083,7 @@ void PianoRollComponent::drawPitchCurves(juce::Graphics &g) {
         }
 
         if (pathStarted)
-          g.strokePath(path, juce::PathStrokeType(2.0f));
+          g.strokePath(path, deltaStroke);
       }
     }
   }
@@ -1590,6 +2212,9 @@ void PianoRollComponent::drawPianoKeys(juce::Graphics &g) {
   for (int midi = MIN_MIDI_NOTE; midi <= MAX_MIDI_NOTE; ++midi) {
     float y = midiToY(static_cast<float>(midi)) -
               static_cast<float>(scrollYInt) + headerHeight;
+    if (y >= keyArea.getBottom() || y + pixelsPerSemitone <= keyArea.getY())
+      continue;
+
     int noteInOctave = midi % 12;
 
     // Check if it's a black key
@@ -1726,6 +2351,7 @@ void PianoRollComponent::mouseDown(const juce::MouseEvent &e) {
     if (note) {
       project->deselectAllNotes();
       note->setSelected(true);
+      invalidateStaticPianoLayer();
       if (onNoteSelected)
         onNoteSelected(note);
       repaint();
@@ -1734,6 +2360,7 @@ void PianoRollComponent::mouseDown(const juce::MouseEvent &e) {
 
     // Box selection fallback
     project->deselectAllNotes();
+    invalidateStaticPianoLayer();
     boxSelector->startSelection(adjustedX, adjustedY);
     repaint();
     return;
@@ -1935,6 +2562,7 @@ void PianoRollComponent::mouseDown(const juce::MouseEvent &e) {
       // Single note selection and drag
       project->deselectAllNotes();
       note->setSelected(true);
+      invalidateStaticPianoLayer();
 
       if (onNoteSelected)
         onNoteSelected(note);
@@ -1957,6 +2585,9 @@ void PianoRollComponent::mouseDown(const juce::MouseEvent &e) {
       // Start single note dragging
       isDragging = true;
       draggedNote = note;
+      lastPaintedDragBounds = getNoteDirtyBounds(*note);
+      rebuildDragOverlayCache();
+      invalidateStaticPianoLayer();
       dragStartY = adjustedY;
       originalPitchOffset = note->getPitchOffset();
       originalMidiNote = note->getMidiNote();
@@ -1975,12 +2606,14 @@ void PianoRollComponent::mouseDown(const juce::MouseEvent &e) {
         originalF0Values.push_back(audioData.f0[i]);
 
       prepareDragBasePreview();
+      lastPaintedPitchBounds = getDragPitchDirtyBounds();
     }
 
     repaint();
   } else {
     // Clicked on empty area - start box selection
     project->deselectAllNotes();
+    invalidateStaticPianoLayer();
     boxSelector->startSelection(adjustedX, adjustedY);
     repaint();
   }
@@ -2178,9 +2811,25 @@ void PianoRollComponent::mouseDrag(const juce::MouseEvent &e) {
 
   // Handle multi-note drag
   if (pitchEditor->isDraggingMultiNotes()) {
+    auto dirtyBounds = juce::Rectangle<int>();
+    for (const auto *note : pitchEditor->getDraggedNotes()) {
+      if (note)
+        dirtyBounds = dirtyBounds.isEmpty() ? getNoteDirtyBounds(*note)
+                                            : dirtyBounds.getUnion(getNoteDirtyBounds(*note));
+    }
+
     pitchEditor->updateMultiNoteDrag(adjustedY);
     if (shouldRepaint) {
-      repaint();
+      for (const auto *note : pitchEditor->getDraggedNotes()) {
+        if (note)
+          dirtyBounds = dirtyBounds.isEmpty() ? getNoteDirtyBounds(*note)
+                                              : dirtyBounds.getUnion(getNoteDirtyBounds(*note));
+      }
+
+      if (dirtyBounds.isEmpty())
+        repaint();
+      else
+        repaint(dirtyBounds);
       lastDragRepaintTime = now;
     }
     return;
@@ -2188,15 +2837,29 @@ void PianoRollComponent::mouseDrag(const juce::MouseEvent &e) {
 
   // Handle single note drag
   if (isDragging && draggedNote) {
+    const auto oldBounds = getNoteDirtyBounds(*draggedNote);
+    const auto oldPitchBounds = getDragPitchDirtyBounds();
     float deltaY = dragStartY - adjustedY;
     float deltaSemitones = deltaY / pixelsPerSemitone;
 
     draggedNote->setPitchOffset(deltaSemitones);
     draggedNote->markDirty();
-    applyDragBasePreview(deltaSemitones);
 
     if (shouldRepaint) {
-      repaint();
+      const auto newBounds = getNoteDirtyBounds(*draggedNote);
+      const auto newPitchBounds = getDragPitchDirtyBounds();
+      auto dirtyBounds = oldBounds.getUnion(newBounds);
+      if (!lastPaintedDragBounds.isEmpty())
+        dirtyBounds = dirtyBounds.getUnion(lastPaintedDragBounds);
+      if (!oldPitchBounds.isEmpty())
+        dirtyBounds = dirtyBounds.getUnion(oldPitchBounds);
+      if (!newPitchBounds.isEmpty())
+        dirtyBounds = dirtyBounds.getUnion(newPitchBounds);
+      if (!lastPaintedPitchBounds.isEmpty())
+        dirtyBounds = dirtyBounds.getUnion(lastPaintedPitchBounds);
+      lastPaintedDragBounds = newBounds;
+      lastPaintedPitchBounds = newPitchBounds;
+      repaint(dirtyBounds);
       lastDragRepaintTime = now;
     }
   }
@@ -2368,6 +3031,7 @@ void PianoRollComponent::mouseUp(const juce::MouseEvent &e) {
       note->setSelected(true);
     }
     boxSelector->endSelection();
+    invalidateStaticPianoLayer();
     repaint();
     return;
   }
@@ -2489,11 +3153,19 @@ void PianoRollComponent::mouseUp(const juce::MouseEvent &e) {
 
   isDragging = false;
   draggedNote = nullptr;
+  lastPaintedDragBounds = {};
+  lastPaintedPitchBounds = {};
+  dragOverlayImage = {};
+  dragOverlaySourceBounds = {};
+  invalidateStaticPianoLayer();
   dragPreviewStartFrame = -1;
   dragPreviewEndFrame = -1;
+  dragPreviewMinMidi = 0.0f;
+  dragPreviewMaxMidi = 0.0f;
   dragPreviewWeights.clear();
   dragBasePitchSnapshot.clear();
   dragF0Snapshot.clear();
+  dragPitchPoints.clear();
 }
 
 void PianoRollComponent::mouseMove(const juce::MouseEvent &e) {
@@ -2848,9 +3520,11 @@ void PianoRollComponent::setProject(Project *proj) {
 
   // Clear all caches when project changes to free memory
   invalidateBasePitchCache();
+  invalidateStaticPianoLayer();
   waveformCache = juce::Image(); // Clear waveform cache
   waveformPeakCache = {};
   cachedScrollX = -1.0;
+  cachedWaveformBucketScrollX = -1.0;
   cachedPixelsPerSecond = -1.0f;
   cachedWidth = 0;
   cachedHeight = 0;
@@ -2943,6 +3617,7 @@ void PianoRollComponent::setPixelsPerSecond(float pps, bool centerOnCursor) {
 
   pixelsPerSecond = newPps;
   coordMapper->setPixelsPerSecond(newPps);
+  invalidateStaticPianoLayer();
   updateScrollBars();
   repaint();
 
@@ -2975,6 +3650,7 @@ void PianoRollComponent::setPixelsPerSemitone(float pps, float anchorContentY) {
 
   pixelsPerSemitone = newPps;
   coordMapper->setPixelsPerSemitone(pixelsPerSemitone);
+  invalidateStaticPianoLayer();
 
   const double totalHeight =
       (MAX_MIDI_NOTE - MIN_MIDI_NOTE + 1) * pixelsPerSemitone;
@@ -3579,7 +4255,9 @@ void PianoRollComponent::invalidateWaveformCache() {
   // drawBackgroundWaveform() redraws from the updated audioData.waveform.
   waveformCache = {};
   waveformPeakCache = {};
+  invalidateStaticPianoLayer();
   cachedScrollX = -1.0;
+  cachedWaveformBucketScrollX = -1.0;
   cachedPixelsPerSecond = -1.0f;
   cachedWidth = 0;
   cachedHeight = 0;
@@ -4073,6 +4751,15 @@ void PianoRollComponent::updateBasePitchCacheIfNeeded() {
 }
 
 void PianoRollComponent::prepareDragBasePreview() {
+  dragPreviewStartFrame = -1;
+  dragPreviewEndFrame = -1;
+  dragPreviewMinMidi = 0.0f;
+  dragPreviewMaxMidi = 0.0f;
+  dragPreviewWeights.clear();
+  dragBasePitchSnapshot.clear();
+  dragF0Snapshot.clear();
+  dragPitchPoints.clear();
+
   if (!project || !draggedNote)
     return;
 
@@ -4092,6 +4779,9 @@ void PianoRollComponent::prepareDragBasePreview() {
   dragPreviewStartFrame = range.startFrame;
   dragPreviewEndFrame = range.endFrame;
   dragPreviewWeights = std::move(range.weights);
+  dragPreviewMinMidi = std::numeric_limits<float>::max();
+  dragPreviewMaxMidi = std::numeric_limits<float>::lowest();
+  dragPitchPoints.clear();
 
   const int count = dragPreviewEndFrame - dragPreviewStartFrame;
   dragBasePitchSnapshot.resize(static_cast<size_t>(count));
@@ -4103,48 +4793,50 @@ void PianoRollComponent::prepareDragBasePreview() {
         audioData.basePitch[static_cast<size_t>(frame)];
     dragF0Snapshot[static_cast<size_t>(i)] =
         audioData.f0[static_cast<size_t>(frame)];
-  }
-
-  lastDragPitchOffset = 0.0f;
-}
-
-void PianoRollComponent::applyDragBasePreview(float pitchOffsetSemitones) {
-  if (std::abs(pitchOffsetSemitones - lastDragPitchOffset) < 0.0001f)
-    return;
-
-  lastDragPitchOffset = pitchOffsetSemitones;
-  if (!project || dragPreviewStartFrame < 0 ||
-      dragPreviewEndFrame <= dragPreviewStartFrame ||
-      dragPreviewWeights.empty() || dragBasePitchSnapshot.empty())
-    return;
-
-  auto &audioData = project->getAudioData();
-  const int count = dragPreviewEndFrame - dragPreviewStartFrame;
-
-  if (audioData.basePitch.size() < static_cast<size_t>(dragPreviewEndFrame))
-    return;
-
-  if (audioData.baseF0.size() < audioData.basePitch.size())
-    audioData.baseF0.resize(audioData.basePitch.size(), 0.0f);
-
-  for (int i = 0; i < count; ++i) {
-    const int frame = dragPreviewStartFrame + i;
-    const float baseMidi =
-        dragBasePitchSnapshot[static_cast<size_t>(i)] +
-        pitchOffsetSemitones * dragPreviewWeights[static_cast<size_t>(i)];
-    audioData.basePitch[static_cast<size_t>(frame)] = baseMidi;
-    audioData.baseF0[static_cast<size_t>(frame)] = midiToFreq(baseMidi);
-
     const float deltaMidi =
-        (frame < static_cast<int>(audioData.deltaPitch.size()))
+        frame < static_cast<int>(audioData.deltaPitch.size())
             ? audioData.deltaPitch[static_cast<size_t>(frame)]
             : 0.0f;
-    if (frame < static_cast<int>(audioData.voicedMask.size()) &&
-        !audioData.voicedMask[static_cast<size_t>(frame)]) {
-      audioData.f0[static_cast<size_t>(frame)] = 0.0f;
-    } else {
-      audioData.f0[static_cast<size_t>(frame)] = midiToFreq(baseMidi + deltaMidi);
+    const float finalMidi = dragBasePitchSnapshot[static_cast<size_t>(i)] +
+                            deltaMidi + project->getGlobalPitchOffset();
+    if (finalMidi > 0.0f) {
+      dragPreviewMinMidi = std::min(dragPreviewMinMidi, finalMidi);
+      dragPreviewMaxMidi = std::max(dragPreviewMaxMidi, finalMidi);
     }
+  }
+
+  if (dragPreviewMinMidi == std::numeric_limits<float>::max()) {
+    dragPreviewMinMidi = draggedNote->getAdjustedMidiNote();
+    dragPreviewMaxMidi = dragPreviewMinMidi;
+  }
+
+  const int sampleRate = audioData.sampleRate > 0 ? audioData.sampleRate
+                                                  : SAMPLE_RATE;
+  const double framesPerPixel = static_cast<double>(sampleRate) / HOP_SIZE /
+                                std::max(1.0f, pixelsPerSecond);
+  const int frameStep = std::max(
+      1, static_cast<int>(std::floor(framesPerPixel * 3.0)));
+  const float globalOffset = project->getGlobalPitchOffset();
+  dragPitchPoints.reserve(static_cast<size_t>(count / frameStep + 2));
+  for (int frame = dragPreviewStartFrame; frame < dragPreviewEndFrame;
+       frame += frameStep) {
+    const int local = frame - dragPreviewStartFrame;
+    if (local < 0 || local >= count ||
+        local >= static_cast<int>(dragPreviewWeights.size()))
+      continue;
+
+    const float deltaMidi =
+        frame < static_cast<int>(audioData.deltaPitch.size())
+            ? audioData.deltaPitch[static_cast<size_t>(frame)]
+            : 0.0f;
+    const float midi = dragBasePitchSnapshot[static_cast<size_t>(local)] +
+                       deltaMidi + globalOffset;
+    if (midi <= 0.0f)
+      continue;
+
+    dragPitchPoints.push_back(
+        {framesToSeconds(frame) * pixelsPerSecond, midi,
+         dragPreviewWeights[static_cast<size_t>(local)]});
   }
 }
 
@@ -4169,7 +4861,6 @@ void PianoRollComponent::restoreDragBasePreview() {
     audioData.f0[static_cast<size_t>(frame)] =
         dragF0Snapshot[static_cast<size_t>(i)];
   }
-  lastDragPitchOffset = 0.0f;
 }
 
 void PianoRollComponent::reapplyBasePitchForNote(Note *note) {

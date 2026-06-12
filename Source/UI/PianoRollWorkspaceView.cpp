@@ -263,6 +263,9 @@ void PianoRollWorkspaceView::setHNSepVisible(bool show)
     return;
 
   hnsepVisible = show;
+  lastOverlayCursorTime = -1.0;
+  lastOverlayScrollX = -1.0;
+  lastOverlayPixelsPerSecond = -1.0f;
   hnsepCard.setVisible(show);
   hnsepLane.setVisible(show);
   if (playheadOverlay != nullptr)
@@ -287,8 +290,18 @@ void PianoRollWorkspaceView::timerCallback()
     zoomXSlider.setValue(pps, juce::dontSendNotification);
   hnsepLane.setPixelsPerSecond(pps);
   hnsepLane.setScrollX(pianoRoll.getScrollX());
-  if (playheadOverlay != nullptr && hnsepVisible)
-    playheadOverlay->repaint();
+  if (playheadOverlay != nullptr && hnsepVisible) {
+    const double cursorTime = pianoRoll.getCursorTime();
+    const double scrollX = pianoRoll.getScrollX();
+    if (std::abs(lastOverlayCursorTime - cursorTime) > 0.0001 ||
+        std::abs(lastOverlayScrollX - scrollX) > 0.5 ||
+        std::abs(lastOverlayPixelsPerSecond - pps) > 0.05f) {
+      lastOverlayCursorTime = cursorTime;
+      lastOverlayScrollX = scrollX;
+      lastOverlayPixelsPerSecond = pps;
+      playheadOverlay->repaint();
+    }
+  }
 
   const float ppsY = pianoRoll.getPixelsPerSemitone();
   if (std::abs(zoomYSlider.getValue() - ppsY) > 0.05)

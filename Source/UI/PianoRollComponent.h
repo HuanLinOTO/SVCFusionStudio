@@ -15,6 +15,7 @@
 #include "PianoRoll/PitchEditor.h"
 #include "PianoRoll/ScrollZoomController.h"
 
+#include <array>
 #include <deque>
 #include <limits>
 #include <memory>
@@ -39,7 +40,8 @@ enum class EditMode {
  */
 class PianoRollComponent : public juce::Component,
                            public juce::ScrollBar::Listener,
-                           public juce::KeyListener {
+                           public juce::KeyListener,
+                           private juce::Timer {
 public:
   using juce::Component::keyPressed;
   PianoRollComponent();
@@ -105,26 +107,57 @@ public:
   // View settings
   void setShowDeltaPitch(bool show) {
     showDeltaPitch = show;
+    invalidateStaticPianoLayer();
     repaint();
   }
   void setShowBasePitch(bool show) {
     showBasePitch = show;
+    invalidateStaticPianoLayer();
     repaint();
   }
   void setShowSomeSegmentsDebug(bool show) {
     showSomeSegmentsDebug = show;
+    invalidateStaticPianoLayer();
     repaint();
   }
   void setShowSomeValuesDebug(bool show) {
     showSomeValuesDebug = show;
+    invalidateStaticPianoLayer();
     repaint();
   }
   void setShowUvInterpolationDebug(bool show) {
     showUvInterpolationDebug = show;
+    invalidateStaticPianoLayer();
     repaint();
   }
   void setShowActualF0Debug(bool show) {
     showActualF0Debug = show;
+    invalidateStaticPianoLayer();
+    repaint();
+  }
+  void setShowFpsOverlay(bool show) {
+    showFpsOverlay = show;
+    if (!show) {
+      stopTimer();
+      fpsHistory.fill(0.0f);
+      fpsHistoryIndex = 0;
+      fpsHistoryCount = 0;
+      currentFps = 0.0f;
+      lastFpsSampleTimeMs = 0.0;
+    } else {
+      startTimerHz(10);
+    }
+    repaint();
+  }
+  void setShowBackgroundWaveform(bool show) {
+    showBackgroundWaveform = show;
+    invalidateStaticPianoLayer();
+    if (!show) {
+      waveformCache = {};
+      cachedScrollX = -1.0;
+      cachedWaveformBucketScrollX = -1.0;
+      cachedPixelsPerSecond = -1.0f;
+    }
     repaint();
   }
   bool getShowDeltaPitch() const { return showDeltaPitch; }
@@ -161,7 +194,21 @@ private:
   void drawLoopOverlay(juce::Graphics &g);
   void drawSomeSegmentDebugOverlay(juce::Graphics &g);
   void drawSomeValuesDebugOverlay(juce::Graphics &g);
+  void recordFpsSample();
+  juce::Rectangle<int> getFpsOverlayBounds() const;
+  void drawFpsOverlay(juce::Graphics &g);
+  void timerCallback() override;
   void drawStretchGuides(juce::Graphics &g);
+  juce::Rectangle<int> getNoteDirtyBounds(const Note &note) const;
+  void drawStaticPianoLayer(juce::Graphics &g,
+                            const juce::Rectangle<int> &mainArea);
+  void invalidateStaticPianoLayer();
+  bool isStaticPianoLayerValid(const juce::Rectangle<int> &mainArea) const;
+  void rebuildStaticPianoLayer(const juce::Rectangle<int> &mainArea);
+  void rebuildDragOverlayCache();
+  void drawDragOverlay(juce::Graphics &g);
+  void drawDragPitchOverlay(juce::Graphics &g);
+  juce::Rectangle<int> getDragPitchDirtyBounds() const;
 
   float midiToY(float midiNote) const;
   float yToMidi(float y) const;
@@ -178,7 +225,6 @@ private:
   void reapplyBasePitchForNote(
       Note *note); // Recalculate F0 from base pitch + delta after undo/redo
   void prepareDragBasePreview();
-  void applyDragBasePreview(float pitchOffsetSemitones);
   void restoreDragBasePreview();
   struct StretchBoundary {
     Note *left = nullptr;
@@ -264,6 +310,15 @@ private:
   bool showSomeValuesDebug = false;
   bool showUvInterpolationDebug = false;
   bool showActualF0Debug = false;
+  bool showFpsOverlay = false;
+  bool showBackgroundWaveform = true;
+
+  static constexpr int fpsHistorySize = 120;
+  std::array<float, fpsHistorySize> fpsHistory{};
+  int fpsHistoryIndex = 0;
+  int fpsHistoryCount = 0;
+  float currentFps = 0.0f;
+  double lastFpsSampleTimeMs = 0.0;
 
   // Dragging state
   bool isDragging = false;
@@ -275,9 +330,20 @@ private:
       0.0f; // F0 value before note start (for smooth transition)
   float boundaryF0End = 0.0f; // F0 value after note end (for smooth transition)
   std::vector<float> originalF0Values; // F0 values before drag for undo
-  float lastDragPitchOffset = 0.0f;
+  juce::Rectangle<int> lastPaintedDragBounds;
+  juce::Rectangle<int> lastPaintedPitchBounds;
+  juce::Image dragOverlayImage;
+  juce::Rectangle<int> dragOverlaySourceBounds;
+  struct DragPitchPoint {
+    float x = 0.0f;
+    float midi = 0.0f;
+    float weight = 0.0f;
+  };
+  std::vector<DragPitchPoint> dragPitchPoints;
   int dragPreviewStartFrame = -1;
   int dragPreviewEndFrame = -1;
+  float dragPreviewMinMidi = 0.0f;
+  float dragPreviewMaxMidi = 0.0f;
   std::vector<float> dragPreviewWeights;
   std::vector<float> dragBasePitchSnapshot;
   std::vector<float> dragF0Snapshot;
@@ -348,18 +414,37 @@ private:
   // Waveform cache for performance
   juce::Image waveformCache;
   double cachedScrollX = -1.0;
+  double cachedWaveformBucketScrollX = -1.0;
   float cachedPixelsPerSecond = -1.0f;
   int cachedWidth = 0;
   int cachedHeight = 0;
 
   struct WaveformPeakCache {
     std::vector<float> peaks;
+    std::vector<float> coarsePeaks;
     int samplesPerPeak = 256;
+    int peaksPerCoarsePeak = 16;
     int sourceNumSamples = 0;
     int sourceSampleRate = 0;
     int sourceNumChannels = 0;
     bool valid = false;
   } waveformPeakCache;
+
+  juce::Image staticPianoLayer;
+  bool staticPianoLayerValid = false;
+  int staticPianoLayerWidth = 0;
+  int staticPianoLayerHeight = 0;
+  double staticPianoLayerScrollX = -1.0;
+  double staticPianoLayerScrollY = -1.0;
+  float staticPianoLayerPixelsPerSecond = -1.0f;
+  float staticPianoLayerPixelsPerSemitone = -1.0f;
+  bool staticPianoLayerShowBackgroundWaveform = false;
+  bool staticPianoLayerShowDeltaPitch = false;
+  bool staticPianoLayerShowBasePitch = false;
+  bool staticPianoLayerShowDebug = false;
+  bool staticPianoLayerInteractivePitch = false;
+  Note *staticPianoLayerSkippedDragNote = nullptr;
+  bool skipDraggedNoteInStaticLayer = false;
 
   // Base pitch curve cache for performance
   // Only recalculates when notes change, not on every repaint

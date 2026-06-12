@@ -391,6 +391,9 @@ MainComponent::MainComponent(bool enableAudioDevice)
       settingsManager->getShowUvInterpolationDebug());
   pianoRoll.setShowActualF0Debug(
       settingsManager->getShowActualF0Debug());
+  pianoRoll.setShowFpsOverlay(settingsManager->getShowFpsOverlay());
+  pianoRoll.setShowBackgroundWaveform(
+      settingsManager->getShowBackgroundWaveform());
   pianoRollView.setShowSomeSegmentsDebug(
       settingsManager->getShowSomeSegmentsDebug());
 
@@ -2220,6 +2223,22 @@ void MainComponent::showSettings() {
           }
           pianoRoll.setShowActualF0Debug(show);
           pianoRoll.repaint();
+        };
+    settingsOverlay->getSettingsComponent()->onShowFpsOverlayChanged =
+        [this](bool show) {
+          if (settingsManager) {
+            settingsManager->setShowFpsOverlay(show);
+            settingsManager->saveConfig();
+          }
+          pianoRoll.setShowFpsOverlay(show);
+        };
+    settingsOverlay->getSettingsComponent()->onShowBackgroundWaveformChanged =
+        [this](bool show) {
+          if (settingsManager) {
+            settingsManager->setShowBackgroundWaveform(show);
+            settingsManager->saveConfig();
+          }
+          pianoRoll.setShowBackgroundWaveform(show);
         };
   }
 

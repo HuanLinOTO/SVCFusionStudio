@@ -41,6 +41,9 @@ private:
   juce::TextButton overviewToggleButton{"[]"};
   bool overviewVisible = true;
   bool hnsepVisible = false;
+  double lastOverlayCursorTime = -1.0;
+  double lastOverlayScrollX = -1.0;
+  float lastOverlayPixelsPerSecond = -1.0f;
 
   juce::Slider zoomXSlider;
   juce::Slider zoomYSlider;

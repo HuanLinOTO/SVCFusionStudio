@@ -50,6 +50,8 @@ public:
   std::function<void(bool)> onShowSomeValuesDebugChanged;
   std::function<void(bool)> onShowUvInterpolationDebugChanged;
   std::function<void(bool)> onShowActualF0DebugChanged;
+  std::function<void(bool)> onShowFpsOverlayChanged;
+  std::function<void(bool)> onShowBackgroundWaveformChanged;
   std::function<bool()> canChangeDevice;
 
   // Load/save settings
@@ -122,6 +124,10 @@ private:
   juce::ToggleButton uvInterpolationDebugToggle;
   juce::Label actualF0DebugLabel;
   juce::ToggleButton actualF0DebugToggle;
+  juce::Label fpsOverlayLabel;
+  juce::ToggleButton fpsOverlayToggle;
+  juce::Label backgroundWaveformLabel;
+  juce::ToggleButton backgroundWaveformToggle;
 
   juce::Label infoLabel;
 
@@ -154,6 +160,8 @@ private:
   bool showSomeValuesDebug = false;
   bool showUvInterpolationDebug = false;
   bool showActualF0Debug = false;
+  bool showFpsOverlay = false;
+  bool showBackgroundWaveform = true;
   SettingsTab activeTab = SettingsTab::General;
   SettingsTab previousTab = SettingsTab::General;
   juce::TextButton generalTabButton;
