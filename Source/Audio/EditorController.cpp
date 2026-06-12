@@ -298,6 +298,7 @@ void EditorController::runFullSVCConversionAsync(SVCProgressCallback onProgress,
     struct SegMelEntry { int f0Start; std::vector<std::vector<float>> mel; };
     std::vector<SegMelEntry> collectedSegMels;
     std::vector<std::vector<float>> fullSvcMel;  // non-sliced path only
+    bool anySegmentFailed = false;
 
     // ── Decide whether to slice (only for audio > 10 seconds) ──
     bool shouldSlice = totalSamples > sampleRate * 10;
@@ -373,6 +374,20 @@ void EditorController::runFullSVCConversionAsync(SVCProgressCallback onProgress,
             LOG("  [Timer] Segment " + juce::String(segIdx + 1) + " total: " +
                 juce::String(std::chrono::duration_cast<std::chrono::milliseconds>(now - tSeg).count()) + " ms" +
                 " -> " + juce::String(segAudio.size()) + " samples"); }
+
+          if (segAudio.empty()) {
+            anySegmentFailed = true;
+            const int fallbackStart = juce::jlimit(0, totalSamples, seg.startSample);
+            const int fallbackLen = juce::jlimit(0, totalSamples - fallbackStart,
+                                                seg.numSamples);
+            if (fallbackLen > 0) {
+              segAudio.assign(origPtr + fallbackStart,
+                              origPtr + fallbackStart + fallbackLen);
+              LOG("EditorController: Segment " + juce::String(segIdx + 1) +
+                  " SVC inference failed; falling back to original audio [" +
+                  juce::String(fallbackLen) + " samples]");
+            }
+          }
 
           if (segAudio.empty()) continue;
 
@@ -571,8 +586,9 @@ void EditorController::runFullSVCConversionAsync(SVCProgressCallback onProgress,
                                      blendedAudio = std::move(blendedAudio),
                                      writeLen, onComplete, isSoVITS, totalFrames,
                                      collectedSegMels = std::move(collectedSegMels),
-                                     fullSvcMel = std::move(fullSvcMel),
-                                     sovitsMel = std::move(sovitsMel),
+                                      fullSvcMel = std::move(fullSvcMel),
+                                      anySegmentFailed,
+                                      sovitsMel = std::move(sovitsMel),
                                      svcHarmonic = std::move(svcHarmonic),
                                      svcNoise = std::move(svcNoise),
                                      refreshHNSepBases,
@@ -633,6 +649,7 @@ void EditorController::runFullSVCConversionAsync(SVCProgressCallback onProgress,
       // ── Store SVC mel in audioData.melSpectrogram so that subsequent
       //    stretch / pitch edits use SVC mel through vocoder (no re-inference) ──
       if (isSoVITS) {
+        audioData.melFromSVC = false;
         // SoVITS produces audio directly (no mel), so we recomputed mel from
         // the blended SoVITS waveform in the worker thread.  Store it so that
         // incremental synthesis (stretch / pitch-edit) keeps SoVITS timbre.
@@ -647,6 +664,7 @@ void EditorController::runFullSVCConversionAsync(SVCProgressCallback onProgress,
         // not direct SVC output; finishStretchDrag will recompute from waveform.
       } else {
         const int melSize = static_cast<int>(audioData.melSpectrogram.size());
+        audioData.melFromSVC = false;
         if (!fullSvcMel.empty()) {
           // Non-sliced path: replace entire melSpectrogram
           int copyLen = std::min(static_cast<int>(fullSvcMel.size()), melSize);
@@ -663,7 +681,12 @@ void EditorController::runFullSVCConversionAsync(SVCProgressCallback onProgress,
           }
           LOG("EditorController: Stored sliced SVC mel [" +
               juce::String(collectedSegMels.size()) + " segments]");
-          audioData.melFromSVC = true;
+          audioData.melFromSVC = !anySegmentFailed;
+          if (anySegmentFailed) {
+            LOG("EditorController: Sliced SVC had failed segments; melFromSVC disabled to avoid stale-mel fast path");
+          }
+        } else if (anySegmentFailed) {
+          LOG("EditorController: No sliced SVC mel was stored after segment failures; melFromSVC disabled");
         }
       }
 

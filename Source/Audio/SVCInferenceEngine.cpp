@@ -150,47 +150,94 @@ std::vector<std::vector<float>> SVCInferenceEngine::extractContentVec(
     if (!contentVecSession)
         return {};
 
-    try
+    auto runChunk = [this](const float* chunkAudio, int chunkSamples,
+                           const juce::String& label)
+        -> std::vector<std::vector<float>>
     {
-        auto memInfo = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+        try
+        {
+            auto memInfo = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
 
-        // Input: source [1, audio_length]
-        std::vector<int64_t> inputShape = {1, static_cast<int64_t>(numSamples16k)};
-        std::vector<float> inputData(audio16k, audio16k + numSamples16k);
+            // Input: source [1, audio_length]
+            std::vector<int64_t> inputShape = {1, static_cast<int64_t>(chunkSamples)};
+            std::vector<float> inputData(chunkAudio, chunkAudio + chunkSamples);
 
-        std::vector<Ort::Value> inputs;
-        inputs.push_back(Ort::Value::CreateTensor<float>(
-            memInfo, inputData.data(), inputData.size(),
-            inputShape.data(), inputShape.size()));
+            std::vector<Ort::Value> inputs;
+            inputs.push_back(Ort::Value::CreateTensor<float>(
+                memInfo, inputData.data(), inputData.size(),
+                inputShape.data(), inputShape.size()));
 
-        const char* inputNames[] = {"source"};
-        const char* outputNames[] = {"features"};
+            const char* inputNames[] = {"source"};
+            const char* outputNames[] = {"features"};
 
-        auto outputs = contentVecSession->Run(
-            Ort::RunOptions{nullptr},
-            inputNames, inputs.data(), 1,
-            outputNames, 1);
+            auto outputs = contentVecSession->Run(
+                Ort::RunOptions{nullptr},
+                inputNames, inputs.data(), 1,
+                outputNames, 1);
 
-        // Output: features [1, T_units, 768]
-        auto& outTensor = outputs[0];
-        auto outShape = outTensor.GetTensorTypeAndShapeInfo().GetShape();
-        int T = static_cast<int>(outShape[1]);
-        int dim = static_cast<int>(outShape[2]); // 768
-        const float* outData = outTensor.GetTensorData<float>();
+            // Output: features [1, T_units, 768]
+            auto& outTensor = outputs[0];
+            auto outShape = outTensor.GetTensorTypeAndShapeInfo().GetShape();
+            int T = static_cast<int>(outShape[1]);
+            int dim = static_cast<int>(outShape[2]); // 768
+            const float* outData = outTensor.GetTensorData<float>();
 
-        std::vector<std::vector<float>> features(T, std::vector<float>(dim));
-        for (int t = 0; t < T; ++t)
-            std::copy(outData + t * dim, outData + (t + 1) * dim, features[t].begin());
+            std::vector<std::vector<float>> features(T, std::vector<float>(dim));
+            for (int t = 0; t < T; ++t)
+                std::copy(outData + t * dim, outData + (t + 1) * dim, features[t].begin());
 
-        LOG("SVCInferenceEngine: ContentVec extracted [" +
-            juce::String(T) + ", " + juce::String(dim) + "]");
-        return features;
+            LOG("SVCInferenceEngine: ContentVec extracted" + label + " [" +
+                juce::String(T) + ", " + juce::String(dim) + "]");
+            return features;
+        }
+        catch (const Ort::Exception& e)
+        {
+            LOG("SVCInferenceEngine: ContentVec inference failed" + label + ": " + juce::String(e.what()));
+            return {};
+        }
+    };
+
+    constexpr int maxContentVecSamples = 480000;
+    constexpr int chunkOverlapSamples = 3200; // 10 ContentVec frames at 16 kHz.
+    constexpr int contentVecHopSamples = 320;
+    if (numSamples16k <= maxContentVecSamples)
+        return runChunk(audio16k, numSamples16k, juce::String());
+
+    LOG("SVCInferenceEngine: ContentVec input " + juce::String(numSamples16k) +
+        " samples exceeds safe chunk size; running chunked extraction");
+
+    std::vector<std::vector<float>> merged;
+    int chunkIndex = 0;
+    for (int start = 0; start < numSamples16k;) {
+        const int end = std::min(start + maxContentVecSamples, numSamples16k);
+        const int chunkSamples = end - start;
+        juce::String label = " chunk ";
+        label += juce::String(chunkIndex + 1);
+        label += " samples=";
+        label += juce::String(chunkSamples);
+        auto chunkFeatures = runChunk(audio16k + start, chunkSamples, label);
+        if (chunkFeatures.empty())
+            return {};
+
+        int firstFeature = 0;
+        if (!merged.empty())
+            firstFeature = std::min(static_cast<int>(chunkFeatures.size()),
+                                    chunkOverlapSamples / contentVecHopSamples);
+        merged.insert(merged.end(), chunkFeatures.begin() + firstFeature,
+                      chunkFeatures.end());
+
+        if (end >= numSamples16k)
+            break;
+
+        start += maxContentVecSamples - chunkOverlapSamples;
+        ++chunkIndex;
     }
-    catch (const Ort::Exception& e)
-    {
-        LOG("SVCInferenceEngine: ContentVec inference failed: " + juce::String(e.what()));
-        return {};
-    }
+
+    LOG("SVCInferenceEngine: ContentVec chunked merge [" +
+        juce::String(merged.size()) + ", " +
+        juce::String(merged.empty() ? 0 : static_cast<int>(merged[0].size())) +
+        "]");
+    return merged;
 #else
     juce::ignoreUnused(audio16k, numSamples16k);
     return {};

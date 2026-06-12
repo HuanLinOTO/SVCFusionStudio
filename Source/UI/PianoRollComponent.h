@@ -202,13 +202,37 @@ private:
   juce::Rectangle<int> getNoteDirtyBounds(const Note &note) const;
   void drawStaticPianoLayer(juce::Graphics &g,
                             const juce::Rectangle<int> &mainArea);
+  void drawStaticPianoContentDirect(juce::Graphics &g,
+                                    const juce::Rectangle<int> &mainArea);
   void invalidateStaticPianoLayer();
   bool isStaticPianoLayerValid(const juce::Rectangle<int> &mainArea) const;
   void rebuildStaticPianoLayer(const juce::Rectangle<int> &mainArea);
+  static double getStaticLayerRenderScrollX(double sourceScrollX);
   void rebuildDragOverlayCache();
   void drawDragOverlay(juce::Graphics &g);
   void drawDragPitchOverlay(juce::Graphics &g);
   juce::Rectangle<int> getDragPitchDirtyBounds() const;
+  juce::Rectangle<int> getHorizontalScrollDirtyBounds() const;
+  bool isRenderProfilingEnabled();
+  void recordRenderProfilePaint(juce::int64 startTicks,
+                                const juce::Rectangle<int> &clipBounds,
+                                bool interactivePaint,
+                                bool fpsOverlayOnly);
+  void recordRenderProfileStaticLayerDraw(double elapsedMs);
+  void recordRenderProfileDynamicOverlay(double elapsedMs);
+  void recordRenderProfileStaticLayerCache(bool cacheHit);
+  void recordRenderProfileStaticContentSections(double backgroundMs,
+                                                double gridMs,
+                                                double notesMs,
+                                                double pitchMs);
+  void recordRenderProfileStaticLayerRebuild(double totalMs,
+                                             double backgroundMs,
+                                             double gridMs,
+                                             double notesMs,
+                                             double pitchMs);
+  void flushRenderProfileIfNeeded(juce::int64 nowTicks);
+  void resetRenderProfileWindow(juce::int64 nowTicks);
+  static double ticksToMs(juce::int64 ticks);
 
   float midiToY(float midiNote) const;
   float yToMidi(float y) const;
@@ -431,6 +455,9 @@ private:
   } waveformPeakCache;
 
   juce::Image staticPianoLayer;
+  static constexpr double staticLayerBucketPx = 256.0;
+  static constexpr int staticLayerOverscanPx = 384;
+  static constexpr int staticLayerWidthBucketPx = 512;
   bool staticPianoLayerValid = false;
   int staticPianoLayerWidth = 0;
   int staticPianoLayerHeight = 0;
@@ -445,6 +472,54 @@ private:
   bool staticPianoLayerInteractivePitch = false;
   Note *staticPianoLayerSkippedDragNote = nullptr;
   bool skipDraggedNoteInStaticLayer = false;
+  bool renderingDirectStaticPianoContent = false;
+
+  // Scratch buffers reused across paints to avoid allocator churn while
+  // rebuilding the CPU-backed static layer.
+  std::vector<Note *> noteRenderVisibleNotes;
+  std::vector<const Note *> pitchRenderVisibleNotes;
+  std::vector<float> noteWaveValues;
+  std::vector<float> noteSmoothedWaveValues;
+  std::vector<float> noteLowDetailPeaks;
+  juce::Path noteWaveformPath;
+  juce::Path noteWaveformOutlinePath;
+  juce::Path noteLowDetailWaveformPath;
+  juce::Path pitchRenderPath;
+  juce::Path pitchActualPath;
+  juce::Path pitchBasePath;
+  juce::Path pitchDashedPath;
+
+  struct RenderProfileStats {
+    juce::int64 windowStartTicks = 0;
+    int paintCount = 0;
+    int interactivePaintCount = 0;
+    int fpsOverlayPaintCount = 0;
+    int staticLayerHits = 0;
+    int staticLayerMisses = 0;
+    int staticLayerRebuilds = 0;
+    int backgroundCalls = 0;
+    int gridCalls = 0;
+    int notesCalls = 0;
+    int pitchCalls = 0;
+    int staticLayerDrawCalls = 0;
+    int staticDirectDraws = 0;
+    int dynamicOverlayCalls = 0;
+    double paintTotalMs = 0.0;
+    double paintMaxMs = 0.0;
+    double staticLayerDrawTotalMs = 0.0;
+    double staticLayerDrawMaxMs = 0.0;
+    double staticLayerRebuildTotalMs = 0.0;
+    double staticLayerRebuildMaxMs = 0.0;
+    double backgroundTotalMs = 0.0;
+    double gridTotalMs = 0.0;
+    double notesTotalMs = 0.0;
+    double pitchTotalMs = 0.0;
+    double dynamicOverlayTotalMs = 0.0;
+    double dynamicOverlayMaxMs = 0.0;
+    juce::Rectangle<int> lastClipBounds;
+  } renderProfileStats;
+  bool renderProfilingInitialized = false;
+  bool renderProfilingEnabled = false;
 
   // Base pitch curve cache for performance
   // Only recalculates when notes change, not on every repaint

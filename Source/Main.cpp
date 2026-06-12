@@ -17,6 +17,58 @@
 #pragma comment(lib, "dwmapi.lib")
 #endif
 
+#if JUCE_WINDOWS
+namespace {
+juce::String getRendererName(const juce::StringArray &renderers, int index) {
+  if (index >= 0 && index < renderers.size())
+    return renderers[index];
+
+  return "unknown";
+}
+
+void requestDirect2DRenderer(juce::Component &window,
+                             const juce::String &windowName) {
+  auto *peer = window.getPeer();
+  if (peer == nullptr) {
+    LOG(windowName + ": no native peer available for renderer selection");
+    return;
+  }
+
+  const auto renderers = peer->getAvailableRenderingEngines();
+  LOG(windowName + ": available renderers: " +
+      renderers.joinIntoString(", "));
+
+  int direct2DIndex = -1;
+  for (int i = 0; i < renderers.size(); ++i) {
+    if (renderers[i].equalsIgnoreCase("Direct2D")) {
+      direct2DIndex = i;
+      break;
+    }
+  }
+
+  if (direct2DIndex < 0) {
+    LOG(windowName + ": Direct2D renderer unavailable; keeping current renderer");
+    return;
+  }
+
+  const auto beforeIndex = peer->getCurrentRenderingEngine();
+  const auto beforeName = getRendererName(renderers, beforeIndex);
+  LOG(windowName + ": renderer before request: " + beforeName + " (#" +
+      juce::String(beforeIndex) + ")");
+
+  if (beforeIndex != direct2DIndex)
+    peer->setCurrentRenderingEngine(direct2DIndex);
+
+  const auto afterIndex = peer->getCurrentRenderingEngine();
+  const auto afterName = getRendererName(renderers, afterIndex);
+
+  LOG(windowName + ": active renderer: " + afterName + " (#" +
+      juce::String(afterIndex) + ")" +
+      (afterIndex == direct2DIndex ? "" : " - Direct2D request failed"));
+}
+} // namespace
+#endif
+
 class SplashComponent : public juce::Component, private juce::Timer {
 public:
   SplashComponent() { startTimerHz(30); }
@@ -167,6 +219,10 @@ public:
       LOG("MainWindow: adding to desktop...");
       // Now add to desktop after all properties are set
       addToDesktop();
+
+#if JUCE_WINDOWS
+      requestDirect2DRenderer(*this, "MainWindow");
+#endif
 
       auto *display = WindowSizing::getDisplayForComponent(this);
       auto constraints = WindowSizing::Constraints();

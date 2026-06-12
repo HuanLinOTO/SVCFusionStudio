@@ -60,7 +60,7 @@ void WorkspaceComponent::resized()
     const auto panelBounds = bounds.withLeft(juce::jmax(bounds.getX(), bounds.getRight() - panelContainerWidth));
 
     if (reservedWidth > 0)
-        bounds.removeFromRight(reservedWidth);
+        bounds.removeFromRight(juce::jmin(bounds.getWidth(), reservedWidth));
 
     panelContainer.setBounds(panelBounds);
 
@@ -68,7 +68,8 @@ void WorkspaceComponent::resized()
     panelContainer.setTransform(juce::AffineTransform::translation(slideOffset, 0.0f));
     panelContainer.setAlpha(juce::jmap(clampedProgress, 0.86f, 1.0f));
 
-    // Main content remains stable while the side panel overlays its right edge.
+    // Main content follows the side panel, but piano roll caches tolerate width
+    // changes so the animation does not force a full static-layer rebuild per frame.
     mainCard.setBounds(bounds);
 }
 
