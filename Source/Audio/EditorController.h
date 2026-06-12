@@ -146,6 +146,16 @@ private:
   GPUProvider getProviderFromDevice(const juce::String &device) const;
   Vocoder *ensureVocoder();
 
+  struct GameSegmentationResult {
+    bool attempted = false;
+    std::vector<GAMEDetector::NoteEvent> notes;
+    std::vector<GAMEDetector::ChunkRange> chunks;
+  };
+
+  void segmentIntoNotesInternal(Project &targetProject,
+                                std::function<void()> onStreamingUpdate,
+                                const GameSegmentationResult *gameResult);
+
   std::unique_ptr<Project> project;
   std::unique_ptr<AudioEngine> audioEngine;
   std::unique_ptr<FCPEPitchDetector> fcpePitchDetector;

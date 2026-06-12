@@ -13,6 +13,7 @@
 #include <chrono>
 #include <climits>
 #include <cmath>
+#include <future>
 
 EditorController::EditorController(bool enableAudioDevice) {
   project = std::make_unique<Project>();
@@ -889,6 +890,10 @@ void EditorController::loadAudioFileAsync(
       return;
     }
 
+    auto shaFuture = std::async(std::launch::async, [file]() {
+      return SHA256Utils::fileSHA256(file);
+    });
+
     const int numSamples = static_cast<int>(reader->lengthInSamples);
     const int srcSampleRate = static_cast<int>(reader->sampleRate);
 
@@ -943,7 +948,7 @@ void EditorController::loadAudioFileAsync(
     updateProgress(0.22, "Preparing project...");
     auto newProject = std::make_unique<Project>();
     newProject->setFilePath(file);
-    newProject->setAudioSha256(SHA256Utils::fileSHA256(file));
+    newProject->setAudioSha256(shaFuture.get());
     auto &audioData = newProject->getAudioData();
     audioData.waveform = std::move(buffer);
     audioData.sampleRate = SAMPLE_RATE;
@@ -1291,20 +1296,11 @@ void EditorController::analyzeAudio(
     });
   };
 
-  // Extract F0
   const float *samples = audioData.waveform.getReadPointer(0);
   int numSamples = audioData.waveform.getNumSamples();
 
-  onProgress(0.35, "Computing mel spectrogram...");
-  MelSpectrogram melComputer(audioData.sampleRate, N_FFT, HOP_SIZE, NUM_MELS,
-                             FMIN, FMAX);
-  audioData.melSpectrogram = melComputer.compute(samples, numSamples);
-
-  int targetFrames = static_cast<int>(audioData.melSpectrogram.size());
-
-  onProgress(0.55, "Extracting pitch (F0)...");
-
-  if (pitchDetectorType == PitchDetectorType::RMVPE) {
+  const auto selectedPitchDetector = pitchDetectorType;
+  if (selectedPitchDetector == PitchDetectorType::RMVPE) {
     if (!rmvpeModelPath.existsAsFile()) {
       showMissingModelAndAbort("rmvpe.onnx", rmvpeModelPath);
       return;
@@ -1313,7 +1309,7 @@ void EditorController::analyzeAudio(
       showModelLoadFailedAndAbort("rmvpe.onnx", rmvpeModelPath);
       return;
     }
-  } else if (pitchDetectorType == PitchDetectorType::FCPE) {
+  } else if (selectedPitchDetector == PitchDetectorType::FCPE) {
     if (!fcpeModelPath.existsAsFile()) {
       showMissingModelAndAbort("fcpe.onnx", fcpeModelPath);
       return;
@@ -1334,7 +1330,7 @@ void EditorController::analyzeAudio(
 
   LOG("========== PITCH DETECTOR SELECTION ==========");
   LOG("Selected detector: " +
-      juce::String(pitchDetectorTypeToString(pitchDetectorType)));
+      juce::String(pitchDetectorTypeToString(selectedPitchDetector)));
   LOG("RMVPE loaded: " +
       juce::String(
           rmvpePitchDetector && rmvpePitchDetector->isLoaded() ? "YES" : "NO"));
@@ -1342,14 +1338,99 @@ void EditorController::analyzeAudio(
       juce::String(fcpePitchDetector && fcpePitchDetector->isLoaded() ? "YES"
                                                                       : "NO"));
 
-  std::vector<float> extractedF0;
-  if (pitchDetectorType == PitchDetectorType::RMVPE) {
-    extractedF0 = rmvpePitchDetector->extractF0(samples, numSamples,
-                                                audioData.sampleRate);
-  } else if (pitchDetectorType == PitchDetectorType::FCPE) {
-    extractedF0 =
-        fcpePitchDetector->extractF0(samples, numSamples, audioData.sampleRate);
+  const int sampleRate = audioData.sampleRate;
+  const auto provider = getProviderFromDevice(device);
+  const bool allowConcurrentModelInference = provider == GPUProvider::CPU;
+  const int predictedFrames = std::max(1, numSamples / HOP_SIZE + 1);
+
+  struct HNSepResult {
+    bool attempted = false;
+    bool ok = false;
+    std::vector<float> harmonic;
+    std::vector<float> noise;
+  };
+
+  auto computeVadMaskForFrames = [samples, numSamples](int frameCount) {
+    std::vector<bool> mask(static_cast<size_t>(std::max(0, frameCount)), false);
+    constexpr float kVadThreshold = 0.008f;
+    for (int vi = 0; vi < frameCount; ++vi) {
+      int ss = vi * HOP_SIZE;
+      int se = std::min(ss + HOP_SIZE, numSamples);
+      if (ss >= numSamples)
+        continue;
+      float sumSq = 0.0f;
+      for (int vj = ss; vj < se; ++vj)
+        sumSq += samples[vj] * samples[vj];
+      float rms = std::sqrt(sumSq / static_cast<float>(se - ss));
+      mask[static_cast<size_t>(vi)] = rms > kVadThreshold;
+    }
+    return mask;
+  };
+
+  auto runF0Extraction = [this, selectedPitchDetector, samples, numSamples,
+                          sampleRate]() {
+    if (selectedPitchDetector == PitchDetectorType::RMVPE)
+      return rmvpePitchDetector->extractF0(samples, numSamples, sampleRate);
+    if (selectedPitchDetector == PitchDetectorType::FCPE)
+      return fcpePitchDetector->extractF0(samples, numSamples, sampleRate);
+    return std::vector<float>{};
+  };
+
+  auto runHNSep = [this, samples, numSamples](std::function<void(double)> progress) {
+    HNSepResult result;
+    result.attempted = true;
+    if (!hnsepModel || !hnsepModel->isLoaded())
+      return result;
+    result.ok = hnsepModel->separateWithProgress(
+        samples, numSamples, result.harmonic, result.noise, std::move(progress));
+    return result;
+  };
+
+  auto runGameDetection = [this, samples, numSamples]() {
+    GameSegmentationResult result;
+    result.attempted = true;
+    if (!gameDetector || !gameDetector->isLoaded())
+      return result;
+    result.notes = gameDetector->detectNotesWithProgress(
+        samples, numSamples, GAMEDetector::SAMPLE_RATE, nullptr);
+    result.chunks = gameDetector->getLastChunkRanges();
+    return result;
+  };
+
+  onProgress(0.35, "Computing mel spectrogram...");
+  auto melFuture = std::async(std::launch::async, [samples, numSamples, sampleRate]() {
+    MelSpectrogram melComputer(sampleRate, N_FFT, HOP_SIZE, NUM_MELS, FMIN, FMAX);
+    return melComputer.compute(samples, numSamples);
+  });
+
+  onProgress(0.55, "Extracting pitch (F0)...");
+  auto f0Future = std::async(std::launch::async, runF0Extraction);
+  auto vadFuture = std::async(std::launch::async, computeVadMaskForFrames,
+                              predictedFrames);
+
+  auto modelPath = PlatformPaths::getModelFile("pc_nsf_hifigan.onnx");
+  auto *voc = ensureVocoder();
+  const bool vocoderMissing = !voc || (!modelPath.existsAsFile() && !voc->isLoaded());
+  std::future<bool> vocoderLoadFuture;
+  if (voc && modelPath.existsAsFile() && !voc->isLoaded()) {
+    vocoderLoadFuture = std::async(std::launch::async, [voc, modelPath]() {
+      return voc->loadModel(modelPath);
+    });
   }
+
+  std::future<HNSepResult> hnsepFuture;
+  if (allowConcurrentModelInference && hnsepModel && hnsepModel->isLoaded())
+    hnsepFuture = std::async(std::launch::async, runHNSep,
+                             std::function<void(double)>{});
+
+  std::future<GameSegmentationResult> gameFuture;
+  if (allowConcurrentModelInference && gameDetector && gameDetector->isLoaded())
+    gameFuture = std::async(std::launch::async, runGameDetection);
+
+  audioData.melSpectrogram = melFuture.get();
+  int targetFrames = static_cast<int>(audioData.melSpectrogram.size());
+
+  std::vector<float> extractedF0 = f0Future.get();
 
   if (extractedF0.empty() || targetFrames <= 0) {
     juce::MessageManager::callAsync([]() {
@@ -1403,27 +1484,8 @@ void EditorController::analyzeAudio(
       audioData.voicedMask[i] = audioData.f0[i] > 0;
     }
 
-    // Compute energy-based VAD mask (captures consonants)
-    {
-      constexpr float kVadThreshold = 0.008f;
-      const float *vadSamples = audioData.waveform.getReadPointer(0);
-      const int vadNumSamples = audioData.waveform.getNumSamples();
-      const int vadNumFrames = static_cast<int>(audioData.f0.size());
-      audioData.vadMask.resize(vadNumFrames);
-      for (int vi = 0; vi < vadNumFrames; ++vi) {
-        int ss = vi * HOP_SIZE;
-        int se = std::min(ss + HOP_SIZE, vadNumSamples);
-        if (ss >= vadNumSamples) {
-          audioData.vadMask[vi] = false;
-          continue;
-        }
-        float sumSq = 0.0f;
-        for (int vj = ss; vj < se; ++vj)
-          sumSq += vadSamples[vj] * vadSamples[vj];
-        float rms = std::sqrt(sumSq / static_cast<float>(se - ss));
-        audioData.vadMask[vi] = rms > kVadThreshold;
-      }
-    }
+    audioData.vadMask = vadFuture.get();
+    audioData.vadMask.resize(audioData.f0.size(), false);
 
     onProgress(0.65, "Smoothing pitch curve...");
     audioData.f0 = F0Smoother::smoothF0(audioData.f0, audioData.voicedMask);
@@ -1431,43 +1493,53 @@ void EditorController::analyzeAudio(
         audioData.f0, audioData.voicedMask);
   }
 
-  if (hnsepModel && hnsepModel->isLoaded() &&
-      audioData.waveform.getNumSamples() > 0) {
-    onProgress(0.70, "Separating harmonic/noise...");
+  auto applyHNSepResult = [&audioData, numSamples](const HNSepResult &result) {
+    if (!result.attempted)
+      return;
+    if (result.ok) {
+      const int harmonicCopyLen = std::min(
+          numSamples, static_cast<int>(result.harmonic.size()));
+      const int noiseCopyLen = std::min(numSamples,
+                                        static_cast<int>(result.noise.size()));
 
-    std::vector<float> harmonic;
-    std::vector<float> noise;
-    const bool ok = hnsepModel->separateWithProgress(
-        samples, numSamples, harmonic, noise,
-        [&onProgress](double progress) {
-          onProgress(0.70 + progress * 0.05,
-                     "Separating harmonic/noise...");
-        });
-
-    if (ok) {
       audioData.harmonicWaveform.setSize(1, numSamples);
-      juce::FloatVectorOperations::copy(
-          audioData.harmonicWaveform.getWritePointer(0), harmonic.data(),
-          numSamples);
+      audioData.harmonicWaveform.clear();
+      if (harmonicCopyLen > 0) {
+        juce::FloatVectorOperations::copy(
+            audioData.harmonicWaveform.getWritePointer(0),
+            result.harmonic.data(), harmonicCopyLen);
+      }
 
       audioData.noiseWaveform.setSize(1, numSamples);
-      juce::FloatVectorOperations::copy(
-          audioData.noiseWaveform.getWritePointer(0), noise.data(), numSamples);
+      audioData.noiseWaveform.clear();
+      if (noiseCopyLen > 0) {
+        juce::FloatVectorOperations::copy(
+            audioData.noiseWaveform.getWritePointer(0), result.noise.data(),
+            noiseCopyLen);
+      }
 
       LOG("hnsep separation complete: " + juce::String(numSamples) +
           " samples separated into harmonic + noise");
     } else {
       LOG("hnsep separation failed - harmonic/noise buffers left empty");
     }
+  };
+
+  if (hnsepModel && hnsepModel->isLoaded() && numSamples > 0) {
+    onProgress(0.70, "Separating harmonic/noise...");
+    if (hnsepFuture.valid()) {
+      applyHNSepResult(hnsepFuture.get());
+    } else {
+      applyHNSepResult(runHNSep([&onProgress](double progress) {
+        onProgress(0.70 + progress * 0.05,
+                   "Separating harmonic/noise...");
+      }));
+    }
   } else if (hnsepModel && !hnsepModel->isLoaded()) {
     LOG("hnsep model not loaded - skipping harmonic-noise separation");
   }
 
   onProgress(0.75, TR("progress.loading_vocoder"));
-  auto modelPath = PlatformPaths::getModelFile("pc_nsf_hifigan.onnx");
-
-  auto *voc = ensureVocoder();
-
   if (!voc) {
     juce::MessageManager::callAsync([]() {
       juce::AlertWindow::showMessageBoxAsync(
@@ -1477,13 +1549,13 @@ void EditorController::analyzeAudio(
     return;
   }
 
-  if (!modelPath.existsAsFile() && !voc->isLoaded()) {
+  if (vocoderMissing) {
     showMissingModelAndAbort("pc_nsf_hifigan.onnx", modelPath);
     return;
   }
 
-  if (modelPath.existsAsFile() && !voc->isLoaded()) {
-    if (voc->loadModel(modelPath)) {
+  if (vocoderLoadFuture.valid()) {
+    if (vocoderLoadFuture.get()) {
       DBG("Vocoder model loaded successfully: " + modelPath.getFullPathName());
     } else {
       juce::MessageManager::callAsync([modelPath]() {
@@ -1497,7 +1569,13 @@ void EditorController::analyzeAudio(
   }
 
   onProgress(0.90, "Segmenting notes...");
-  segmentIntoNotes(targetProject);
+  GameSegmentationResult gameResult;
+  const GameSegmentationResult *gameResultPtr = nullptr;
+  if (gameFuture.valid()) {
+    gameResult = gameFuture.get();
+    gameResultPtr = &gameResult;
+  }
+  segmentIntoNotesInternal(targetProject, nullptr, gameResultPtr);
 
   PitchCurveProcessor::rebuildCurvesFromSource(targetProject, audioData.f0);
   HNSepCurveProcessor::initializeCurves(targetProject);
@@ -1592,7 +1670,14 @@ void EditorController::segmentIntoNotesAsync(
 }
 
 void EditorController::segmentIntoNotes(Project &targetProject,
-                                        std::function<void()> onStreamingUpdate) {
+                                         std::function<void()> onStreamingUpdate) {
+  segmentIntoNotesInternal(targetProject, onStreamingUpdate, nullptr);
+}
+
+void EditorController::segmentIntoNotesInternal(
+    Project &targetProject,
+    std::function<void()> onStreamingUpdate,
+    const GameSegmentationResult *gameResult) {
   auto &audioData = targetProject.getAudioData();
   auto &notes = targetProject.getNotes();
   notes.clear();
@@ -1667,7 +1752,9 @@ void EditorController::segmentIntoNotes(Project &targetProject,
   if (audioData.f0.empty())
     return;
 
-  if (!gameDetector || !gameDetector->isLoaded()) {
+  const bool hasPrecomputedGame = gameResult != nullptr && gameResult->attempted;
+
+  if (!hasPrecomputedGame && (!gameDetector || !gameDetector->isLoaded())) {
     auto searchedPath = gameModelDir.getFullPathName();
     auto bundlePath =
         PlatformPaths::getModelsDirectory().getChildFile("GAME").getFullPathName();
@@ -1700,17 +1787,30 @@ void EditorController::segmentIntoNotes(Project &targetProject,
     return;
   }
 
-  if (gameDetector && gameDetector->isLoaded() &&
+  if ((hasPrecomputedGame || (gameDetector && gameDetector->isLoaded())) &&
       audioData.waveform.getNumSamples() > 0) {
 
     const float *samples = audioData.waveform.getReadPointer(0);
     int numSamples = audioData.waveform.getNumSamples();
     const int f0Size = static_cast<int>(audioData.f0.size());
 
-    auto gameNotes = gameDetector->detectNotesWithProgress(
-        samples, numSamples, GAMEDetector::SAMPLE_RATE, nullptr);
+    std::vector<GAMEDetector::NoteEvent> detectedGameNotes;
+    std::vector<GAMEDetector::ChunkRange> detectedSlicerChunks;
+    const std::vector<GAMEDetector::NoteEvent> *gameNotesPtr = nullptr;
+    const std::vector<GAMEDetector::ChunkRange> *slicerChunksPtr = nullptr;
+    if (hasPrecomputedGame) {
+      gameNotesPtr = &gameResult->notes;
+      slicerChunksPtr = &gameResult->chunks;
+    } else {
+      detectedGameNotes = gameDetector->detectNotesWithProgress(
+          samples, numSamples, GAMEDetector::SAMPLE_RATE, nullptr);
+      detectedSlicerChunks = gameDetector->getLastChunkRanges();
+      gameNotesPtr = &detectedGameNotes;
+      slicerChunksPtr = &detectedSlicerChunks;
+    }
 
-    const auto &slicerChunks = gameDetector->getLastChunkRanges();
+    const auto &gameNotes = *gameNotesPtr;
+    const auto &slicerChunks = *slicerChunksPtr;
     for (int chunkIndex = 0; chunkIndex < static_cast<int>(slicerChunks.size());
          ++chunkIndex) {
       const auto &slicerChunk = slicerChunks[chunkIndex];
