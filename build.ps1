@@ -2,7 +2,9 @@
 PowerShell build helper for SVCFusion Studio
 Usage examples:
   .\build.ps1                      # configure+build DirectML (Release), will try to find CMake
+  .\build.ps1                      # incremental build when cache already exists
   .\build.ps1 -Configuration Debug -Parallel 4
+  .\build.ps1 -Reconfigure         # force rerun CMake configure
   .\build.ps1 -Generator "Visual Studio 17 2022" -Platform x64
   .\build.ps1 -VsPath "F:\vs"        # your Visual Studio root (default)
   .\build.ps1 -CMakeArgs @('-DUSE_DIRECTML=OFF')  # override the local DirectML default
@@ -13,11 +15,13 @@ param(
     [string] $BuildDir  = "",
     [string] $Generator = "Ninja",
     [string] $Platform  = "",
+    [bool] $Launch  = $false,
     [ValidateSet('Debug','Release','RelWithDebInfo','MinSizeRel')]
     [string] $Configuration = "Release",
-    [int] $Parallel = 8,
+    [int] $Parallel = [Math]::Max(1, [Environment]::ProcessorCount),
     [string] $VsPath = 'F:\\vs',
-    [string[]] $CMakeArgs = @()
+    [string[]] $CMakeArgs = @(),
+    [switch] $Reconfigure
 )
 if (-not $BuildDir) { $BuildDir = Join-Path $SourceDir 'build' }
 
@@ -57,6 +61,20 @@ if (-not $cmakePath) {
 Write-Host "Using CMake: $cmakePath" -ForegroundColor Green
 Write-Host "Source: $SourceDir" -ForegroundColor Gray
 Write-Host "Build dir: $BuildDir" -ForegroundColor Gray
+Write-Host "Parallel: $Parallel" -ForegroundColor Gray
+
+if (-not (Test-Path $BuildDir)) {
+    New-Item -ItemType Directory -Path $BuildDir -Force | Out-Null
+}
+
+$LogFile = Join-Path $BuildDir 'build.log'
+$ConfigureStampFile = Join-Path $BuildDir '.build-configure-args.txt'
+$CMakeCacheFile = Join-Path $BuildDir 'CMakeCache.txt'
+if (Test-Path $LogFile) {
+    Remove-Item -LiteralPath $LogFile -Force
+}
+
+Write-Host "Build log: $LogFile" -ForegroundColor Gray
 
 # Prepare configure args. The helper defaults local builds to DirectML; CI invokes
 # cmake directly with explicit provider flags, so this does not affect workflows.
@@ -71,19 +89,47 @@ if ($Generator) { $cfgArgs += ("-G", "$Generator") }
 if ($Generator -and $Platform) { $cfgArgs += ("-A", "$Platform") }
 if ($CMakeArgs) { $cfgArgs += $CMakeArgs }
 
-# Run configure
-$proc = & $cmakePath @cfgArgs
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "CMake configure failed (exit $LASTEXITCODE)." -ForegroundColor Red
-    exit $LASTEXITCODE
+$requestedConfigureArgs = ($cfgArgs | ForEach-Object { [string]$_ }) -join [Environment]::NewLine
+$hasCache = Test-Path $CMakeCacheFile
+$needsConfigure = $Reconfigure -or -not $hasCache
+
+if (-not $needsConfigure) {
+    if (-not (Test-Path $ConfigureStampFile)) {
+        $needsConfigure = $true
+        Write-Host "No configure stamp found; rerunning CMake configure once." -ForegroundColor Yellow
+    } else {
+        $previousConfigureArgs = Get-Content -LiteralPath $ConfigureStampFile -Raw
+        if ($previousConfigureArgs -ne $requestedConfigureArgs) {
+            $needsConfigure = $true
+            Write-Host "Configure arguments changed; rerunning CMake configure." -ForegroundColor Yellow
+        }
+    }
+}
+
+if ($needsConfigure) {
+    "=== Configure $(Get-Date -Format s) ===" | Tee-Object -FilePath $LogFile -Append
+    & $cmakePath @cfgArgs 2>&1 | Tee-Object -FilePath $LogFile -Append
+    $configureExitCode = $LASTEXITCODE
+    if ($configureExitCode -ne 0) {
+        Write-Host "CMake configure failed (exit $configureExitCode)." -ForegroundColor Red
+        exit $configureExitCode
+    }
+
+    Set-Content -LiteralPath $ConfigureStampFile -Value $requestedConfigureArgs
+} else {
+    $skipMessage = "Skipping CMake configure; using existing build cache. Pass -Reconfigure to force it."
+    Write-Host $skipMessage -ForegroundColor Green
+    $skipMessage | Tee-Object -FilePath $LogFile -Append | Out-Null
 }
 
 # Build
 $buildArgs = @("--build", "$BuildDir", "--config", "$Configuration", "--parallel", "$Parallel")
-$proc = & $cmakePath @buildArgs
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "Build failed (exit $LASTEXITCODE)." -ForegroundColor Red
-    exit $LASTEXITCODE
+"=== Build $(Get-Date -Format s) ===" | Tee-Object -FilePath $LogFile -Append
+& $cmakePath @buildArgs 2>&1 | Tee-Object -FilePath $LogFile -Append
+$buildExitCode = $LASTEXITCODE
+if ($buildExitCode -ne 0) {
+    Write-Host "Build failed (exit $buildExitCode)." -ForegroundColor Red
+    exit $buildExitCode
 }
 
 # Locate binary
@@ -106,6 +152,10 @@ $possible = @(
 foreach ($p in $possible) {
     if ($p -and (Test-Path $p)) {
         Write-Host "Build succeeded — executable: $p" -ForegroundColor Green
+        if ($Launch -ne 0) {
+            Write-Host "Launching executable..." -ForegroundColor Green
+            Start-Process -FilePath $p
+        }
         exit 0
     }
 }
