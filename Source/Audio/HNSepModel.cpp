@@ -54,8 +54,8 @@ HNSepModel::HNSepModel() = default;
 HNSepModel::~HNSepModel() = default;
 
 int HNSepModel::getRuntimeMaxChunkSamples() const {
-  if (activeProvider == GPUProvider::DirectML)
-    return SAMPLE_RATE * 3;
+  // if (activeProvider == GPUProvider::DirectML)
+  //   return SAMPLE_RATE * 3;
 
   return MAX_CHUNK_SAMPLES;
 }
