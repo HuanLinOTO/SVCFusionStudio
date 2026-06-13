@@ -14,6 +14,7 @@ public:
   explicit PianoRollWorkspaceView(PianoRollComponent &pianoRoll);
 
   void paint(juce::Graphics &g) override;
+  void paintOverChildren(juce::Graphics &g) override;
   void resized() override;
   void mouseDown(const juce::MouseEvent &e) override;
   void mouseDrag(const juce::MouseEvent &e) override;
@@ -33,6 +34,7 @@ public:
 
 private:
   void updateOverviewVisibility();
+  void drawOverviewToggleIcon(juce::Graphics &g) const;
   int getMaxHNSepHeight() const;
 
   PianoRollComponent &pianoRoll;
@@ -44,7 +46,7 @@ private:
   RoundedCard hnsepCard;
   RoundedCard overviewCard;
 
-  juce::TextButton overviewToggleButton{"[]"};
+  juce::TextButton overviewToggleButton;
   bool overviewVisible = true;
   bool hnsepVisible = false;
   bool isResizingHNSep = false;

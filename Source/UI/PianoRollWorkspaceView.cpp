@@ -128,6 +128,7 @@ PianoRollWorkspaceView::PianoRollWorkspaceView(PianoRollComponent &piano)
   };
 
   overviewToggleButton.setClickingTogglesState(true);
+  overviewToggleButton.setButtonText({});
   overviewToggleButton.setToggleState(overviewVisible,
                                       juce::dontSendNotification);
   overviewToggleButton.setColour(juce::TextButton::buttonColourId,
@@ -185,6 +186,11 @@ void PianoRollWorkspaceView::paint(juce::Graphics &g)
     g.setColour(APP_COLOR_BORDER.withAlpha(isResizingHNSep ? 0.9f : 0.55f));
     g.fillRoundedRectangle(handleX, handleY, handleWidth, 2.0f, 1.0f);
   }
+}
+
+void PianoRollWorkspaceView::paintOverChildren(juce::Graphics &g)
+{
+  drawOverviewToggleIcon(g);
 }
 
 void PianoRollWorkspaceView::resized()
@@ -343,6 +349,48 @@ void PianoRollWorkspaceView::updateOverviewVisibility()
 {
   overviewCard.setVisible(overviewVisible);
   overviewPanel.setVisible(overviewVisible);
+}
+
+void PianoRollWorkspaceView::drawOverviewToggleIcon(juce::Graphics &g) const
+{
+  auto iconBounds = overviewToggleButton.getBounds().toFloat().reduced(5.0f);
+  if (iconBounds.isEmpty())
+    return;
+
+  const bool active = overviewToggleButton.getToggleState();
+  auto iconColour = active ? juce::Colours::white : APP_COLOR_TEXT_PRIMARY;
+  if (overviewToggleButton.isMouseOverOrDragging())
+    iconColour = iconColour.brighter(0.15f);
+
+  auto panelBounds = iconBounds.withHeight(iconBounds.getHeight() - 4.0f);
+  g.setColour(iconColour.withAlpha(0.9f));
+  g.drawRoundedRectangle(panelBounds, 2.0f, 1.25f);
+
+  juce::Path waveform;
+  const float left = panelBounds.getX() + 2.0f;
+  const float right = panelBounds.getRight() - 2.0f;
+  const float midY = panelBounds.getCentreY();
+  waveform.startNewSubPath(left, midY + 1.0f);
+  waveform.lineTo(left + (right - left) * 0.35f, midY - 1.5f);
+  waveform.lineTo(left + (right - left) * 0.68f, midY + 1.5f);
+  waveform.lineTo(right, midY - 0.5f);
+  g.strokePath(waveform, juce::PathStrokeType(1.1f));
+
+  const float chevronY = iconBounds.getBottom() - 1.5f;
+  const float chevronCentreX = iconBounds.getCentreX();
+  juce::Path chevron;
+  if (active) {
+    chevron.startNewSubPath(chevronCentreX - 3.5f, chevronY - 2.5f);
+    chevron.lineTo(chevronCentreX, chevronY);
+    chevron.lineTo(chevronCentreX + 3.5f, chevronY - 2.5f);
+  } else {
+    chevron.startNewSubPath(chevronCentreX - 3.5f, chevronY);
+    chevron.lineTo(chevronCentreX, chevronY - 2.5f);
+    chevron.lineTo(chevronCentreX + 3.5f, chevronY);
+  }
+  g.strokePath(chevron, juce::PathStrokeType(1.4f,
+                                             juce::PathStrokeType::curved,
+                                             juce::PathStrokeType::rounded));
 }
 
 int PianoRollWorkspaceView::getMaxHNSepHeight() const
