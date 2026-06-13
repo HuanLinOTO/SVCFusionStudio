@@ -28,6 +28,10 @@ public:
   void setGPUDeviceId(int id) { gpuDeviceId = id; }
   juce::String getLanguage() const { return language; }
   void setLanguage(const juce::String &lang) { language = lang; }
+  float getUIFontScale() const { return uiFontScale; }
+  void setUIFontScale(float scale) {
+    uiFontScale = juce::jlimit(0.9f, 1.25f, scale);
+  }
 
   // Config (config.json - window state, last file)
   void loadConfig();
@@ -80,6 +84,7 @@ private:
   PitchDetectorType pitchDetectorType = PitchDetectorType::RMVPE;
   int gpuDeviceId = 0;
   juce::String language = "auto";
+  float uiFontScale = 1.0f;
 
   // Config
   juce::File lastFilePath;
@@ -93,7 +98,7 @@ private:
   bool showUvInterpolationDebug = false;
   bool showActualF0Debug = false;
   bool showFpsOverlay = false;
-  bool showBackgroundWaveform = true;
+  bool showBackgroundWaveform = false;
   bool followSystemAudioOutput = true;
 
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(SettingsManager)

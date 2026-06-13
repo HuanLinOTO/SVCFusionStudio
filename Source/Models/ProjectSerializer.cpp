@@ -167,6 +167,8 @@ juce::var ProjectSerializer::noteToJson(const Note& note) {
         obj->setProperty("breathCurve", floatArrayToString(note.getBreathCurve(), 2));
     if (note.hasTensionCurve())
         obj->setProperty("tensionCurve", floatArrayToString(note.getTensionCurve(), 2));
+    if (!note.getF0Values().empty())
+        obj->setProperty("f0Values", floatArrayToString(note.getF0Values(), 2));
 
     return juce::var(obj);
 }
@@ -215,6 +217,10 @@ bool ProjectSerializer::noteFromJson(Note& note, const juce::var& json) {
     auto tension = json.getProperty("tensionCurve", juce::var());
     if (!tension.isVoid() && tension.toString().isNotEmpty())
         note.setTensionCurve(stringToFloatArray(tension.toString()));
+
+    auto f0Values = json.getProperty("f0Values", juce::var());
+    if (!f0Values.isVoid() && f0Values.toString().isNotEmpty())
+        note.setF0Values(stringToFloatArray(f0Values.toString()));
 
     return true;
 }

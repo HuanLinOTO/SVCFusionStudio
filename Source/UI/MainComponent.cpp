@@ -345,6 +345,7 @@ MainComponent::MainComponent(bool enableAudioDevice)
   menuHandler = std::make_unique<MenuHandler>();
   LOG("MainComponent: menuHandler created");
   settingsManager = std::make_unique<SettingsManager>();
+  AppFont::setScale(settingsManager->getUIFontScale());
   LOG("MainComponent: settingsManager created");
 
   LOG("MainComponent: loading ONNX models...");
@@ -2185,6 +2186,17 @@ void MainComponent::showSettings() {
       settingsManager->applySettings();
       reloadInferenceModels(true);
     };
+    settingsOverlay->getSettingsComponent()->onUIFontScaleChanged =
+        [this](float scale) {
+          if (settingsManager) {
+            settingsManager->setUIFontScale(scale);
+            settingsManager->saveConfig();
+          }
+          AppFont::setScale(scale);
+          sendLookAndFeelChange();
+          resized();
+          repaint();
+        };
     settingsOverlay->getSettingsComponent()->canChangeDevice = [this]() {
       return !isInferenceBusy();
     };

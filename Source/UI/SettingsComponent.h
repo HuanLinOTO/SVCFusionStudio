@@ -45,6 +45,7 @@ public:
   // Callbacks
   std::function<void()> onSettingsChanged;
   std::function<void()> onLanguageChanged;
+  std::function<void(float)> onUIFontScaleChanged;
   std::function<void(PitchDetectorType)> onPitchDetectorChanged;
   std::function<void(bool)> onShowSomeSegmentsDebugChanged;
   std::function<void(bool)> onShowSomeValuesDebugChanged;
@@ -95,6 +96,7 @@ private:
   bool isTabAvailable(SettingsTab tab) const;
   void layoutGeneralTab(juce::Rectangle<int> content);
   void layoutAudioTab(juce::Rectangle<int> content);
+  void applyFontSizes();
   void applyTabAnimationState();
   void startTabTransition(SettingsTab fromTab, SettingsTab toTab);
 
@@ -105,28 +107,44 @@ private:
 
   juce::Label titleLabel;
   juce::Label generalSectionLabel;
+  juce::Label inferenceSectionLabel;
+  juce::Label displaySectionLabel;
+  juce::Label debugSectionLabel;
 
   juce::Label languageLabel;
+  juce::Label languageDescriptionLabel;
   StyledComboBox languageComboBox;
+  juce::Label uiFontSizeLabel;
+  juce::Label uiFontSizeDescriptionLabel;
+  StyledComboBox uiFontSizeComboBox;
 
   juce::Label deviceLabel;
+  juce::Label deviceDescriptionLabel;
   StyledComboBox deviceComboBox;
   juce::Label gpuDeviceLabel;
+  juce::Label gpuDeviceDescriptionLabel;
   StyledComboBox gpuDeviceComboBox;
 
   juce::Label pitchDetectorLabel;
+  juce::Label pitchDetectorDescriptionLabel;
   StyledComboBox pitchDetectorComboBox;
   juce::Label someSegmentsDebugLabel;
+  juce::Label someSegmentsDebugDescriptionLabel;
   juce::ToggleButton someSegmentsDebugToggle;
   juce::Label someValuesDebugLabel;
+  juce::Label someValuesDebugDescriptionLabel;
   juce::ToggleButton someValuesDebugToggle;
   juce::Label uvInterpolationDebugLabel;
+  juce::Label uvInterpolationDebugDescriptionLabel;
   juce::ToggleButton uvInterpolationDebugToggle;
   juce::Label actualF0DebugLabel;
+  juce::Label actualF0DebugDescriptionLabel;
   juce::ToggleButton actualF0DebugToggle;
   juce::Label fpsOverlayLabel;
+  juce::Label fpsOverlayDescriptionLabel;
   juce::ToggleButton fpsOverlayToggle;
   juce::Label backgroundWaveformLabel;
+  juce::Label backgroundWaveformDescriptionLabel;
   juce::ToggleButton backgroundWaveformToggle;
 
   juce::Label infoLabel;
@@ -156,12 +174,13 @@ private:
   juce::String lastConfirmedDevice = "CPU";
   int lastConfirmedGpuDeviceId = 0;
   PitchDetectorType pitchDetectorType = PitchDetectorType::RMVPE;
+  float uiFontScale = 1.0f;
   bool showSomeSegmentsDebug = false;
   bool showSomeValuesDebug = false;
   bool showUvInterpolationDebug = false;
   bool showActualF0Debug = false;
   bool showFpsOverlay = false;
-  bool showBackgroundWaveform = true;
+  bool showBackgroundWaveform = false;
   SettingsTab activeTab = SettingsTab::General;
   SettingsTab previousTab = SettingsTab::General;
   juce::TextButton generalTabButton;

@@ -2412,35 +2412,69 @@ void PianoRollComponent::drawPitchCurves(juce::Graphics &g) {
   }
 
   if (showActualF0Debug) {
-    g.setColour(juce::Colours::aqua.withAlpha(0.90f));
-    pitchActualPath.clear();
-    bool pathStarted = false;
+    g.setColour(juce::Colour(0xffffb36b).withAlpha(0.70f));
 
-    for (int i = visibleStartFrame; i < visibleEndFrame;
-         i += curveFrameStep) {
-      const float f0 = audioData.f0[static_cast<size_t>(i)];
-      if (f0 <= 0.0f) {
-        if (pathStarted) {
-          g.strokePath(pitchActualPath, juce::PathStrokeType(1.7f));
-          pitchActualPath.clear();
-          pathStarted = false;
-        }
+    auto strokeActualPath = [&]() {
+      g.strokePath(pitchActualPath, deltaStroke);
+      pitchActualPath.clear();
+    };
+
+    for (const auto *notePtr : pitchRenderVisibleNotes) {
+      const auto &note = *notePtr;
+      const auto &noteF0 = note.getF0Values();
+      const bool hasNoteF0 = !noteF0.empty();
+      const int noteStart = note.getStartFrame();
+      const int noteEnd = note.getEndFrame();
+      const int startFrame = std::max(noteStart, visibleStartFrame);
+      const int endFrame = std::min(noteEnd, visibleEndFrame);
+      if (endFrame <= startFrame)
         continue;
+
+      const int outputDuration = std::max(1, noteEnd - noteStart);
+      const int noteF0LastIndex = static_cast<int>(noteF0.size()) - 1;
+      pitchActualPath.clear();
+      bool pathStarted = false;
+
+      for (int i = startFrame; i < endFrame; i += curveFrameStep) {
+        float f0 = 0.0f;
+        if (hasNoteF0) {
+          const float localPosition =
+              outputDuration <= 1 || noteF0LastIndex <= 0
+                  ? 0.0f
+                  : static_cast<float>(i - noteStart) /
+                        static_cast<float>(outputDuration - 1) *
+                        static_cast<float>(noteF0LastIndex);
+          const int localIndex = juce::jlimit(
+              0, noteF0LastIndex, static_cast<int>(std::round(localPosition)));
+          f0 = noteF0[static_cast<size_t>(localIndex)];
+        } else if (i < static_cast<int>(audioData.baseF0.size())) {
+          f0 = audioData.baseF0[static_cast<size_t>(i)];
+        } else if (i < static_cast<int>(audioData.f0.size())) {
+          f0 = audioData.f0[static_cast<size_t>(i)];
+        }
+
+        if (f0 <= 0.0f) {
+          if (pathStarted) {
+            strokeActualPath();
+            pathStarted = false;
+          }
+          continue;
+        }
+
+        const float midi = freqToMidi(f0) + globalOffset;
+        const float x = framesToSeconds(i) * pixelsPerSecond;
+        const float y = midiToY(midi) + pixelsPerSemitone * 0.5f;
+        if (!pathStarted) {
+          pitchActualPath.startNewSubPath(x, y);
+          pathStarted = true;
+        } else {
+          pitchActualPath.lineTo(x, y);
+        }
       }
 
-      const float midi = freqToMidi(f0) + globalOffset;
-      const float x = framesToSeconds(i) * pixelsPerSecond;
-      const float y = midiToY(midi) + pixelsPerSemitone * 0.5f;
-      if (!pathStarted) {
-        pitchActualPath.startNewSubPath(x, y);
-        pathStarted = true;
-      } else {
-        pitchActualPath.lineTo(x, y);
-      }
+      if (pathStarted)
+        strokeActualPath();
     }
-
-    if (pathStarted)
-      g.strokePath(pitchActualPath, juce::PathStrokeType(1.7f));
   }
 
   // Draw base pitch curve as dashed line

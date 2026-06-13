@@ -54,6 +54,7 @@ public:
     static juce::Font getFont(float height = 14.0f)
     {
         auto& instance = getInstance();
+        height *= instance.fontScale;
         if (instance.fontLoaded && instance.customTypeface != nullptr)
             return juce::Font(
                        juce::FontOptions(instance.customTypeface).withHeight(
@@ -89,6 +90,7 @@ public:
     static juce::Font getBoldFont(float height = 14.0f)
     {
         auto& instance = getInstance();
+        height *= instance.fontScale;
         if (instance.fontLoaded && instance.customTypeface != nullptr)
             return juce::Font(
                        juce::FontOptions(instance.customTypeface).withHeight(
@@ -123,6 +125,16 @@ public:
         return getInstance().fontLoaded;
     }
 
+    static void setScale(float scale)
+    {
+        getInstance().fontScale = juce::jlimit(0.9f, 1.25f, scale);
+    }
+
+    static float getScale()
+    {
+        return getInstance().fontScale;
+    }
+
 private:
     AppFont() = default;
 
@@ -133,6 +145,7 @@ private:
     }
 
     juce::Typeface::Ptr customTypeface;
+    float fontScale = 1.0f;
     bool fontLoaded = false;
     bool initialized = false;
     int refCount = 0;

@@ -85,6 +85,10 @@ void SettingsManager::loadConfig() {
         if (configObj->hasProperty("language"))
           language = configObj->getProperty("language").toString();
 
+        if (configObj->hasProperty("uiFontScale"))
+          setUIFontScale(static_cast<float>(
+              static_cast<double>(configObj->getProperty("uiFontScale"))));
+
         auto lastFile = configObj->getProperty("lastFile").toString();
         if (lastFile.isNotEmpty())
           lastFilePath = juce::File(lastFile);
@@ -149,6 +153,7 @@ void SettingsManager::saveConfig() {
                       pitchDetectorTypeToString(pitchDetectorType));
   config->setProperty("gpuDeviceId", gpuDeviceId);
   config->setProperty("language", language);
+  config->setProperty("uiFontScale", uiFontScale);
 
   if (lastFilePath.existsAsFile())
     config->setProperty("lastFile", lastFilePath.getFullPathName());

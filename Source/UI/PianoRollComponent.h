@@ -334,7 +334,7 @@ private:
   bool showUvInterpolationDebug = false;
   bool showActualF0Debug = false;
   bool showFpsOverlay = false;
-  bool showBackgroundWaveform = true;
+  bool showBackgroundWaveform = false;
 
   static constexpr int fpsHistorySize = 120;
   std::array<float, fpsHistorySize> fpsHistory{};

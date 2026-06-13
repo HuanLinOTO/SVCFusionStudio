@@ -16,6 +16,25 @@
 namespace {
 constexpr int kFollowSystemOutputId = 1;
 
+float fontScaleForSelectedId(int selectedId) {
+  switch (selectedId) {
+  case 2:
+    return 1.10f;
+  case 3:
+    return 1.20f;
+  default:
+    return 1.0f;
+  }
+}
+
+int selectedIdForFontScale(float scale) {
+  if (scale >= 1.15f)
+    return 3;
+  if (scale >= 1.05f)
+    return 2;
+  return 1;
+}
+
 #ifdef _WIN32
 juce::StringArray getDxgiAdapterNames() {
   juce::StringArray names;
@@ -62,7 +81,20 @@ SettingsComponent::SettingsComponent(
 
   auto configureRowLabel = [](juce::Label &label) {
     label.setColour(juce::Label::textColourId, APP_COLOR_TEXT_PRIMARY);
-    label.setFont(AppFont::getFont(15.0f));
+    label.setFont(AppFont::getFont(14.5f));
+    label.setJustificationType(juce::Justification::centredLeft);
+  };
+
+  auto configureDescriptionLabel = [](juce::Label &label) {
+    label.setColour(juce::Label::textColourId, APP_COLOR_TEXT_MUTED);
+    label.setFont(AppFont::getFont(13.0f));
+    label.setJustificationType(juce::Justification::centredLeft);
+    label.setMinimumHorizontalScale(0.72f);
+  };
+
+  auto configureSectionLabel = [](juce::Label &label) {
+    label.setFont(AppFont::getBoldFont(15.5f));
+    label.setColour(juce::Label::textColourId, APP_COLOR_PRIMARY);
     label.setJustificationType(juce::Justification::centredLeft);
   };
 
@@ -89,18 +121,35 @@ SettingsComponent::SettingsComponent(
   audioTabButton.onClick = [this]() { setActiveTab(SettingsTab::Audio); };
   addAndMakeVisible(audioTabButton);
 
-  // General section label
-  generalSectionLabel.setText(TR("settings.general"),
+  // General tab section labels
+  generalSectionLabel.setText(TR("settings.section.interface"),
                               juce::dontSendNotification);
-  generalSectionLabel.setFont(AppFont::getBoldFont(15.0f));
-  generalSectionLabel.setColour(juce::Label::textColourId,
-                                APP_COLOR_TEXT_MUTED);
+  configureSectionLabel(generalSectionLabel);
   addAndMakeVisible(generalSectionLabel);
+
+  inferenceSectionLabel.setText(TR("settings.section.inference"),
+                                juce::dontSendNotification);
+  configureSectionLabel(inferenceSectionLabel);
+  addAndMakeVisible(inferenceSectionLabel);
+
+  displaySectionLabel.setText(TR("settings.section.display"),
+                              juce::dontSendNotification);
+  configureSectionLabel(displaySectionLabel);
+  addAndMakeVisible(displaySectionLabel);
+
+  debugSectionLabel.setText(TR("settings.section.debug"),
+                            juce::dontSendNotification);
+  configureSectionLabel(debugSectionLabel);
+  addAndMakeVisible(debugSectionLabel);
 
   // Language selection
   languageLabel.setText(TR("settings.language"), juce::dontSendNotification);
   configureRowLabel(languageLabel);
   addAndMakeVisible(languageLabel);
+  languageDescriptionLabel.setText(TR("settings.language_desc"),
+                                   juce::dontSendNotification);
+  configureDescriptionLabel(languageDescriptionLabel);
+  addAndMakeVisible(languageDescriptionLabel);
 
   // Add "Auto" option first
   languageComboBox.addItem(TR("lang.auto"), 1);
@@ -112,10 +161,31 @@ SettingsComponent::SettingsComponent(
   languageComboBox.setLookAndFeel(&settingsLookAndFeel);
   addAndMakeVisible(languageComboBox);
 
+  uiFontSizeLabel.setText(TR("settings.ui_font_size"),
+                          juce::dontSendNotification);
+  configureRowLabel(uiFontSizeLabel);
+  addAndMakeVisible(uiFontSizeLabel);
+  uiFontSizeDescriptionLabel.setText(TR("settings.ui_font_size_desc"),
+                                     juce::dontSendNotification);
+  configureDescriptionLabel(uiFontSizeDescriptionLabel);
+  addAndMakeVisible(uiFontSizeDescriptionLabel);
+
+  uiFontSizeComboBox.addItem(TR("settings.ui_font_size.default"), 1);
+  uiFontSizeComboBox.addItem(TR("settings.ui_font_size.large"), 2);
+  uiFontSizeComboBox.addItem(TR("settings.ui_font_size.extra_large"), 3);
+  uiFontSizeComboBox.setSelectedId(1, juce::dontSendNotification);
+  uiFontSizeComboBox.addListener(this);
+  uiFontSizeComboBox.setLookAndFeel(&settingsLookAndFeel);
+  addAndMakeVisible(uiFontSizeComboBox);
+
   // Device selection
   deviceLabel.setText(TR("settings.device"), juce::dontSendNotification);
   configureRowLabel(deviceLabel);
   addAndMakeVisible(deviceLabel);
+  deviceDescriptionLabel.setText(TR("settings.device_desc"),
+                                 juce::dontSendNotification);
+  configureDescriptionLabel(deviceDescriptionLabel);
+  addAndMakeVisible(deviceDescriptionLabel);
 
   deviceComboBox.addListener(this);
   deviceComboBox.setLookAndFeel(&settingsLookAndFeel);
@@ -125,6 +195,10 @@ SettingsComponent::SettingsComponent(
   gpuDeviceLabel.setText(TR("settings.gpu_device"), juce::dontSendNotification);
   configureRowLabel(gpuDeviceLabel);
   addAndMakeVisible(gpuDeviceLabel);
+  gpuDeviceDescriptionLabel.setText(TR("settings.gpu_device_desc"),
+                                    juce::dontSendNotification);
+  configureDescriptionLabel(gpuDeviceDescriptionLabel);
+  addAndMakeVisible(gpuDeviceDescriptionLabel);
 
   // GPU device list will be populated dynamically based on available devices
   gpuDeviceComboBox.addListener(this);
@@ -138,6 +212,10 @@ SettingsComponent::SettingsComponent(
                              juce::dontSendNotification);
   configureRowLabel(pitchDetectorLabel);
   addAndMakeVisible(pitchDetectorLabel);
+  pitchDetectorDescriptionLabel.setText(TR("settings.pitch_detector_desc"),
+                                        juce::dontSendNotification);
+  configureDescriptionLabel(pitchDetectorDescriptionLabel);
+  addAndMakeVisible(pitchDetectorDescriptionLabel);
 
   pitchDetectorComboBox.addItem("RMVPE", 1);
   pitchDetectorComboBox.addItem("FCPE", 2);
@@ -147,10 +225,14 @@ SettingsComponent::SettingsComponent(
   pitchDetectorComboBox.setLookAndFeel(&settingsLookAndFeel);
   addAndMakeVisible(pitchDetectorComboBox);
 
-  someSegmentsDebugLabel.setText("Show SOME chunks (debug)",
+  someSegmentsDebugLabel.setText(TR("settings.debug.some_segments"),
                                  juce::dontSendNotification);
   configureRowLabel(someSegmentsDebugLabel);
   addAndMakeVisible(someSegmentsDebugLabel);
+  someSegmentsDebugDescriptionLabel.setText(
+      TR("settings.debug.some_segments_desc"), juce::dontSendNotification);
+  configureDescriptionLabel(someSegmentsDebugDescriptionLabel);
+  addAndMakeVisible(someSegmentsDebugDescriptionLabel);
 
   someSegmentsDebugToggle.setButtonText("");
   someSegmentsDebugToggle.setClickingTogglesState(true);
@@ -165,10 +247,14 @@ SettingsComponent::SettingsComponent(
   };
   addAndMakeVisible(someSegmentsDebugToggle);
 
-  someValuesDebugLabel.setText("Show SOME values (debug)",
+  someValuesDebugLabel.setText(TR("settings.debug.some_values"),
                                juce::dontSendNotification);
   configureRowLabel(someValuesDebugLabel);
   addAndMakeVisible(someValuesDebugLabel);
+  someValuesDebugDescriptionLabel.setText(TR("settings.debug.some_values_desc"),
+                                          juce::dontSendNotification);
+  configureDescriptionLabel(someValuesDebugDescriptionLabel);
+  addAndMakeVisible(someValuesDebugDescriptionLabel);
 
   someValuesDebugToggle.setButtonText("");
   someValuesDebugToggle.setClickingTogglesState(true);
@@ -183,10 +269,14 @@ SettingsComponent::SettingsComponent(
   };
   addAndMakeVisible(someValuesDebugToggle);
 
-  uvInterpolationDebugLabel.setText("Show UV interpolation (debug)",
+  uvInterpolationDebugLabel.setText(TR("settings.debug.uv_interpolation"),
                                     juce::dontSendNotification);
   configureRowLabel(uvInterpolationDebugLabel);
   addAndMakeVisible(uvInterpolationDebugLabel);
+  uvInterpolationDebugDescriptionLabel.setText(
+      TR("settings.debug.uv_interpolation_desc"), juce::dontSendNotification);
+  configureDescriptionLabel(uvInterpolationDebugDescriptionLabel);
+  addAndMakeVisible(uvInterpolationDebugDescriptionLabel);
 
   uvInterpolationDebugToggle.setButtonText("");
   uvInterpolationDebugToggle.setClickingTogglesState(true);
@@ -201,10 +291,14 @@ SettingsComponent::SettingsComponent(
   };
   addAndMakeVisible(uvInterpolationDebugToggle);
 
-  actualF0DebugLabel.setText("Show actual F0 (debug)",
+  actualF0DebugLabel.setText(TR("settings.debug.actual_f0"),
                              juce::dontSendNotification);
   configureRowLabel(actualF0DebugLabel);
   addAndMakeVisible(actualF0DebugLabel);
+  actualF0DebugDescriptionLabel.setText(TR("settings.debug.actual_f0_desc"),
+                                        juce::dontSendNotification);
+  configureDescriptionLabel(actualF0DebugDescriptionLabel);
+  addAndMakeVisible(actualF0DebugDescriptionLabel);
 
   actualF0DebugToggle.setButtonText("");
   actualF0DebugToggle.setClickingTogglesState(true);
@@ -219,9 +313,14 @@ SettingsComponent::SettingsComponent(
   };
   addAndMakeVisible(actualF0DebugToggle);
 
-  fpsOverlayLabel.setText("Show FPS overlay", juce::dontSendNotification);
+  fpsOverlayLabel.setText(TR("settings.fps_overlay"),
+                          juce::dontSendNotification);
   configureRowLabel(fpsOverlayLabel);
   addAndMakeVisible(fpsOverlayLabel);
+  fpsOverlayDescriptionLabel.setText(TR("settings.fps_overlay_desc"),
+                                     juce::dontSendNotification);
+  configureDescriptionLabel(fpsOverlayDescriptionLabel);
+  addAndMakeVisible(fpsOverlayDescriptionLabel);
 
   fpsOverlayToggle.setButtonText("");
   fpsOverlayToggle.setClickingTogglesState(true);
@@ -236,10 +335,14 @@ SettingsComponent::SettingsComponent(
   };
   addAndMakeVisible(fpsOverlayToggle);
 
-  backgroundWaveformLabel.setText("Show background waveform",
+  backgroundWaveformLabel.setText(TR("settings.background_waveform"),
                                   juce::dontSendNotification);
   configureRowLabel(backgroundWaveformLabel);
   addAndMakeVisible(backgroundWaveformLabel);
+  backgroundWaveformDescriptionLabel.setText(
+      TR("settings.background_waveform_desc"), juce::dontSendNotification);
+  configureDescriptionLabel(backgroundWaveformDescriptionLabel);
+  addAndMakeVisible(backgroundWaveformDescriptionLabel);
 
   backgroundWaveformToggle.setButtonText("");
   backgroundWaveformToggle.setClickingTogglesState(true);
@@ -330,9 +433,9 @@ SettingsComponent::SettingsComponent(
 
   // Set size based on mode
   if (pluginMode)
-    setSize(720, 420);
+    setSize(880, 760);
   else
-    setSize(820, 620);
+    setSize(900, 760);
 }
 
 SettingsComponent::~SettingsComponent() {
@@ -342,6 +445,7 @@ SettingsComponent::~SettingsComponent() {
   generalTabButton.setLookAndFeel(nullptr);
   audioTabButton.setLookAndFeel(nullptr);
   languageComboBox.setLookAndFeel(nullptr);
+  uiFontSizeComboBox.setLookAndFeel(nullptr);
   deviceComboBox.setLookAndFeel(nullptr);
   gpuDeviceComboBox.setLookAndFeel(nullptr);
   pitchDetectorComboBox.setLookAndFeel(nullptr);
@@ -449,67 +553,78 @@ void SettingsComponent::resized() {
   cardBounds = bounds;
   auto content = cardBounds.reduced(16, 12);
 
-  const int rowHeight = 32;
-  const int rowGap = 8;
-  const int labelWidth = 150;
-  const int controlWidth = 190;
-
-  auto setupRowMetrics = [&](juce::Rectangle<int> area) {
-    auto localContent = area;
-    return std::tuple<juce::Rectangle<int>, int, int, int, int>(
-        localContent, rowHeight, rowGap, labelWidth, controlWidth);
-  };
-
-  juce::ignoreUnused(setupRowMetrics);
-
   layoutGeneralTab(content);
 
   if (isTabAvailable(SettingsTab::Audio))
     layoutAudioTab(content);
 
-  const auto separatorY = activeTab == SettingsTab::Audio &&
-                                  isTabAvailable(SettingsTab::Audio)
-                              ? audioSectionLabel.getBottom() + 6
-                              : generalSectionLabel.getBottom() + 6;
-  if (separatorY > 0)
-    separatorYs.add(separatorY);
-
   applyTabAnimationState();
 }
 
 void SettingsComponent::layoutGeneralTab(juce::Rectangle<int> content) {
-  const int rowHeight = 32;
-  const int rowGap = 8;
-  const int labelWidth = 150;
-  const int controlWidth = 190;
+  const int sectionHeight = 22;
+  const int sectionGap = 8;
+  const int rowHeight = 40;
+  const int rowGap = 4;
+  const int controlWidth = 200;
 
-  auto layoutRow = [&](juce::Label &label, juce::Component &control) {
+  auto layoutSection = [&](juce::Label &sectionLabel) {
+    sectionLabel.setBounds(content.removeFromTop(sectionHeight));
+    if (activeTab == SettingsTab::General)
+      separatorYs.add(sectionLabel.getBottom() + 3);
+    content.removeFromTop(sectionGap);
+  };
+
+  auto layoutRow = [&](juce::Label &label, juce::Label &description,
+                       juce::Component &control) {
     auto row = content.removeFromTop(rowHeight);
-    auto labelArea = row.removeFromLeft(labelWidth);
-    auto controlArea = row.removeFromRight(controlWidth);
+    auto controlArea = row.removeFromRight(controlWidth).reduced(0, 6);
+    row.removeFromRight(18);
+    auto labelArea = row.removeFromTop(20);
     label.setBounds(labelArea);
-    control.setBounds(controlArea.reduced(0, 2));
+    description.setBounds(row);
+    control.setBounds(controlArea);
     content.removeFromTop(rowGap);
   };
 
-  generalSectionLabel.setBounds(content.removeFromTop(20));
-  content.removeFromTop(10);
+  auto hideGpuRow = [&]() {
+    gpuDeviceLabel.setBounds({});
+    gpuDeviceDescriptionLabel.setBounds({});
+    gpuDeviceComboBox.setBounds({});
+  };
 
-  layoutRow(languageLabel, languageComboBox);
-  layoutRow(deviceLabel, deviceComboBox);
+  layoutSection(generalSectionLabel);
+  layoutRow(languageLabel, languageDescriptionLabel, languageComboBox);
+  layoutRow(uiFontSizeLabel, uiFontSizeDescriptionLabel, uiFontSizeComboBox);
 
+  content.removeFromTop(8);
+  layoutSection(inferenceSectionLabel);
+  layoutRow(deviceLabel, deviceDescriptionLabel, deviceComboBox);
   if (shouldShowGpuDeviceList())
-    layoutRow(gpuDeviceLabel, gpuDeviceComboBox);
+    layoutRow(gpuDeviceLabel, gpuDeviceDescriptionLabel, gpuDeviceComboBox);
+  else
+    hideGpuRow();
+  layoutRow(pitchDetectorLabel, pitchDetectorDescriptionLabel,
+            pitchDetectorComboBox);
 
-  layoutRow(pitchDetectorLabel, pitchDetectorComboBox);
-  layoutRow(someSegmentsDebugLabel, someSegmentsDebugToggle);
-  layoutRow(someValuesDebugLabel, someValuesDebugToggle);
-  layoutRow(uvInterpolationDebugLabel, uvInterpolationDebugToggle);
-  layoutRow(actualF0DebugLabel, actualF0DebugToggle);
-  layoutRow(fpsOverlayLabel, fpsOverlayToggle);
-  layoutRow(backgroundWaveformLabel, backgroundWaveformToggle);
+  infoLabel.setBounds(content.removeFromTop(34));
+  content.removeFromTop(8);
 
-  infoLabel.setBounds(content.removeFromTop(56));
+  layoutSection(displaySectionLabel);
+  layoutRow(backgroundWaveformLabel, backgroundWaveformDescriptionLabel,
+            backgroundWaveformToggle);
+  layoutRow(fpsOverlayLabel, fpsOverlayDescriptionLabel, fpsOverlayToggle);
+
+  content.removeFromTop(8);
+  layoutSection(debugSectionLabel);
+  layoutRow(someSegmentsDebugLabel, someSegmentsDebugDescriptionLabel,
+            someSegmentsDebugToggle);
+  layoutRow(someValuesDebugLabel, someValuesDebugDescriptionLabel,
+            someValuesDebugToggle);
+  layoutRow(uvInterpolationDebugLabel, uvInterpolationDebugDescriptionLabel,
+            uvInterpolationDebugToggle);
+  layoutRow(actualF0DebugLabel, actualF0DebugDescriptionLabel,
+            actualF0DebugToggle);
 }
 
 void SettingsComponent::layoutAudioTab(juce::Rectangle<int> content) {
@@ -528,6 +643,8 @@ void SettingsComponent::layoutAudioTab(juce::Rectangle<int> content) {
   };
 
   audioSectionLabel.setBounds(content.removeFromTop(20));
+  if (activeTab == SettingsTab::Audio)
+    separatorYs.add(audioSectionLabel.getBottom() + 3);
   content.removeFromTop(10);
 
   layoutRow(audioDeviceTypeLabel, audioDeviceTypeComboBox);
@@ -535,6 +652,41 @@ void SettingsComponent::layoutAudioTab(juce::Rectangle<int> content) {
   layoutRow(sampleRateLabel, sampleRateComboBox);
   layoutRow(bufferSizeLabel, bufferSizeComboBox);
   layoutRow(outputChannelsLabel, outputChannelsComboBox);
+}
+
+void SettingsComponent::applyFontSizes() {
+  titleLabel.setFont(AppFont::getBoldFont(20.0f));
+
+  for (auto *label : {&generalSectionLabel, &inferenceSectionLabel,
+                      &displaySectionLabel, &debugSectionLabel,
+                      &audioSectionLabel}) {
+    label->setFont(AppFont::getBoldFont(15.5f));
+  }
+
+  for (auto *label : {&languageLabel, &uiFontSizeLabel, &deviceLabel,
+                      &gpuDeviceLabel, &pitchDetectorLabel,
+                      &backgroundWaveformLabel, &fpsOverlayLabel,
+                      &someSegmentsDebugLabel, &someValuesDebugLabel,
+                      &uvInterpolationDebugLabel, &actualF0DebugLabel,
+                      &audioDeviceTypeLabel, &audioOutputLabel,
+                      &sampleRateLabel, &bufferSizeLabel,
+                      &outputChannelsLabel}) {
+    label->setFont(AppFont::getFont(14.5f));
+  }
+
+  for (auto *label : {&languageDescriptionLabel, &uiFontSizeDescriptionLabel,
+                      &deviceDescriptionLabel, &gpuDeviceDescriptionLabel,
+                      &pitchDetectorDescriptionLabel,
+                      &backgroundWaveformDescriptionLabel,
+                      &fpsOverlayDescriptionLabel,
+                      &someSegmentsDebugDescriptionLabel,
+                      &someValuesDebugDescriptionLabel,
+                      &uvInterpolationDebugDescriptionLabel,
+                      &actualF0DebugDescriptionLabel}) {
+    label->setFont(AppFont::getFont(13.0f));
+  }
+
+  infoLabel.setFont(AppFont::getFont(13.0f));
 }
 
 void SettingsComponent::comboBoxChanged(juce::ComboBox *comboBox) {
@@ -554,6 +706,20 @@ void SettingsComponent::comboBoxChanged(juce::ComboBox *comboBox) {
 
     if (onLanguageChanged)
       onLanguageChanged();
+  } else if (comboBox == &uiFontSizeComboBox) {
+    uiFontScale = fontScaleForSelectedId(uiFontSizeComboBox.getSelectedId());
+    AppFont::setScale(uiFontScale);
+    applyFontSizes();
+    resized();
+    repaint();
+
+    if (settingsManager) {
+      settingsManager->setUIFontScale(uiFontScale);
+      settingsManager->saveConfig();
+    }
+
+    if (onUIFontScaleChanged)
+      onUIFontScaleChanged(uiFontScale);
   } else if (comboBox == &deviceComboBox) {
     if (canChangeDevice && !canChangeDevice()) {
       for (int i = 0; i < deviceComboBox.getNumItems(); ++i) {
@@ -567,9 +733,8 @@ void SettingsComponent::comboBoxChanged(juce::ComboBox *comboBox) {
       updateGPUDeviceList(currentDevice);
       gpuDeviceComboBox.setSelectedId(lastConfirmedGpuDeviceId + 1,
                                       juce::dontSendNotification);
-      infoLabel.setText(
-          "Inference in progress. Stop it to switch device.",
-          juce::dontSendNotification);
+      infoLabel.setText(TR("settings.inference_in_progress"),
+                        juce::dontSendNotification);
       updateTabVisibility();
       resized();
       return;
@@ -609,9 +774,8 @@ void SettingsComponent::comboBoxChanged(juce::ComboBox *comboBox) {
     if (canChangeDevice && !canChangeDevice()) {
       gpuDeviceComboBox.setSelectedId(lastConfirmedGpuDeviceId + 1,
                                       juce::dontSendNotification);
-      infoLabel.setText(
-          "Inference in progress. Stop it to switch device.",
-          juce::dontSendNotification);
+      infoLabel.setText(TR("settings.inference_in_progress"),
+                        juce::dontSendNotification);
       return;
     }
     gpuDeviceId = gpuDeviceComboBox.getSelectedId() - 1;
@@ -771,19 +935,29 @@ void SettingsComponent::applyTabAnimationState() {
   const auto audioEnabled = !tabAnimationActive && activeTab == SettingsTab::Audio;
   const auto showGpu = shouldShowGpuDeviceList();
 
-  applyState({&generalSectionLabel, &languageLabel, &languageComboBox,
-              &deviceLabel, &deviceComboBox, &gpuDeviceLabel,
-              &gpuDeviceComboBox, &pitchDetectorLabel, &pitchDetectorComboBox,
-              &someSegmentsDebugLabel, &someSegmentsDebugToggle,
-              &someValuesDebugLabel, &someValuesDebugToggle,
-              &uvInterpolationDebugLabel, &uvInterpolationDebugToggle,
-              &actualF0DebugLabel, &actualF0DebugToggle, &fpsOverlayLabel,
-              &fpsOverlayToggle, &backgroundWaveformLabel,
-              &backgroundWaveformToggle, &infoLabel},
+  applyState({&generalSectionLabel, &languageLabel, &languageDescriptionLabel,
+              &languageComboBox, &uiFontSizeLabel,
+              &uiFontSizeDescriptionLabel, &uiFontSizeComboBox,
+              &inferenceSectionLabel, &deviceLabel,
+              &deviceDescriptionLabel, &deviceComboBox, &gpuDeviceLabel,
+              &gpuDeviceDescriptionLabel, &gpuDeviceComboBox,
+              &pitchDetectorLabel, &pitchDetectorDescriptionLabel,
+              &pitchDetectorComboBox, &displaySectionLabel,
+              &backgroundWaveformLabel, &backgroundWaveformDescriptionLabel,
+              &backgroundWaveformToggle, &fpsOverlayLabel,
+              &fpsOverlayDescriptionLabel, &fpsOverlayToggle, &debugSectionLabel,
+              &someSegmentsDebugLabel, &someSegmentsDebugDescriptionLabel,
+              &someSegmentsDebugToggle, &someValuesDebugLabel,
+              &someValuesDebugDescriptionLabel, &someValuesDebugToggle,
+              &uvInterpolationDebugLabel, &uvInterpolationDebugDescriptionLabel,
+              &uvInterpolationDebugToggle, &actualF0DebugLabel,
+              &actualF0DebugDescriptionLabel, &actualF0DebugToggle,
+              &infoLabel},
              generalAlpha, offsetFor(SettingsTab::General), generalEnabled);
 
   if (!showGpu) {
     gpuDeviceLabel.setVisible(false);
+    gpuDeviceDescriptionLabel.setVisible(false);
     gpuDeviceComboBox.setVisible(false);
   }
 
@@ -1106,6 +1280,8 @@ void SettingsComponent::loadSettings() {
     currentDevice = settingsManager->getDevice();
     gpuDeviceId = settingsManager->getGPUDeviceId();
     pitchDetectorType = settingsManager->getPitchDetectorType();
+    uiFontScale = settingsManager->getUIFontScale();
+    AppFont::setScale(uiFontScale);
     followSystemAudioOutput = settingsManager->getFollowSystemAudioOutput();
     showSomeSegmentsDebug = settingsManager->getShowSomeSegmentsDebug();
     showSomeValuesDebug = settingsManager->getShowSomeValuesDebug();
@@ -1128,6 +1304,10 @@ void SettingsComponent::loadSettings() {
       }
     }
   }
+
+  uiFontSizeComboBox.setSelectedId(selectedIdForFontScale(uiFontScale),
+                                   juce::dontSendNotification);
+  applyFontSizes();
 
   // Update the ComboBox selection to match loaded settings
   for (int i = 0; i < deviceComboBox.getNumItems(); ++i) {
@@ -1194,6 +1374,7 @@ void SettingsComponent::saveSettings() {
     settingsManager->setGPUDeviceId(gpuDeviceId);
     settingsManager->setPitchDetectorType(pitchDetectorType);
     settingsManager->setLanguage(langCode);
+    settingsManager->setUIFontScale(uiFontScale);
     settingsManager->setShowSomeSegmentsDebug(showSomeSegmentsDebug);
     settingsManager->setShowSomeValuesDebug(showSomeValuesDebug);
     settingsManager->setShowUvInterpolationDebug(showUvInterpolationDebug);
