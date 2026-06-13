@@ -358,9 +358,8 @@ void ToolbarComponent::buttonClicked(juce::Button* button)
     }
     else if (button == &hnsepModeButton)
     {
-        setEditMode(EditMode::Parameter);
-        if (onEditModeChanged)
-            onEditModeChanged(EditMode::Parameter);
+        if (onHNSepRequested)
+            onHNSepRequested();
     }
     else if (button == &followButton)
     {
@@ -421,7 +420,7 @@ void ToolbarComponent::setEditMode(EditMode mode)
     stretchModeButton.setActive(mode == EditMode::Stretch);
     drawModeButton.setActive(mode == EditMode::Draw);
     splitModeButton.setActive(mode == EditMode::Split);
-    hnsepModeButton.setActive(mode == EditMode::Parameter);
+    hnsepModeButton.setActive(hnsepVisible);
 }
 
 void ToolbarComponent::setZoom(float pixelsPerSecond)
@@ -446,6 +445,12 @@ void ToolbarComponent::setVoicebankVisible(bool visible)
 {
     voicebankVisible = visible;
     voicebankButton.setActive(voicebankVisible);
+}
+
+void ToolbarComponent::setHNSepVisible(bool visible)
+{
+    hnsepVisible = visible;
+    hnsepModeButton.setActive(hnsepVisible);
 }
 
 void ToolbarComponent::showProgress(const juce::String& message)

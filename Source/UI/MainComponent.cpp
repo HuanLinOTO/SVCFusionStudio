@@ -445,6 +445,13 @@ MainComponent::MainComponent(bool enableAudioDevice)
   };
   toolbar.onZoomChanged = [this](float pps) { onZoomChanged(pps); };
   toolbar.onEditModeChanged = [this](EditMode mode) { setEditMode(mode); };
+  toolbar.onHNSepRequested = [this]() {
+    const bool visible = !pianoRollView.isHNSepVisible();
+    pianoRollView.getHNSepLane().setPixelsPerSecond(pianoRoll.getPixelsPerSecond());
+    pianoRollView.getHNSepLane().setScrollX(pianoRoll.getScrollX());
+    pianoRollView.setHNSepVisible(visible);
+    toolbar.setHNSepVisible(visible);
+  };
   toolbar.onLoopToggled = [this](bool enabled) {
     auto *project = getProject();
     if (!project)
@@ -2120,7 +2127,6 @@ void MainComponent::redo() {
 void MainComponent::setEditMode(EditMode mode) {
   pianoRoll.setEditMode(mode);
   toolbar.setEditMode(mode);
-  pianoRollView.setHNSepVisible(mode == EditMode::Parameter);
   
   // Update command states (draw mode toggle state changed)
   if (commandManager)

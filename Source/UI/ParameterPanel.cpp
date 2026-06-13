@@ -66,6 +66,7 @@ ParameterPanel::ParameterPanel()
                 onPitchOffsetModeChanged(pitchOffsetPreSVCToggle.getToggleState());
         }
     };
+
 }
 
 ParameterPanel::~ParameterPanel()
@@ -308,6 +309,11 @@ void ParameterPanel::setProject(Project* proj)
 {
     project = proj;
     updateGlobalSliders();
+}
+
+void ParameterPanel::setUndoManager(PitchUndoManager* mgr)
+{
+    undoManager = mgr;
 }
 
 void ParameterPanel::setSelectedNote(Note* note)

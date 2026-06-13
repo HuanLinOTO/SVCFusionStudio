@@ -30,8 +30,7 @@ enum class EditMode {
   Select, // Normal selection and dragging
   Stretch, // Stretch note timing
   Draw,   // Pitch drawing mode
-  Split,  // Note splitting mode
-  Parameter // HNSep parameter lane editing mode
+  Split   // Note splitting mode
 };
 
 /**

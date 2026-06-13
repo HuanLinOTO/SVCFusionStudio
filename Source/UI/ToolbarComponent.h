@@ -74,6 +74,7 @@ public:
     void setLoopEnabled(bool enabled);
     void setParametersVisible(bool visible);
     void setVoicebankVisible(bool visible);
+    void setHNSepVisible(bool visible);
     bool isFollowPlayback() const { return followPlayback; }
     bool isLoopEnabled() const { return loopEnabled; }
 
@@ -101,6 +102,7 @@ public:
     std::function<void()> onGoToEnd;
     std::function<void(float)> onZoomChanged;
     std::function<void(EditMode)> onEditModeChanged;
+    std::function<void()> onHNSepRequested;
     std::function<void(bool)> onLoopToggled;
 
     // Plugin mode callbacks
@@ -156,6 +158,7 @@ private:
 
     bool parametersVisible = false;
     bool voicebankVisible = false;
+    bool hnsepVisible = false;
     
     double currentTime = 0.0;
     double totalTime = 0.0;

@@ -562,19 +562,23 @@ void PianoRollComponent::drawBackgroundWaveform(
   const int visibleWidth = visibleArea.getWidth();
   const int sampleRate = audioData.sampleRate > 0 ? audioData.sampleRate
                                                   : SAMPLE_RATE;
-  const double renderStartX = scrollX;
+  const double visibleWorldLeft = scrollX;
+  const double visibleWorldRight =
+      visibleWorldLeft + static_cast<double>(visibleWidth);
+  const double firstWorldX =
+      std::floor(visibleWorldLeft / renderStepPx) * renderStepPx;
 
   juce::Graphics::ScopedSaveState saveState(g);
   g.reduceClipRegion(visibleArea);
   g.setColour(APP_COLOR_WAVEFORM);
 
-  // Draw directly into the static piano layer. A separate full-height ARGB
-  // waveform cache costs more to allocate and clear than this low-detail pass.
-  for (int px = 0; px <= visibleWidth; px += renderStepPx) {
-    const double startTime = (renderStartX + px) / pixelsPerSecond;
+  // Anchor buckets to world/audio coordinates, not viewport pixels. Otherwise
+  // horizontal scrolling shifts the peak windows and makes the waveform morph.
+  for (double worldX = firstWorldX; worldX < visibleWorldRight;
+       worldX += renderStepPx) {
+    const double startTime = worldX / pixelsPerSecond;
     const double endTime =
-        (renderStartX + px + static_cast<double>(renderStepPx)) /
-        pixelsPerSecond;
+        (worldX + static_cast<double>(renderStepPx)) / pixelsPerSecond;
     const int startSample = static_cast<int>(std::floor(startTime * sampleRate));
     const int endSample = static_cast<int>(std::ceil(endTime * sampleRate));
     const float maxVal =
@@ -583,11 +587,17 @@ void PianoRollComponent::drawBackgroundWaveform(
         std::round(centerY - maxVal * waveformHeight * 0.5f));
     const int bottom = static_cast<int>(
         std::round(centerY + maxVal * waveformHeight * 0.5f));
-    const int localBarX = std::min(px, visibleWidth - 1);
-    const int barWidth = std::max(1, renderStepPx / 2);
-    g.fillRect(visibleArea.getX() + localBarX, top,
-               std::min(barWidth, visibleWidth - localBarX),
-               std::max(1, bottom - top));
+    const float barWidth =
+        std::max(1.0f, static_cast<float>(renderStepPx) * 0.5f);
+    const float barX = static_cast<float>(worldX - visibleWorldLeft);
+    const float localBarX = std::max(0.0f, barX);
+    const float localBarRight =
+        std::min(static_cast<float>(visibleWidth), barX + barWidth);
+    if (localBarRight <= localBarX)
+      continue;
+    g.fillRect(static_cast<float>(visibleArea.getX()) + localBarX,
+               static_cast<float>(top), localBarRight - localBarX,
+               static_cast<float>(std::max(1, bottom - top)));
   }
 }
 

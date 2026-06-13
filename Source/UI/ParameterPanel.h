@@ -26,7 +26,7 @@ public:
     void buttonClicked(juce::Button* button) override;
 
     void setProject(Project* proj);
-    void setUndoManager(PitchUndoManager* mgr) { undoManager = mgr; }
+    void setUndoManager(PitchUndoManager* mgr);
     void setSelectedNote(Note* note);
     void updateFromNote();
     void updateGlobalSliders();
@@ -39,7 +39,7 @@ public:
     std::function<void()> onGlobalPitchEditFinished; // Called when global pitch slider drag ends
     std::function<void(bool)> onPitchOffsetModeChanged; // Called when pre/post SVC toggle changes
     std::function<void(float)> onVolumeChanged;  // Called with volume in dB
-    
+
 private:
     void setupSlider(juce::Slider& slider, juce::Label& label,
                     const juce::String& name, double min, double max, double def);
