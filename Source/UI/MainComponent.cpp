@@ -447,8 +447,8 @@ MainComponent::MainComponent(bool enableAudioDevice)
   toolbar.onEditModeChanged = [this](EditMode mode) { setEditMode(mode); };
   toolbar.onHNSepRequested = [this]() {
     const bool visible = !pianoRollView.isHNSepVisible();
-    pianoRollView.getHNSepLane().setPixelsPerSecond(pianoRoll.getPixelsPerSecond());
-    pianoRollView.getHNSepLane().setScrollX(pianoRoll.getScrollX());
+    pianoRollView.getHNSepLane().setViewTransform(pianoRoll.getPixelsPerSecond(),
+                                                  pianoRoll.getScrollX());
     pianoRollView.setHNSepVisible(visible);
     toolbar.setHNSepVisible(visible);
   };
@@ -588,11 +588,12 @@ MainComponent::MainComponent(bool enableAudioDevice)
   };
   pianoRoll.onZoomChanged = [this](float pps) {
     onZoomChanged(pps);
-    pianoRollView.getHNSepLane().setPixelsPerSecond(pps);
+    pianoRollView.getHNSepLane().setViewTransform(pianoRoll.getPixelsPerSecond(),
+                                                  pianoRoll.getScrollX());
     pianoRollView.refreshOverview();
   };
   pianoRoll.onScrollChanged = [this](double x) {
-    pianoRollView.getHNSepLane().setScrollX(x);
+    pianoRollView.getHNSepLane().setViewTransform(pianoRoll.getPixelsPerSecond(), x);
     pianoRollView.refreshOverview();
   };
   pianoRoll.onLoopRangeChanged = [this](const LoopRange &range) {

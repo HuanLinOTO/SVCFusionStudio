@@ -361,8 +361,7 @@ void PianoRollWorkspaceView::timerCallback()
   const float pps = pianoRoll.getPixelsPerSecond();
   if (std::abs(zoomXSlider.getValue() - pps) > 0.05)
     zoomXSlider.setValue(pps, juce::dontSendNotification);
-  hnsepLane.setPixelsPerSecond(pps);
-  hnsepLane.setScrollX(pianoRoll.getScrollX());
+  hnsepLane.setViewTransform(pps, pianoRoll.getScrollX());
   if (playheadOverlay != nullptr && hnsepVisible) {
     const double cursorTime = pianoRoll.getCursorTime();
     const double scrollX = pianoRoll.getScrollX();

@@ -41,6 +41,7 @@ public:
   float getPixelsPerSecond() const { return pixelsPerSecond; }
   void setScrollX(double x);
   double getScrollX() const { return scrollX; }
+  void setViewTransform(float pps, double x);
   void setPianoKeysWidth(int width);
   void setMouseWheelPassthroughTarget(juce::Component *target) {
     mouseWheelPassthroughTarget = target;

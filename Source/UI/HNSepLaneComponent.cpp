@@ -165,6 +165,17 @@ void HNSepLaneComponent::setScrollX(double x) {
   repaint();
 }
 
+void HNSepLaneComponent::setViewTransform(float pps, double x) {
+  const bool ppsChanged = std::abs(pixelsPerSecond - pps) >= 0.01f;
+  const bool scrollChanged = std::abs(scrollX - x) >= 0.5;
+  if (!ppsChanged && !scrollChanged)
+    return;
+
+  pixelsPerSecond = pps;
+  scrollX = x;
+  repaint();
+}
+
 void HNSepLaneComponent::setPianoKeysWidth(int width) {
   if (pianoKeysWidth == width)
     return;
