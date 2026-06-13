@@ -45,6 +45,8 @@ public:
   void setMouseWheelPassthroughTarget(juce::Component *target) {
     mouseWheelPassthroughTarget = target;
   }
+  LaneType getSelectedLane() const { return selectedLane; }
+  void setSelectedLane(LaneType lane);
 
   std::function<void()> onParamEdited;
   std::function<void()> onParamEditFinished;
@@ -61,6 +63,8 @@ private:
 
   juce::Rectangle<int> getLaneBounds(int laneIndex) const;
   int getLaneIndexAt(juce::Point<float> position) const;
+  int getLaneIndexForType(LaneType lane) const;
+  int getSelectedLaneIndex() const;
   int xToFrame(float x) const;
   float frameToX(int frame) const;
   float valueToY(float value, const LaneInfo &lane,
@@ -93,12 +97,14 @@ private:
   juce::Component *mouseWheelPassthroughTarget = nullptr;
 
   std::array<LaneInfo, 3> lanes;
+  LaneType selectedLane = LaneType::Voicing;
   float pixelsPerSecond = DEFAULT_PIXELS_PER_SECOND;
   double scrollX = 0.0;
   int pianoKeysWidth = 60;
   float voicingEnergyMaxDb = -3.0f;
   float breathEnergyMaxDb = -12.0f;
 
+  StyledComboBox parameterDropdown;
   juce::ComboBox voicingEnergyDropdown;
   juce::ComboBox breathEnergyDropdown;
   StyledToggleButton voicingEnergyVisibilityToggle;
@@ -116,8 +122,9 @@ private:
   std::map<int, size_t> pendingEditIndexByFrame;
 
   static constexpr int lanePadding = 8;
+  static constexpr int toolbarHeight = 36;
+  static constexpr int parameterDropdownWidth = 132;
   static constexpr int labelWidth = 64;
-  static constexpr int separatorThickness = 1;
   static constexpr int energyDropdownWidth = 76;
   static constexpr int energyToggleWidth = 72;
   static constexpr int energyControlHeight = 20;

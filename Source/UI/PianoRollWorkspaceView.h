@@ -15,6 +15,11 @@ public:
 
   void paint(juce::Graphics &g) override;
   void resized() override;
+  void mouseDown(const juce::MouseEvent &e) override;
+  void mouseDrag(const juce::MouseEvent &e) override;
+  void mouseUp(const juce::MouseEvent &e) override;
+  void mouseMove(const juce::MouseEvent &e) override;
+  void mouseExit(const juce::MouseEvent &e) override;
   void timerCallback() override;
 
   void setProject(Project *project);
@@ -28,6 +33,7 @@ public:
 
 private:
   void updateOverviewVisibility();
+  int getMaxHNSepHeight() const;
 
   PianoRollComponent &pianoRoll;
   OverviewPanel overviewPanel;
@@ -41,6 +47,10 @@ private:
   juce::TextButton overviewToggleButton{"[]"};
   bool overviewVisible = true;
   bool hnsepVisible = false;
+  bool isResizingHNSep = false;
+  int hnsepHeight = 176;
+  int resizeStartY = 0;
+  int resizeStartHeight = 176;
   double lastOverlayCursorTime = -1.0;
   double lastOverlayScrollX = -1.0;
   float lastOverlayPixelsPerSecond = -1.0f;
@@ -50,9 +60,12 @@ private:
   juce::Rectangle<float> zoomXBg;
   juce::Rectangle<float> zoomYBg;
   juce::Rectangle<float> toggleBg;
+  juce::Rectangle<int> hnsepResizeBounds;
 
   static constexpr int overviewHeight = 78;
-  static constexpr int hnsepHeight = 176;
+  static constexpr int hnsepMinHeight = 104;
+  static constexpr int hnsepMaxHeight = 360;
+  static constexpr int pianoMinHeight = 140;
   static constexpr int cardGap = 8;
   static constexpr int toggleSize = 24;
   static constexpr int toggleMargin = 8;

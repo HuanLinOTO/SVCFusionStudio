@@ -1,6 +1,7 @@
 #include "PianoRollWorkspaceView.h"
 #include "../Utils/UI/Theme.h"
 #include "../Utils/Constants.h"
+#include <algorithm>
 #include <cmath>
 
 namespace {
@@ -172,6 +173,18 @@ void PianoRollWorkspaceView::paint(juce::Graphics &g)
   g.drawRoundedRectangle(zoomXBg, 6.0f, 1.0f);
   g.drawRoundedRectangle(zoomYBg, 6.0f, 1.0f);
   g.drawRoundedRectangle(toggleBg, 6.0f, 1.0f);
+
+  if (hnsepVisible && !hnsepResizeBounds.isEmpty()) {
+    const float handleWidth = std::min(
+        72.0f,
+        std::max(24.0f,
+                 static_cast<float>(hnsepResizeBounds.getWidth()) - 24.0f));
+    const float handleX = static_cast<float>(hnsepResizeBounds.getCentreX()) -
+                          handleWidth * 0.5f;
+    const float handleY = static_cast<float>(hnsepResizeBounds.getCentreY()) - 1.0f;
+    g.setColour(APP_COLOR_BORDER.withAlpha(isResizingHNSep ? 0.9f : 0.55f));
+    g.fillRoundedRectangle(handleX, handleY, handleWidth, 2.0f, 1.0f);
+  }
 }
 
 void PianoRollWorkspaceView::resized()
@@ -191,12 +204,14 @@ void PianoRollWorkspaceView::resized()
 
   if (hnsepVisible)
   {
+    hnsepHeight = juce::jlimit(hnsepMinHeight, getMaxHNSepHeight(), hnsepHeight);
     auto hnsepBounds = bounds.removeFromBottom(hnsepHeight);
-    bounds.removeFromBottom(cardGap);
+    hnsepResizeBounds = bounds.removeFromBottom(cardGap);
     hnsepCard.setBounds(hnsepBounds);
   }
   else
   {
+    hnsepResizeBounds = {};
     hnsepCard.setBounds({});
   }
 
@@ -233,6 +248,56 @@ void PianoRollWorkspaceView::resized()
                                          static_cast<float>(zoomBgPadding));
   toggleBg = overviewToggleButton.getBounds().toFloat().expanded(
       static_cast<float>(zoomBgPadding), static_cast<float>(zoomBgPadding));
+}
+
+void PianoRollWorkspaceView::mouseDown(const juce::MouseEvent &e)
+{
+  if (!hnsepVisible || !hnsepResizeBounds.contains(e.getPosition()))
+    return;
+
+  isResizingHNSep = true;
+  resizeStartY = e.y;
+  resizeStartHeight = hnsepHeight;
+  setMouseCursor(juce::MouseCursor::UpDownResizeCursor);
+  repaint(hnsepResizeBounds);
+}
+
+void PianoRollWorkspaceView::mouseDrag(const juce::MouseEvent &e)
+{
+  if (!isResizingHNSep)
+    return;
+
+  const int nextHeight = juce::jlimit(hnsepMinHeight, getMaxHNSepHeight(),
+                                      resizeStartHeight + resizeStartY - e.y);
+  if (hnsepHeight == nextHeight)
+    return;
+
+  hnsepHeight = nextHeight;
+  resized();
+  repaint();
+}
+
+void PianoRollWorkspaceView::mouseUp(const juce::MouseEvent &)
+{
+  if (!isResizingHNSep)
+    return;
+
+  isResizingHNSep = false;
+  setMouseCursor(juce::MouseCursor::NormalCursor);
+  repaint(hnsepResizeBounds);
+}
+
+void PianoRollWorkspaceView::mouseMove(const juce::MouseEvent &e)
+{
+  setMouseCursor(hnsepVisible && hnsepResizeBounds.contains(e.getPosition())
+                     ? juce::MouseCursor::UpDownResizeCursor
+                     : juce::MouseCursor::NormalCursor);
+}
+
+void PianoRollWorkspaceView::mouseExit(const juce::MouseEvent &)
+{
+  if (!isResizingHNSep)
+    setMouseCursor(juce::MouseCursor::NormalCursor);
 }
 
 void PianoRollWorkspaceView::setProject(Project *project)
@@ -278,6 +343,14 @@ void PianoRollWorkspaceView::updateOverviewVisibility()
 {
   overviewCard.setVisible(overviewVisible);
   overviewPanel.setVisible(overviewVisible);
+}
+
+int PianoRollWorkspaceView::getMaxHNSepHeight() const
+{
+  const int overviewReserve = overviewVisible ? overviewHeight + cardGap : 0;
+  const int available = getHeight() - overviewReserve - cardGap - pianoMinHeight;
+  return juce::jlimit(hnsepMinHeight, hnsepMaxHeight,
+                      std::max(hnsepMinHeight, available));
 }
 
 void PianoRollWorkspaceView::timerCallback()

@@ -97,6 +97,17 @@ HNSepLaneComponent::HNSepLaneComponent()
   setOpaque(true);
   setWantsKeyboardFocus(false);
 
+  parameterDropdown.addItem(lanes[0].label, 1);
+  parameterDropdown.addItem(lanes[1].label, 2);
+  parameterDropdown.addItem(lanes[2].label, 3);
+  parameterDropdown.setSelectedId(1, juce::dontSendNotification);
+  parameterDropdown.onChange = [this]() {
+    const int selectedId = parameterDropdown.getSelectedId();
+    if (selectedId >= 1 && selectedId <= static_cast<int>(lanes.size()))
+      setSelectedLane(lanes[static_cast<size_t>(selectedId - 1)].type);
+  };
+  addAndMakeVisible(parameterDropdown);
+
   auto setupEnergyDropdown = [this](juce::ComboBox &dropdown, float &targetDb,
                                     int selectedId) {
     dropdown.addItem(TR("hnsep.energy.max.-60"), 1);
@@ -132,6 +143,7 @@ HNSepLaneComponent::HNSepLaneComponent()
   setupEnergyDropdown(breathEnergyDropdown, breathEnergyMaxDb, 4);
   setupEnergyToggle(voicingEnergyVisibilityToggle);
   setupEnergyToggle(breathEnergyVisibilityToggle);
+  updateControlBounds();
 }
 
 void HNSepLaneComponent::setProject(Project *proj) {
@@ -157,15 +169,41 @@ void HNSepLaneComponent::setPianoKeysWidth(int width) {
   if (pianoKeysWidth == width)
     return;
   pianoKeysWidth = width;
+  updateControlBounds();
+  repaint();
+}
+
+void HNSepLaneComponent::setSelectedLane(LaneType lane) {
+  if (selectedLane == lane)
+    return;
+
+  selectedLane = lane;
+  activeLaneIndex = -1;
+  isDrawing = false;
+  isResetting = false;
+  isGesturePending = false;
+  pendingGestureResetting = false;
+  pendingEdits.clear();
+  pendingEditIndexByFrame.clear();
+  parameterDropdown.setSelectedId(getLaneIndexForType(lane) + 1,
+                                  juce::dontSendNotification);
+  updateControlBounds();
   repaint();
 }
 
 void HNSepLaneComponent::paint(juce::Graphics &g) {
   g.fillAll(APP_COLOR_BACKGROUND.brighter(0.04f));
 
-  for (int laneIndex = 0; laneIndex < static_cast<int>(lanes.size()); ++laneIndex) {
-    drawLane(g, laneIndex);
-  }
+  auto toolbarBounds = getLocalBounds().removeFromTop(toolbarHeight);
+  g.setColour(APP_COLOR_SURFACE_RAISED.withAlpha(0.96f));
+  g.fillRect(toolbarBounds);
+  g.setColour(APP_COLOR_BORDER_SUBTLE.withAlpha(0.55f));
+  g.drawLine(static_cast<float>(toolbarBounds.getX()),
+             static_cast<float>(toolbarBounds.getBottom()),
+             static_cast<float>(toolbarBounds.getRight()),
+             static_cast<float>(toolbarBounds.getBottom()));
+
+  drawLane(g, getSelectedLaneIndex());
 }
 
 void HNSepLaneComponent::resized() { updateControlBounds(); }
@@ -243,25 +281,31 @@ void HNSepLaneComponent::mouseWheelMove(const juce::MouseEvent &e,
 }
 
 juce::Rectangle<int> HNSepLaneComponent::getLaneBounds(int laneIndex) const {
+  juce::ignoreUnused(laneIndex);
   auto bounds = getLocalBounds();
-  const int laneHeight = bounds.getHeight() / static_cast<int>(lanes.size());
-  const int y = bounds.getY() + laneHeight * laneIndex;
-  auto laneBounds = juce::Rectangle<int>(bounds.getX(), y, bounds.getWidth(),
-                                         laneHeight);
-  if (laneIndex == static_cast<int>(lanes.size()) - 1) {
-    laneBounds.setHeight(bounds.getBottom() - laneBounds.getY());
-  }
-  return laneBounds;
+  bounds.removeFromTop(std::min(toolbarHeight, bounds.getHeight()));
+  return bounds;
 }
 
 int HNSepLaneComponent::getLaneIndexAt(juce::Point<float> position) const {
   if (position.x < static_cast<float>(pianoKeysWidth))
     return -1;
+  const int selectedIndex = getSelectedLaneIndex();
+  if (getLaneBounds(selectedIndex).toFloat().contains(position))
+    return selectedIndex;
+  return -1;
+}
+
+int HNSepLaneComponent::getLaneIndexForType(LaneType lane) const {
   for (int laneIndex = 0; laneIndex < static_cast<int>(lanes.size()); ++laneIndex) {
-    if (getLaneBounds(laneIndex).toFloat().contains(position))
+    if (lanes[static_cast<size_t>(laneIndex)].type == lane)
       return laneIndex;
   }
-  return -1;
+  return 0;
+}
+
+int HNSepLaneComponent::getSelectedLaneIndex() const {
+  return getLaneIndexForType(selectedLane);
 }
 
 int HNSepLaneComponent::xToFrame(float x) const {
@@ -295,27 +339,37 @@ float HNSepLaneComponent::yToValue(float y, const LaneInfo &lane,
 
 void HNSepLaneComponent::updateControlBounds() {
   const int margin = 6;
-  for (int laneIndex = 0; laneIndex < static_cast<int>(lanes.size()); ++laneIndex) {
-    auto bounds = getLaneBounds(laneIndex).withTrimmedLeft(pianoKeysWidth);
-    const auto lane = lanes[static_cast<size_t>(laneIndex)].type;
-    juce::ComboBox *dropdown = nullptr;
-    StyledToggleButton *toggle = nullptr;
-    if (lane == LaneType::Voicing) {
-      dropdown = &voicingEnergyDropdown;
-      toggle = &voicingEnergyVisibilityToggle;
-    } else if (lane == LaneType::Breath) {
-      dropdown = &breathEnergyDropdown;
-      toggle = &breathEnergyVisibilityToggle;
-    }
+  auto toolbarBounds = getLocalBounds().removeFromTop(
+      std::min(toolbarHeight, getHeight()));
+  parameterDropdown.setBounds(toolbarBounds.getX() + margin,
+                              toolbarBounds.getY() + margin,
+                              parameterDropdownWidth, energyControlHeight + 2);
 
-    if (!dropdown || !toggle)
-      continue;
+  voicingEnergyDropdown.setVisible(false);
+  breathEnergyDropdown.setVisible(false);
+  voicingEnergyVisibilityToggle.setVisible(false);
+  breathEnergyVisibilityToggle.setVisible(false);
 
-    dropdown->setBounds(bounds.getX() + margin, bounds.getY() + margin,
-                        energyDropdownWidth, energyControlHeight);
-    toggle->setBounds(dropdown->getRight() + 4, bounds.getY() + margin,
-                      energyToggleWidth, energyControlHeight);
+  juce::ComboBox *dropdown = nullptr;
+  StyledToggleButton *toggle = nullptr;
+  if (selectedLane == LaneType::Voicing) {
+    dropdown = &voicingEnergyDropdown;
+    toggle = &voicingEnergyVisibilityToggle;
+  } else if (selectedLane == LaneType::Breath) {
+    dropdown = &breathEnergyDropdown;
+    toggle = &breathEnergyVisibilityToggle;
   }
+
+  if (!dropdown || !toggle)
+    return;
+
+  dropdown->setVisible(true);
+  toggle->setVisible(true);
+  dropdown->setBounds(parameterDropdown.getRight() + 8,
+                      toolbarBounds.getY() + margin, energyDropdownWidth,
+                      energyControlHeight);
+  toggle->setBounds(dropdown->getRight() + 4, toolbarBounds.getY() + margin,
+                    energyToggleWidth, energyControlHeight);
 }
 
 float HNSepLaneComponent::getEnergyMaxDb(LaneType lane) const {
@@ -404,12 +458,6 @@ void HNSepLaneComponent::drawLane(juce::Graphics &g, int laneIndex) const {
     if (curve && !curve->empty())
       drawCurve(g, contentBounds.reduced(lanePadding, lanePadding), lane,
                 *curve);
-  }
-
-  if (laneIndex > 0) {
-    g.setColour(APP_COLOR_BORDER.withAlpha(0.6f));
-    g.fillRect(0, getLaneBounds(laneIndex).getY(), getWidth(),
-               separatorThickness);
   }
 }
 
