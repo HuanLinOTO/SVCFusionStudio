@@ -54,6 +54,8 @@
   "toolbar.ara_mode": "ARA Mode",
   "toolbar.non_ara": "Non-ARA",
   "hnsep.lane.tension": "Tension",
+  "hnsep.lane.shfc": "SHFC",
+  "hnsep.lane.shfc.unavailable": "SHFC is only available when an SVC voicebank is active.",
   "hnsep.lane.voicing": "Voicing",
   "hnsep.lane.breath": "Breath",
   "hnsep.energy.show": "Show",

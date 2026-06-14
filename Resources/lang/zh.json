@@ -54,6 +54,8 @@
   "toolbar.ara_mode": "ARA 模式",
   "toolbar.non_ara": "非 ARA",
   "hnsep.lane.tension": "张力",
+  "hnsep.lane.shfc": "音区偏移",
+  "hnsep.lane.shfc.unavailable": "音区偏移仅在已激活 SVC 声库时可用。",
   "hnsep.lane.voicing": "发声",
   "hnsep.lane.breath": "气声",
   "hnsep.energy.show": "显示",

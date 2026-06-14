@@ -115,14 +115,16 @@ bool ProjectSerializer::fromJson(Project& project, const juce::var& json) {
 
     const bool hasMasterHNSep = !audioData.voicingCurve.empty() ||
                                 !audioData.breathCurve.empty() ||
-                                !audioData.tensionCurve.empty();
+                                !audioData.tensionCurve.empty() ||
+                                !audioData.shfcCurve.empty();
     const bool hasNoteHNSep = std::any_of(project.getNotes().begin(),
                                           project.getNotes().end(),
                                           [](const Note& note) {
-                                              return note.hasVoicingCurve() ||
-                                                     note.hasBreathCurve() ||
-                                                     note.hasTensionCurve();
-                                          });
+                                               return note.hasVoicingCurve() ||
+                                                      note.hasBreathCurve() ||
+                                                      note.hasTensionCurve() ||
+                                                      note.hasShfcCurve();
+                                           });
 
     if (hasMasterHNSep)
         HNSepCurveProcessor::extractNoteCurvesFromMaster(project);
@@ -167,6 +169,8 @@ juce::var ProjectSerializer::noteToJson(const Note& note) {
         obj->setProperty("breathCurve", floatArrayToString(note.getBreathCurve(), 2));
     if (note.hasTensionCurve())
         obj->setProperty("tensionCurve", floatArrayToString(note.getTensionCurve(), 2));
+    if (note.hasShfcCurve())
+        obj->setProperty("shfcCurve", floatArrayToString(note.getShfcCurve(), 3));
     if (!note.getF0Values().empty())
         obj->setProperty("f0Values", floatArrayToString(note.getF0Values(), 2));
 
@@ -218,6 +222,10 @@ bool ProjectSerializer::noteFromJson(Note& note, const juce::var& json) {
     if (!tension.isVoid() && tension.toString().isNotEmpty())
         note.setTensionCurve(stringToFloatArray(tension.toString()));
 
+    auto shfc = json.getProperty("shfcCurve", juce::var());
+    if (!shfc.isVoid() && shfc.toString().isNotEmpty())
+        note.setShfcCurve(stringToFloatArray(shfc.toString()));
+
     auto f0Values = json.getProperty("f0Values", juce::var());
     if (!f0Values.isVoid() && f0Values.toString().isNotEmpty())
         note.setF0Values(stringToFloatArray(f0Values.toString()));
@@ -235,6 +243,7 @@ juce::var ProjectSerializer::pitchDataToJson(const AudioData& audioData) {
     obj->setProperty("voicingCurve", floatArrayToString(audioData.voicingCurve, 2));
     obj->setProperty("breathCurve", floatArrayToString(audioData.breathCurve, 2));
     obj->setProperty("tensionCurve", floatArrayToString(audioData.tensionCurve, 2));
+    obj->setProperty("shfcCurve", floatArrayToString(audioData.shfcCurve, 3));
     obj->setProperty("voicedMask", boolArrayToString(audioData.voicedMask));
     obj->setProperty("vadMask", boolArrayToString(audioData.vadMask));
 
@@ -252,6 +261,7 @@ bool ProjectSerializer::pitchDataFromJson(AudioData& audioData, const juce::var&
     audioData.voicingCurve = stringToFloatArray(json.getProperty("voicingCurve", "").toString());
     audioData.breathCurve = stringToFloatArray(json.getProperty("breathCurve", "").toString());
     audioData.tensionCurve = stringToFloatArray(json.getProperty("tensionCurve", "").toString());
+    audioData.shfcCurve = stringToFloatArray(json.getProperty("shfcCurve", "").toString());
     audioData.voicedMask = stringToBoolArray(json.getProperty("voicedMask", "").toString());
     audioData.vadMask = stringToBoolArray(json.getProperty("vadMask", "").toString());
 

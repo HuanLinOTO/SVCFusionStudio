@@ -92,6 +92,8 @@ void Project::clearAllDirty()
     // Also clear F0 dirty range
     f0DirtyStart = -1;
     f0DirtyEnd = -1;
+    svcConditioningDirtyStart = -1;
+    svcConditioningDirtyEnd = -1;
 }
 
 bool Project::hasDirtyNotes() const
@@ -128,6 +130,24 @@ std::pair<int, int> Project::getF0DirtyRange() const
     return {f0DirtyStart, f0DirtyEnd};
 }
 
+void Project::setSvcConditioningDirtyRange(int startFrame, int endFrame)
+{
+    if (svcConditioningDirtyStart < 0 || startFrame < svcConditioningDirtyStart)
+        svcConditioningDirtyStart = startFrame;
+    if (svcConditioningDirtyEnd < 0 || endFrame > svcConditioningDirtyEnd)
+        svcConditioningDirtyEnd = endFrame;
+}
+
+bool Project::hasSvcConditioningDirtyRange() const
+{
+    return svcConditioningDirtyStart >= 0 && svcConditioningDirtyEnd >= 0;
+}
+
+std::pair<int, int> Project::getSvcConditioningDirtyRange() const
+{
+    return {svcConditioningDirtyStart, svcConditioningDirtyEnd};
+}
+
 std::pair<int, int> Project::getDirtyFrameRange() const
 {
     int minStart = -1;
@@ -155,6 +175,17 @@ std::pair<int, int> Project::getDirtyFrameRange() const
     {
         if (maxEnd < 0 || f0DirtyEnd > maxEnd)
             maxEnd = f0DirtyEnd;
+    }
+
+    if (svcConditioningDirtyStart >= 0)
+    {
+        if (minStart < 0 || svcConditioningDirtyStart < minStart)
+            minStart = svcConditioningDirtyStart;
+    }
+    if (svcConditioningDirtyEnd >= 0)
+    {
+        if (maxEnd < 0 || svcConditioningDirtyEnd > maxEnd)
+            maxEnd = svcConditioningDirtyEnd;
     }
     
     return {minStart, maxEnd};

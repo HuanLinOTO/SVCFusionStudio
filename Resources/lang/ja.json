@@ -54,6 +54,8 @@
   "toolbar.ara_mode": "ARA モード",
   "toolbar.non_ara": "非 ARA",
   "hnsep.lane.tension": "テンション",
+  "hnsep.lane.shfc": "音域オフセット",
+  "hnsep.lane.shfc.unavailable": "音域オフセットはSVCボイスバンク有効時のみ使用できます。",
   "hnsep.lane.voicing": "ボイシング",
   "hnsep.lane.breath": "ブレス",
   "hnsep.energy.show": "表示",

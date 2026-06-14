@@ -44,6 +44,7 @@ struct AudioData
     std::vector<float> voicingCurve;                  // [T] hnsep harmonic energy in %
     std::vector<float> breathCurve;                   // [T] hnsep noise energy in %
     std::vector<float> tensionCurve;                  // [T] hnsep spectral tilt control
+    std::vector<float> shfcCurve;                     // [T] SVC-only pitch offset in semitones
     std::vector<bool> voicedMask;                     // [T] uv mask (true = voiced, F0-based)
     std::vector<bool> vadMask;                        // [T] energy-based VAD (true = has audio energy, captures consonants)
     std::vector<std::pair<int, int>> someChunkRanges; // [N] SOME slicer chunks in frame range [start, end)
@@ -154,6 +155,11 @@ public:
     void clearF0DirtyRange();
     bool hasF0DirtyRange() const;
     std::pair<int, int> getF0DirtyRange() const;
+
+    // SVC conditioning dirty tracking (parameters that require SVC re-inference)
+    void setSvcConditioningDirtyRange(int startFrame, int endFrame);
+    bool hasSvcConditioningDirtyRange() const;
+    std::pair<int, int> getSvcConditioningDirtyRange() const;
     
     // Modified state
     bool isModified() const { return modified; }
@@ -182,6 +188,8 @@ private:
     // F0 direct edit dirty range
     int f0DirtyStart = -1;
     int f0DirtyEnd = -1;
+    int svcConditioningDirtyStart = -1;
+    int svcConditioningDirtyEnd = -1;
     
     bool modified = false;
 

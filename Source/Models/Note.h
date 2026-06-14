@@ -74,16 +74,24 @@ public:
 
     // Harmonic-noise parameter curves (per note-local frame)
     const std::vector<float>& getVoicingCurve() const { return voicingCurve; }
+    std::vector<float>& getMutableVoicingCurve() { return voicingCurve; }
     void setVoicingCurve(std::vector<float> curve) { voicingCurve = std::move(curve); }
     bool hasVoicingCurve() const { return !voicingCurve.empty(); }
 
     const std::vector<float>& getBreathCurve() const { return breathCurve; }
+    std::vector<float>& getMutableBreathCurve() { return breathCurve; }
     void setBreathCurve(std::vector<float> curve) { breathCurve = std::move(curve); }
     bool hasBreathCurve() const { return !breathCurve.empty(); }
 
     const std::vector<float>& getTensionCurve() const { return tensionCurve; }
+    std::vector<float>& getMutableTensionCurve() { return tensionCurve; }
     void setTensionCurve(std::vector<float> curve) { tensionCurve = std::move(curve); }
     bool hasTensionCurve() const { return !tensionCurve.empty(); }
+
+    const std::vector<float>& getShfcCurve() const { return shfcCurve; }
+    std::vector<float>& getMutableShfcCurve() { return shfcCurve; }
+    void setShfcCurve(std::vector<float> curve) { shfcCurve = std::move(curve); }
+    bool hasShfcCurve() const { return !shfcCurve.empty(); }
 
     const std::vector<float>& getClipHarmonicWaveform() const { return clipHarmonicWaveform; }
     void setClipHarmonicWaveform(std::vector<float> samples) { clipHarmonicWaveform = std::move(samples); }
@@ -165,6 +173,7 @@ private:
     std::vector<float> voicingCurve;
     std::vector<float> breathCurve;
     std::vector<float> tensionCurve;
+    std::vector<float> shfcCurve;
 
     bool vibratoEnabled = false;
     float vibratoRateHz = 5.0f;
