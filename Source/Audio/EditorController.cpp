@@ -76,6 +76,10 @@ EditorController::~EditorController() {
   cancelRenderFlag = true;
   if (renderThread.joinable())
     renderThread.join();
+  if (incrementalSynth)
+    incrementalSynth->cancel();
+  if (incrementalSynthThread.joinable())
+    incrementalSynthThread.join();
   cancelSVCFlag = true;
   if (svcConversionThread.joinable())
     svcConversionThread.join();
@@ -255,6 +259,8 @@ void EditorController::runFullSVCConversionAsync(SVCProgressCallback onProgress,
   bool pitchOffsetPreSVC = project->isPitchOffsetBeforeSVC();
   auto f0ForSVC = pitchOffsetPreSVC ? adjustedF0
                                     : project->getAdjustedF0NoGlobalOffset();
+  f0ForSVC = HNSepCurveProcessor::applyShfcToF0(f0ForSVC,
+                                                audioData.shfcCurve);
   const bool hadExistingHNSepBases =
       audioData.harmonicWaveform.getNumSamples() > 0 ||
       audioData.noiseWaveform.getNumSamples() > 0;
@@ -1225,13 +1231,22 @@ void EditorController::resynthesizeIncrementalAsync(
   if (!isPluginMode && audioEngine)
     audioEnginePtr = audioEngine.get();
 
-  synth->synthesizeRegion(
-      [onProgress](const juce::String &message) {
-        if (onProgress)
-          onProgress(message);
-      },
-      [this, projectPtr = &project, pending = &pendingRerun, onComplete,
-       audioEnginePtr, isPluginMode](bool success) {
+  if (incrementalSynthThread.joinable())
+    incrementalSynthThread.join();
+
+  auto progressOnMessageThread = [onProgress](const juce::String &message) {
+    if (onProgress) {
+      juce::MessageManager::callAsync(
+          [onProgress, message]() { onProgress(message); });
+    }
+  };
+
+  auto completeOnMessageThread = [this, projectPtr = &project,
+                                  pending = &pendingRerun, onComplete,
+                                  audioEnginePtr, isPluginMode](bool success) {
+    juce::MessageManager::callAsync(
+        [this, projectPtr, pending, onComplete, audioEnginePtr, isPluginMode,
+         success]() {
         if (!success) {
           if (pending->exchange(false)) {
             juce::MessageManager::callAsync([this, projectPtr, pending, onComplete,
@@ -1262,9 +1277,16 @@ void EditorController::resynthesizeIncrementalAsync(
           juce::MessageManager::callAsync([this, projectPtr, pending, onComplete,
                                            audioEnginePtr, isPluginMode]() {
             resynthesizeIncrementalAsync(*projectPtr, nullptr, onComplete,
-                                         *pending, isPluginMode);
+                                          *pending, isPluginMode);
           });
         }
+      });
+  };
+
+  incrementalSynthThread = std::thread(
+      [synth, progress = std::move(progressOnMessageThread),
+       complete = std::move(completeOnMessageThread)]() mutable {
+        synth->synthesizeRegion(std::move(progress), std::move(complete));
       });
 }
 

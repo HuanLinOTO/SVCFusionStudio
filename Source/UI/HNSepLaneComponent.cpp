@@ -48,6 +48,8 @@ private:
       return &audioData.breathCurve;
     case HNSepLaneComponent::LaneType::Tension:
       return &audioData.tensionCurve;
+    case HNSepLaneComponent::LaneType::Shfc:
+      return &audioData.shfcCurve;
     }
     return nullptr;
   }
@@ -59,6 +61,7 @@ private:
     auto &audioData = project->getAudioData();
     int minFrame = std::numeric_limits<int>::max();
     int maxFrame = std::numeric_limits<int>::min();
+    bool hasShfcEdit = false;
 
     for (const auto &edit : edits) {
       auto *curve = curveForLane(audioData, edit.lane);
@@ -69,15 +72,20 @@ private:
 
       (*curve)[static_cast<size_t>(edit.frameIndex)] =
           useNewValues ? edit.newValue : edit.oldValue;
+      hasShfcEdit = hasShfcEdit || edit.lane == HNSepLaneComponent::LaneType::Shfc;
       minFrame = std::min(minFrame, edit.frameIndex);
       maxFrame = std::max(maxFrame, edit.frameIndex + 1);
     }
 
-    if (minFrame <= maxFrame) {
-      HNSepCurveProcessor::extractNoteCurvesFromMaster(*project);
+    if (minFrame < maxFrame) {
+      HNSepCurveProcessor::extractNoteCurvesFromMasterForRange(*project,
+                                                               minFrame,
+                                                               maxFrame);
       for (auto *note : project->getNotesInRange(minFrame, maxFrame))
         note->markDirty();
       project->setF0DirtyRange(minFrame, maxFrame);
+      if (hasShfcEdit)
+        project->setSvcConditioningDirtyRange(minFrame, maxFrame);
       project->setModified(true);
     }
   }
@@ -93,20 +101,32 @@ HNSepLaneComponent::HNSepLaneComponent()
             LaneInfo{LaneType::Breath, TR("hnsep.lane.breath"), juce::Colour(0xfff2b370),
                       0.0f, 200.0f, HNSepCurveProcessor::kDefaultBreath},
             LaneInfo{LaneType::Tension, TR("hnsep.lane.tension"), juce::Colour(0xfff06f5a),
-                      -100.0f, 100.0f, HNSepCurveProcessor::kDefaultTension}} {
+                      -100.0f, 100.0f, HNSepCurveProcessor::kDefaultTension},
+            LaneInfo{LaneType::Shfc, TR("hnsep.lane.shfc"), juce::Colour(0xffffb36b),
+                      -24.0f, 24.0f, HNSepCurveProcessor::kDefaultShfc}} {
   setOpaque(true);
   setWantsKeyboardFocus(false);
 
   parameterDropdown.addItem(lanes[0].label, 1);
   parameterDropdown.addItem(lanes[1].label, 2);
   parameterDropdown.addItem(lanes[2].label, 3);
+  parameterDropdown.addItem(lanes[3].label, 4);
   parameterDropdown.setSelectedId(1, juce::dontSendNotification);
   parameterDropdown.onChange = [this]() {
     const int selectedId = parameterDropdown.getSelectedId();
-    if (selectedId >= 1 && selectedId <= static_cast<int>(lanes.size()))
-      setSelectedLane(lanes[static_cast<size_t>(selectedId - 1)].type);
+    if (selectedId >= 1 && selectedId <= static_cast<int>(lanes.size())) {
+      const auto lane = lanes[static_cast<size_t>(selectedId - 1)].type;
+      if (!isLaneAvailable(lane)) {
+        parameterDropdown.setSelectedId(getLaneIndexForType(selectedLane) + 1,
+                                        juce::dontSendNotification);
+        parameterDropdown.setTooltip(TR("hnsep.lane.shfc.unavailable"));
+        return;
+      }
+      setSelectedLane(lane);
+    }
   };
   addAndMakeVisible(parameterDropdown);
+  refreshShfcAvailability();
 
   auto setupEnergyDropdown = [this](juce::ComboBox &dropdown, float &targetDb,
                                     int selectedId) {
@@ -184,7 +204,18 @@ void HNSepLaneComponent::setPianoKeysWidth(int width) {
   repaint();
 }
 
+void HNSepLaneComponent::setShfcEnabled(bool enabled) {
+  if (shfcEnabled == enabled)
+    return;
+
+  shfcEnabled = enabled;
+  refreshShfcAvailability();
+  repaint();
+}
+
 void HNSepLaneComponent::setSelectedLane(LaneType lane) {
+  if (!isLaneAvailable(lane))
+    lane = LaneType::Voicing;
   if (selectedLane == lane)
     return;
 
@@ -383,6 +414,30 @@ void HNSepLaneComponent::updateControlBounds() {
                     energyToggleWidth, energyControlHeight);
 }
 
+void HNSepLaneComponent::refreshShfcAvailability() {
+  parameterDropdown.setItemEnabled(getLaneIndexForType(LaneType::Shfc) + 1,
+                                   shfcEnabled);
+  parameterDropdown.setTooltip(shfcEnabled ? juce::String()
+                                           : TR("hnsep.lane.shfc.unavailable"));
+
+  if (!shfcEnabled && selectedLane == LaneType::Shfc)
+    setSelectedLane(LaneType::Voicing);
+}
+
+bool HNSepLaneComponent::isLaneAvailable(LaneType lane) const {
+  return lane != LaneType::Shfc || shfcEnabled;
+}
+
+bool HNSepLaneComponent::isFrameInAudibleNote(int frame) const {
+  if (!project)
+    return false;
+
+  if (auto *note = project->getNoteAtFrame(frame))
+    return !note->isRest();
+
+  return false;
+}
+
 float HNSepLaneComponent::getEnergyMaxDb(LaneType lane) const {
   if (lane == LaneType::Voicing)
     return voicingEnergyMaxDb;
@@ -408,6 +463,8 @@ std::vector<float> *HNSepLaneComponent::curveForLane(AudioData &audioData,
     return &audioData.breathCurve;
   case LaneType::Tension:
     return &audioData.tensionCurve;
+  case LaneType::Shfc:
+    return &audioData.shfcCurve;
   }
   return nullptr;
 }
@@ -421,6 +478,8 @@ HNSepLaneComponent::curveForLane(const AudioData &audioData, LaneType lane) cons
     return &audioData.breathCurve;
   case LaneType::Tension:
     return &audioData.tensionCurve;
+  case LaneType::Shfc:
+    return &audioData.shfcCurve;
   }
   return nullptr;
 }
@@ -572,29 +631,49 @@ void HNSepLaneComponent::drawCurve(juce::Graphics &g,
   const int frameStep = juce::jmax(
       1, static_cast<int>(std::ceil(1.0f / juce::jmax(0.001f, pixelsPerFrame))));
 
-  juce::Path path;
-  path.startNewSubPath(frameToX(startFrame),
-                       valueToY(curve[static_cast<size_t>(startFrame)], lane,
-                                 bounds));
+  struct CurvePoint {
+    float x = 0.0f;
+    float y = 0.0f;
+    bool silent = true;
+  };
+
+  std::vector<CurvePoint> points;
+  auto addPoint = [&](int frame) {
+    points.push_back(CurvePoint{
+        frameToX(frame),
+        valueToY(curve[static_cast<size_t>(frame)], lane, bounds),
+        !isFrameInAudibleNote(frame)});
+  };
+
+  addPoint(startFrame);
   for (int frame = startFrame + frameStep; frame < endFrame; frame += frameStep) {
-    path.lineTo(frameToX(frame),
-                valueToY(curve[static_cast<size_t>(frame)], lane, bounds));
+    addPoint(frame);
   }
 
   if ((endFrame - 1 - startFrame) % frameStep != 0) {
-    path.lineTo(frameToX(endFrame - 1),
-                valueToY(curve[static_cast<size_t>(endFrame - 1)], lane, bounds));
+    addPoint(endFrame - 1);
   }
 
-  g.setColour(lane.colour.withAlpha(0.16f));
-  juce::Path fillPath(path);
-  fillPath.lineTo(frameToX(endFrame - 1), static_cast<float>(bounds.getBottom()));
-  fillPath.lineTo(frameToX(startFrame), static_cast<float>(bounds.getBottom()));
-  fillPath.closeSubPath();
-  g.fillPath(fillPath);
+  for (size_t index = 1; index < points.size(); ++index) {
+    const auto &prev = points[index - 1];
+    const auto &cur = points[index];
+    const bool silentSegment = prev.silent || cur.silent;
 
-  g.setColour(lane.colour);
-  g.strokePath(path, juce::PathStrokeType(2.0f));
+    juce::Path fillPath;
+    fillPath.startNewSubPath(prev.x, prev.y);
+    fillPath.lineTo(cur.x, cur.y);
+    fillPath.lineTo(cur.x, static_cast<float>(bounds.getBottom()));
+    fillPath.lineTo(prev.x, static_cast<float>(bounds.getBottom()));
+    fillPath.closeSubPath();
+    g.setColour(lane.colour.withAlpha(silentSegment ? 0.08f : 0.16f));
+    g.fillPath(fillPath);
+
+    juce::Path segmentPath;
+    segmentPath.startNewSubPath(prev.x, prev.y);
+    segmentPath.lineTo(cur.x, cur.y);
+    g.setColour(lane.colour.withAlpha(silentSegment ? 0.5f : 1.0f));
+    g.strokePath(segmentPath, juce::PathStrokeType(2.0f));
+  }
 
   const float defaultY = valueToY(lane.defaultValue, lane, bounds);
   g.setColour(APP_COLOR_TEXT_MUTED.withAlpha(0.25f));
@@ -644,9 +723,6 @@ void HNSepLaneComponent::applyValueAtFrame(int frameIndex, float value) {
   auto *curve = curveForLane(audioData, lanes[static_cast<size_t>(activeLaneIndex)].type);
   if (!curve || frameIndex < 0 || frameIndex >= static_cast<int>(curve->size()))
     return;
-  if (!project->getNoteAtFrame(frameIndex))
-    return;
-
   const auto &lane = lanes[static_cast<size_t>(activeLaneIndex)];
   const float clampedValue = juce::jlimit(lane.minValue, lane.maxValue, value);
   auto existing = pendingEditIndexByFrame.find(frameIndex);
@@ -660,8 +736,6 @@ void HNSepLaneComponent::applyValueAtFrame(int frameIndex, float value) {
   }
 
   (*curve)[static_cast<size_t>(frameIndex)] = clampedValue;
-  HNSepCurveProcessor::extractNoteCurvesFromMaster(*project);
-
   if (onParamEdited)
     onParamEdited();
   repaint();
@@ -686,7 +760,16 @@ void HNSepLaneComponent::commitPendingEdits() {
         std::make_unique<HNSepCurveEditAction>(project, pendingEdits));
   }
 
+  HNSepCurveProcessor::extractNoteCurvesFromMasterForRange(*project,
+                                                           minFrame,
+                                                           maxFrame);
   markDirtyRange(minFrame, maxFrame);
+  const bool hasShfcEdit = std::any_of(
+      pendingEdits.begin(), pendingEdits.end(), [](const CurveEdit &edit) {
+        return edit.lane == LaneType::Shfc;
+      });
+  if (hasShfcEdit)
+    project->setSvcConditioningDirtyRange(minFrame, maxFrame);
   project->setModified(true);
 
   pendingEdits.clear();

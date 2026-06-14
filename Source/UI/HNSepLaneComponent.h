@@ -12,7 +12,7 @@
 
 class HNSepLaneComponent : public juce::Component {
 public:
-  enum class LaneType { Voicing, Breath, Tension };
+  enum class LaneType { Voicing, Breath, Tension, Shfc };
 
   struct CurveEdit {
     LaneType lane;
@@ -43,6 +43,7 @@ public:
   double getScrollX() const { return scrollX; }
   void setViewTransform(float pps, double x);
   void setPianoKeysWidth(int width);
+  void setShfcEnabled(bool enabled);
   void setMouseWheelPassthroughTarget(juce::Component *target) {
     mouseWheelPassthroughTarget = target;
   }
@@ -85,6 +86,9 @@ private:
   void drawCurve(juce::Graphics &g, const juce::Rectangle<int> &bounds,
                   const LaneInfo &lane, const std::vector<float> &curve) const;
   void updateControlBounds();
+  void refreshShfcAvailability();
+  bool isLaneAvailable(LaneType lane) const;
+  bool isFrameInAudibleNote(int frame) const;
   float getEnergyMaxDb(LaneType lane) const;
   bool isEnergyOverlayVisible(LaneType lane) const;
 
@@ -97,7 +101,7 @@ private:
   PitchUndoManager *undoManager = nullptr;
   juce::Component *mouseWheelPassthroughTarget = nullptr;
 
-  std::array<LaneInfo, 3> lanes;
+  std::array<LaneInfo, 4> lanes;
   LaneType selectedLane = LaneType::Voicing;
   float pixelsPerSecond = DEFAULT_PIXELS_PER_SECOND;
   double scrollX = 0.0;
@@ -115,6 +119,7 @@ private:
   bool isResetting = false;
   bool isGesturePending = false;
   bool pendingGestureResetting = false;
+  bool shfcEnabled = false;
   int activeLaneIndex = -1;
   int lastDrawFrame = -1;
   float lastDrawValue = 0.0f;

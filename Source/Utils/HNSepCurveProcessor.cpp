@@ -1,5 +1,6 @@
 #include "HNSepCurveProcessor.h"
 #include "CurveResampler.h"
+#include "Constants.h"
 
 #include <algorithm>
 #include <cmath>
@@ -19,7 +20,11 @@ void ensureCurveSizes(AudioData &audioData, int totalFrames) {
   }
   if (audioData.tensionCurve.size() != static_cast<size_t>(totalFrames)) {
     audioData.tensionCurve.assign(static_cast<size_t>(totalFrames),
-                                  HNSepCurveProcessor::kDefaultTension);
+                                   HNSepCurveProcessor::kDefaultTension);
+  }
+  if (audioData.shfcCurve.size() != static_cast<size_t>(totalFrames)) {
+    audioData.shfcCurve.assign(static_cast<size_t>(totalFrames),
+                               HNSepCurveProcessor::kDefaultShfc);
   }
 }
 
@@ -50,6 +55,28 @@ void writeCurveRange(std::vector<float> &dest, const std::vector<float> &source,
   for (int index = 0; index < length; ++index) {
     dest[static_cast<size_t>(clampedStart + index)] =
         fitted[static_cast<size_t>(index)];
+  }
+}
+
+void patchNoteCurveFromMaster(std::vector<float> &noteCurve,
+                              const std::vector<float> &masterCurve,
+                              int noteStart, int noteEnd, int patchStart,
+                              int patchEnd, float defaultValue) {
+  const int noteLength = std::max(0, noteEnd - noteStart);
+  if (noteLength <= 0)
+    return;
+
+  if (static_cast<int>(noteCurve.size()) != noteLength)
+    noteCurve.assign(static_cast<size_t>(noteLength), defaultValue);
+
+  const int overlapStart = std::max(noteStart, patchStart);
+  const int overlapEnd = std::min(noteEnd, patchEnd);
+  if (overlapEnd <= overlapStart)
+    return;
+
+  for (int frame = overlapStart; frame < overlapEnd; ++frame) {
+    noteCurve[static_cast<size_t>(frame - noteStart)] =
+        masterCurve[static_cast<size_t>(frame)];
   }
 }
 
@@ -116,7 +143,19 @@ void initializeCurves(Project &project) {
             audioData.tensionCurve.begin() + endFrame));
       } else {
         note.setTensionCurve(std::vector<float>(static_cast<size_t>(noteLength),
-                                                kDefaultTension));
+                                                 kDefaultTension));
+      }
+    }
+
+    if (!note.hasShfcCurve()) {
+      if (sliceLength > 0 && startFrame >= 0 &&
+          endFrame <= static_cast<int>(audioData.shfcCurve.size())) {
+        note.setShfcCurve(std::vector<float>(
+            audioData.shfcCurve.begin() + startFrame,
+            audioData.shfcCurve.begin() + endFrame));
+      } else {
+        note.setShfcCurve(std::vector<float>(static_cast<size_t>(noteLength),
+                                             kDefaultShfc));
       }
     }
   }
@@ -135,6 +174,8 @@ void rebuildCurvesFromNotes(Project &project) {
             kDefaultBreath);
   std::fill(audioData.tensionCurve.begin(), audioData.tensionCurve.end(),
             kDefaultTension);
+  std::fill(audioData.shfcCurve.begin(), audioData.shfcCurve.end(),
+            kDefaultShfc);
 
   for (const auto &note : project.getNotes()) {
     if (note.isRest())
@@ -146,6 +187,8 @@ void rebuildCurvesFromNotes(Project &project) {
                     note.getStartFrame(), note.getEndFrame(), kDefaultBreath);
     writeCurveRange(audioData.tensionCurve, note.getTensionCurve(),
                     note.getStartFrame(), note.getEndFrame(), kDefaultTension);
+    writeCurveRange(audioData.shfcCurve, note.getShfcCurve(),
+                    note.getStartFrame(), note.getEndFrame(), kDefaultShfc);
   }
 }
 
@@ -165,6 +208,8 @@ void rebuildCurvesForRange(Project &project, int startFrame, int endFrame) {
             audioData.breathCurve.begin() + clampedEnd, kDefaultBreath);
   std::fill(audioData.tensionCurve.begin() + clampedStart,
             audioData.tensionCurve.begin() + clampedEnd, kDefaultTension);
+  std::fill(audioData.shfcCurve.begin() + clampedStart,
+            audioData.shfcCurve.begin() + clampedEnd, kDefaultShfc);
 
   for (const auto &note : project.getNotes()) {
     if (note.isRest())
@@ -185,6 +230,8 @@ void rebuildCurvesForRange(Project &project, int startFrame, int endFrame) {
         fitCurveToLength(note.getBreathCurve(), noteLength, kDefaultBreath);
     const auto tension =
         fitCurveToLength(note.getTensionCurve(), noteLength, kDefaultTension);
+    const auto shfc =
+        fitCurveToLength(note.getShfcCurve(), noteLength, kDefaultShfc);
 
     for (int frame = overlapStart; frame < overlapEnd; ++frame) {
       const int localFrame = frame - note.getStartFrame();
@@ -194,6 +241,8 @@ void rebuildCurvesForRange(Project &project, int startFrame, int endFrame) {
           breath[static_cast<size_t>(localFrame)];
       audioData.tensionCurve[static_cast<size_t>(frame)] =
           tension[static_cast<size_t>(localFrame)];
+      audioData.shfcCurve[static_cast<size_t>(frame)] =
+          shfc[static_cast<size_t>(localFrame)];
     }
   }
 }
@@ -222,9 +271,48 @@ void extractNoteCurvesFromMaster(Project &project) {
                                            audioData.breathCurve.begin() +
                                                endFrame));
     note.setTensionCurve(std::vector<float>(audioData.tensionCurve.begin() +
-                                                startFrame,
-                                            audioData.tensionCurve.begin() +
-                                                endFrame));
+                                                 startFrame,
+                                             audioData.tensionCurve.begin() +
+                                                 endFrame));
+    note.setShfcCurve(std::vector<float>(audioData.shfcCurve.begin() +
+                                             startFrame,
+                                         audioData.shfcCurve.begin() +
+                                             endFrame));
+  }
+}
+
+void extractNoteCurvesFromMasterForRange(Project &project, int startFrame,
+                                         int endFrame) {
+  auto &audioData = project.getAudioData();
+  const int totalFrames = audioData.getNumFrames();
+  ensureCurveSizes(audioData, totalFrames);
+
+  const int clampedStart = std::max(0, startFrame);
+  const int clampedEnd = std::min(totalFrames, endFrame);
+  if (clampedEnd <= clampedStart)
+    return;
+
+  for (auto *note : project.getNotesInRange(clampedStart, clampedEnd)) {
+    if (!note || note->isRest())
+      continue;
+
+    const int noteStart = std::max(0, note->getStartFrame());
+    const int noteEnd = std::min(totalFrames, note->getEndFrame());
+    if (noteEnd <= noteStart)
+      continue;
+
+    patchNoteCurveFromMaster(note->getMutableVoicingCurve(),
+                             audioData.voicingCurve, noteStart, noteEnd,
+                             clampedStart, clampedEnd, kDefaultVoicing);
+    patchNoteCurveFromMaster(note->getMutableBreathCurve(), audioData.breathCurve,
+                             noteStart, noteEnd, clampedStart, clampedEnd,
+                             kDefaultBreath);
+    patchNoteCurveFromMaster(note->getMutableTensionCurve(),
+                             audioData.tensionCurve, noteStart, noteEnd,
+                             clampedStart, clampedEnd, kDefaultTension);
+    patchNoteCurveFromMaster(note->getMutableShfcCurve(), audioData.shfcCurve,
+                             noteStart, noteEnd, clampedStart, clampedEnd,
+                             kDefaultShfc);
   }
 }
 
@@ -235,6 +323,28 @@ bool hasActiveEdits(const Project &project, int startFrame, int endFrame) {
          curveDiffersFrom(audioData.breathCurve, startFrame, endFrame,
                           kDefaultBreath) ||
          curveDiffersFrom(audioData.tensionCurve, startFrame, endFrame,
-                          kDefaultTension);
+                           kDefaultTension);
+}
+
+std::vector<float> applyShfcToF0(const std::vector<float> &f0,
+                                 const std::vector<float> &shfcCurve,
+                                 int shfcStartFrame) {
+  if (f0.empty() || shfcCurve.empty())
+    return f0;
+
+  std::vector<float> shifted = f0;
+  for (int index = 0; index < static_cast<int>(shifted.size()); ++index) {
+    const int shfcIndex = shfcStartFrame + index;
+    if (shfcIndex < 0 || shfcIndex >= static_cast<int>(shfcCurve.size()))
+      continue;
+
+    const float semitoneOffset = shfcCurve[static_cast<size_t>(shfcIndex)];
+    if (std::abs(semitoneOffset) <= 0.0001f || shifted[static_cast<size_t>(index)] <= 0.0f)
+      continue;
+
+    const float midi = freqToMidi(shifted[static_cast<size_t>(index)]) + semitoneOffset;
+    shifted[static_cast<size_t>(index)] = midiToFreq(midi);
+  }
+  return shifted;
 }
 } // namespace HNSepCurveProcessor

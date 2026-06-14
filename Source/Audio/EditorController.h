@@ -196,6 +196,10 @@ private:
   std::atomic<bool> cancelRenderFlag{false};
   std::atomic<bool> isRenderingFlag{false};
 
+  // Async incremental synthesis launcher. The synthesizer owns the longer
+  // vocoder/apply work after this thread has prepared the region.
+  std::thread incrementalSynthThread;
+
   // Async SVC conversion state
   std::thread svcConversionThread;
   std::vector<std::thread> svcOldThreads;  // cancelled threads awaiting join

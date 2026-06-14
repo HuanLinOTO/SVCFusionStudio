@@ -519,6 +519,7 @@ MainComponent::MainComponent(bool enableAudioDevice)
         if (ok)
         {
           DBG("MainComponent: SVC model loaded: " + voicebankDir.getFileName());
+          safeThis->pianoRollView.getHNSepLane().setShfcEnabled(true);
           // If audio is already loaded, run full SVC conversion
           auto* proj = ec->getProject();
           if (proj && proj->getAudioData().waveform.getNumSamples() > 0
@@ -556,6 +557,7 @@ MainComponent::MainComponent(bool enableAudioDevice)
           safeThis->toolbar.hideProgress();
           safeThis->pianoRoll.setEnabled(true);
           safeThis->parameterPanel.setEnabled(true);
+          safeThis->pianoRollView.getHNSepLane().setShfcEnabled(false);
           DBG("MainComponent: Failed to load SVC model: " + voicebankDir.getFileName());
         }
       });
@@ -580,6 +582,8 @@ MainComponent::MainComponent(bool enableAudioDevice)
   pianoRoll.isSVCActive = [this]() -> bool {
     return editorController && editorController->isSVCModelActive();
   };
+  pianoRollView.getHNSepLane().setShfcEnabled(
+      editorController && editorController->isSVCModelActive());
   pianoRoll.onPitchEditFinished = [this]() {
     resynthesizeIncremental();
     // Melodyne-style: trigger real-time processor update in plugin mode

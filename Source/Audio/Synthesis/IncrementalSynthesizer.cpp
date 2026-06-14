@@ -171,34 +171,37 @@ IncrementalSynthesizer::generateBlendMask(int startFrame, int endFrame,
 // synthesizeRegion: Voiced-Only Blend approach.
 // ---------------------------------------------------------------------------
 void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
-                                              CompleteCallback onComplete) {
+                                               CompleteCallback onComplete) {
   LOG("[STRETCH-DBG] synthesizeRegion() ENTER");
+  isBusy = true;
+  auto completeNow = [this, &onComplete](bool success) {
+    isBusy = false;
+    if (onComplete)
+      onComplete(success);
+  };
+
   if (!project || !vocoder) {
     LOG("[STRETCH-DBG] synthesizeRegion: BAIL — no project(" + juce::String((int)(project != nullptr)) + ") or vocoder(" + juce::String((int)(vocoder != nullptr)) + ")");
-    if (onComplete)
-      onComplete(false);
+    completeNow(false);
     return;
   }
 
   auto &audioData = project->getAudioData();
   if (audioData.melSpectrogram.empty() || audioData.f0.empty()) {
     LOG("[STRETCH-DBG] synthesizeRegion: BAIL — mel empty(" + juce::String((int)audioData.melSpectrogram.empty()) + ") or f0 empty(" + juce::String((int)audioData.f0.empty()) + ")");
-    if (onComplete)
-      onComplete(false);
+    completeNow(false);
     return;
   }
 
   if (!vocoder->isLoaded()) {
     LOG("[STRETCH-DBG] synthesizeRegion: BAIL — vocoder not loaded");
-    if (onComplete)
-      onComplete(false);
+    completeNow(false);
     return;
   }
 
   if (!project->hasDirtyNotes() && !project->hasF0DirtyRange()) {
     LOG("[STRETCH-DBG] synthesizeRegion: BAIL — no dirty notes and no F0 dirty range");
-    if (onComplete)
-      onComplete(false);
+    completeNow(false);
     return;
   }
 
@@ -206,8 +209,7 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
   LOG("[STRETCH-DBG] dirtyRange=[" + juce::String(dirtyStart) + ", " + juce::String(dirtyEnd) + "]");
   if (dirtyStart < 0 || dirtyEnd < 0) {
     LOG("[STRETCH-DBG] synthesizeRegion: BAIL — invalid dirty range");
-    if (onComplete)
-      onComplete(false);
+    completeNow(false);
     return;
   }
 
@@ -220,8 +222,7 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
 
   if (startFrame >= endFrame) {
     LOG("[STRETCH-DBG] synthesizeRegion: BAIL — startFrame >= endFrame");
-    if (onComplete)
-      onComplete(false);
+    completeNow(false);
     return;
   }
 
@@ -236,13 +237,13 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
   if (!hasVoiced) {
     LOG("[STRETCH-DBG] synthesizeRegion: BAIL — blend mask all-zero (no voiced frames)");
     project->clearAllDirty();
-    if (onComplete)
-      onComplete(true);
+    completeNow(true);
     return;
   }
 
   // Extract mel + adjusted F0
   std::vector<std::vector<float>> melRange;
+  bool melRangeFromSvcInference = false;
   // adjustedF0Range: always includes global pitch offset (for vocoder / final output)
   std::vector<float> adjustedF0Range =
       project->getAdjustedF0ForRange(startFrame, endFrame);
@@ -255,7 +256,14 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
   // When melFromSVC is true, audioData.melSpectrogram already contains SVC mel.
   // We can skip expensive SVC re-inference and just use the stored mel through
   // vocoder. This makes stretch/pitch-edit fast (vocoder-only, no ContentVec/Encoder).
-  bool useSvcMelDirect = svcActive && !isSoVITS && audioData.melFromSVC;
+  bool hasSvcConditioningDirty = false;
+  if (project->hasSvcConditioningDirtyRange()) {
+    const auto conditioningDirtyRange = project->getSvcConditioningDirtyRange();
+    hasSvcConditioningDirty = conditioningDirtyRange.first < endFrame &&
+                              conditioningDirtyRange.second > startFrame;
+  }
+  bool useSvcMelDirect = svcActive && !isSoVITS && audioData.melFromSVC &&
+                         !hasSvcConditioningDirty;
 
   // Copy waveform segment for blending.
   // When SVC is active, blend against the *current* waveform (which already
@@ -283,6 +291,7 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
   LOG("[STRETCH-DBG] svcActive=" + juce::String((int)svcActive)
       + " isSoVITS=" + juce::String((int)isSoVITS)
       + " melFromSVC=" + juce::String((int)audioData.melFromSVC)
+      + " svcConditioningDirty=" + juce::String((int)hasSvcConditioningDirty)
       + " useSvcMelDirect=" + juce::String((int)useSvcMelDirect));
 
   std::vector<float> hnsepRebuiltSegment;
@@ -355,6 +364,8 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
   if (svcActive && !useSvcMelDirect && !isSoVITS) {
     f0ForSVC = pitchOffsetPreSVC ? adjustedF0Range
                                  : project->getAdjustedF0ForRangeNoGlobalOffset(startFrame, endFrame);
+    f0ForSVC = HNSepCurveProcessor::applyShfcToF0(
+        f0ForSVC, audioData.shfcCurve, startFrame);
   }
 
   // For SoVITS incremental (stretch/pitch-edit):
@@ -447,6 +458,7 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
     }
     else
     {
+      melRangeFromSvcInference = true;
       DBG("IncrementalSynthesizer: SVC mel OK — ["
           + juce::String(melRange.size()) + "]["
           + juce::String(melRange.empty() ? 0 : melRange[0].size()) + "]");
@@ -493,9 +505,19 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
   }
 
   if (melRange.empty() || adjustedF0Range.empty()) {
-    if (onComplete)
-      onComplete(false);
+    completeNow(false);
     return;
+  }
+
+  if (melRangeFromSvcInference) {
+    const int melSize = static_cast<int>(audioData.melSpectrogram.size());
+    const int copyLen = std::min(static_cast<int>(melRange.size()),
+                                 std::max(0, melSize - startFrame));
+    for (int i = 0; i < copyLen; ++i)
+      audioData.melSpectrogram[static_cast<size_t>(startFrame + i)] =
+          melRange[static_cast<size_t>(i)];
+    if (copyLen > 0)
+      audioData.melFromSVC = true;
   }
 
   if (onProgress)
