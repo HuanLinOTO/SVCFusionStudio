@@ -106,9 +106,9 @@ ToolbarComponent::ToolbarComponent()
     stretchModeButton.setTooltip(TR("toolbar.stretch") + " (2)");
     drawModeButton.setTooltip(TR("toolbar.draw") + " (3)");
     splitModeButton.setTooltip(TR("toolbar.split") + " (4)");
-    hnsepModeButton.setTooltip("HNSep Parameters");
-    followButton.setTooltip(TR("toolbar.follow") + " (5)");
-    loopButton.setTooltip(TR("toolbar.loop") + " (6)");
+    hnsepModeButton.setTooltip("HNSep Parameters (5)");
+    followButton.setTooltip(TR("toolbar.follow") + " (6)");
+    loopButton.setTooltip(TR("toolbar.loop") + " (7)");
     parametersButton.setTooltip(TR("panel.parameters"));
     voicebankButton.setTooltip(TR("panel.voicebank"));
     reanalyzeButton.setButtonText(TR("toolbar.reanalyze"));

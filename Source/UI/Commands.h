@@ -48,6 +48,7 @@ namespace CommandIDs
         drawMode            = 0x2052,
         splitMode           = 0x2053,
         followPlayback      = 0x2054,
-        toggleLoop          = 0x2055
+        toggleLoop          = 0x2055,
+        hnsepMode           = 0x2056
     };
 }

@@ -2544,6 +2544,7 @@ void MainComponent::getAllCommands(juce::Array<juce::CommandID>& commands) {
         CommandIDs::stretchMode,
         CommandIDs::drawMode,
         CommandIDs::splitMode,
+        CommandIDs::hnsepMode,
         CommandIDs::followPlayback,
         CommandIDs::toggleLoop
     };
@@ -2701,14 +2702,20 @@ void MainComponent::getCommandInfo(juce::CommandID commandID,
             result.setActive(project != nullptr);
             break;
 
+        case CommandIDs::hnsepMode:
+            result.setInfo("HNSep Parameters", "HNSep Parameters", "Edit Mode", 0);
+            result.addDefaultKeypress('5', juce::ModifierKeys::noModifiers);
+            result.setActive(project != nullptr);
+            break;
+
         case CommandIDs::followPlayback:
             result.setInfo(TR("toolbar.follow"), TR("toolbar.follow"), "Edit Mode", 0);
-            result.addDefaultKeypress('5', juce::ModifierKeys::noModifiers);
+            result.addDefaultKeypress('6', juce::ModifierKeys::noModifiers);
             break;
 
         case CommandIDs::toggleLoop:
             result.setInfo(TR("toolbar.loop"), TR("toolbar.loop"), "Edit Mode", 0);
-            result.addDefaultKeypress('6', juce::ModifierKeys::noModifiers);
+            result.addDefaultKeypress('7', juce::ModifierKeys::noModifiers);
             break;
             
         default:
@@ -2830,7 +2837,7 @@ bool MainComponent::perform(const ApplicationCommandTarget::InvocationInfo& info
             }
             return true;
 
-        // Toolbar edit mode commands (keys 1-6)
+        // Toolbar edit mode commands (keys 1-5)
         case CommandIDs::selectMode:
             setEditMode(EditMode::Select);
             return true;
@@ -2845,6 +2852,10 @@ bool MainComponent::perform(const ApplicationCommandTarget::InvocationInfo& info
 
         case CommandIDs::splitMode:
             setEditMode(EditMode::Split);
+            return true;
+
+        case CommandIDs::hnsepMode:
+            toolbar.buttonClicked(&toolbar.getHNSepButton());
             return true;
 
         case CommandIDs::followPlayback:

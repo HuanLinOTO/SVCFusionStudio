@@ -8,6 +8,30 @@
 #include <limits>
 
 namespace {
+std::pair<int, int> getAudibleOverlapRange(Project &project, int startFrame,
+                                           int endFrame) {
+  int audibleStart = std::numeric_limits<int>::max();
+  int audibleEnd = std::numeric_limits<int>::min();
+
+  for (auto *note : project.getNotesInRange(startFrame, endFrame)) {
+    if (!note || note->isRest())
+      continue;
+
+    const int overlapStart = std::max(startFrame, note->getStartFrame());
+    const int overlapEnd = std::min(endFrame, note->getEndFrame());
+    if (overlapEnd <= overlapStart)
+      continue;
+
+    audibleStart = std::min(audibleStart, overlapStart);
+    audibleEnd = std::max(audibleEnd, overlapEnd);
+  }
+
+  if (audibleStart >= audibleEnd)
+    return {-1, -1};
+
+  return {audibleStart, audibleEnd};
+}
+
 float computeFrameRmsDb(const juce::AudioBuffer<float> &buffer, int frameIndex) {
   if (buffer.getNumSamples() <= 0)
     return -90.0f;
@@ -78,14 +102,18 @@ private:
     }
 
     if (minFrame < maxFrame) {
-      HNSepCurveProcessor::extractNoteCurvesFromMasterForRange(*project,
-                                                               minFrame,
-                                                               maxFrame);
-      for (auto *note : project->getNotesInRange(minFrame, maxFrame))
-        note->markDirty();
-      project->setF0DirtyRange(minFrame, maxFrame);
-      if (hasShfcEdit)
-        project->setSvcConditioningDirtyRange(minFrame, maxFrame);
+      const auto [audibleStart, audibleEnd] =
+          getAudibleOverlapRange(*project, minFrame, maxFrame);
+      if (audibleStart < audibleEnd) {
+        HNSepCurveProcessor::extractNoteCurvesFromMasterForRange(
+            *project, audibleStart, audibleEnd);
+        for (auto *note : project->getNotesInRange(audibleStart, audibleEnd))
+          if (note && !note->isRest())
+            note->markDirty();
+        project->setF0DirtyRange(audibleStart, audibleEnd);
+        if (hasShfcEdit)
+          project->setSvcConditioningDirtyRange(audibleStart, audibleEnd);
+      }
       project->setModified(true);
     }
   }
@@ -631,54 +659,82 @@ void HNSepLaneComponent::drawCurve(juce::Graphics &g,
   const int frameStep = juce::jmax(
       1, static_cast<int>(std::ceil(1.0f / juce::jmax(0.001f, pixelsPerFrame))));
 
+  if (!project)
+    return;
+
+  int firstAudibleFrame = std::numeric_limits<int>::max();
+  int lastAudibleFrame = std::numeric_limits<int>::min();
+  for (const auto &note : project->getNotes()) {
+    if (note.isRest())
+      continue;
+
+    firstAudibleFrame = std::min(firstAudibleFrame, note.getStartFrame());
+    lastAudibleFrame = std::max(lastAudibleFrame, note.getEndFrame());
+  }
+  if (firstAudibleFrame >= lastAudibleFrame)
+    return;
+
   struct CurvePoint {
+    int frame = 0;
     float x = 0.0f;
     float y = 0.0f;
-    bool silent = true;
+    bool audible = false;
   };
 
   std::vector<CurvePoint> points;
   auto addPoint = [&](int frame) {
     points.push_back(CurvePoint{
+        frame,
         frameToX(frame),
         valueToY(curve[static_cast<size_t>(frame)], lane, bounds),
-        !isFrameInAudibleNote(frame)});
+        isFrameInAudibleNote(frame)});
   };
 
   addPoint(startFrame);
-  for (int frame = startFrame + frameStep; frame < endFrame; frame += frameStep) {
+  for (int frame = startFrame + frameStep; frame < endFrame;
+       frame += frameStep) {
     addPoint(frame);
   }
-
-  if ((endFrame - 1 - startFrame) % frameStep != 0) {
+  if (points.back().frame != endFrame - 1)
     addPoint(endFrame - 1);
-  }
 
+  const float defaultY = valueToY(lane.defaultValue, lane, bounds);
   for (size_t index = 1; index < points.size(); ++index) {
     const auto &prev = points[index - 1];
     const auto &cur = points[index];
-    const bool silentSegment = prev.silent || cur.silent;
-
-    juce::Path fillPath;
-    fillPath.startNewSubPath(prev.x, prev.y);
-    fillPath.lineTo(cur.x, cur.y);
-    fillPath.lineTo(cur.x, static_cast<float>(bounds.getBottom()));
-    fillPath.lineTo(prev.x, static_cast<float>(bounds.getBottom()));
-    fillPath.closeSubPath();
-    g.setColour(lane.colour.withAlpha(silentSegment ? 0.08f : 0.16f));
-    g.fillPath(fillPath);
+    const bool audibleSegment = prev.audible && cur.audible;
 
     juce::Path segmentPath;
     segmentPath.startNewSubPath(prev.x, prev.y);
     segmentPath.lineTo(cur.x, cur.y);
-    g.setColour(lane.colour.withAlpha(silentSegment ? 0.5f : 1.0f));
-    g.strokePath(segmentPath, juce::PathStrokeType(2.0f));
-  }
 
-  const float defaultY = valueToY(lane.defaultValue, lane, bounds);
-  g.setColour(APP_COLOR_TEXT_MUTED.withAlpha(0.25f));
-  g.drawHorizontalLine(static_cast<int>(defaultY), static_cast<float>(bounds.getX()),
-                       static_cast<float>(bounds.getRight()));
+    if (audibleSegment) {
+      juce::Path fillPath(segmentPath);
+      fillPath.lineTo(cur.x, static_cast<float>(bounds.getBottom()));
+      fillPath.lineTo(prev.x, static_cast<float>(bounds.getBottom()));
+      fillPath.closeSubPath();
+      g.setColour(lane.colour.withAlpha(0.16f));
+      g.fillPath(fillPath);
+
+      g.setColour(lane.colour);
+      g.strokePath(segmentPath, juce::PathStrokeType(2.0f));
+
+      g.setColour(APP_COLOR_TEXT_MUTED.withAlpha(0.25f));
+      g.drawHorizontalLine(static_cast<int>(defaultY), prev.x, cur.x);
+    } else {
+      const bool bridgesAudibleNotes = prev.frame >= firstAudibleFrame &&
+                                       cur.frame <= lastAudibleFrame;
+      const bool hasSilentEdit =
+          std::abs(curve[static_cast<size_t>(prev.frame)] -
+                   lane.defaultValue) > 0.001f ||
+          std::abs(curve[static_cast<size_t>(cur.frame)] -
+                   lane.defaultValue) > 0.001f;
+      if (bridgesAudibleNotes || hasSilentEdit) {
+        g.setColour(lane.colour.withAlpha(0.32f));
+        g.strokePath(segmentPath, juce::PathStrokeType(1.0f));
+      }
+    }
+  }
 }
 
 void HNSepLaneComponent::applyGesturePoint(float localX, float localY) {
@@ -760,31 +816,45 @@ void HNSepLaneComponent::commitPendingEdits() {
         std::make_unique<HNSepCurveEditAction>(project, pendingEdits));
   }
 
-  HNSepCurveProcessor::extractNoteCurvesFromMasterForRange(*project,
-                                                           minFrame,
-                                                           maxFrame);
-  markDirtyRange(minFrame, maxFrame);
+  const auto [audibleStart, audibleEnd] =
+      getAudibleOverlapRange(*project, minFrame, maxFrame);
+  const bool hasAudibleEdits = audibleStart < audibleEnd;
+  if (hasAudibleEdits) {
+    HNSepCurveProcessor::extractNoteCurvesFromMasterForRange(*project,
+                                                             audibleStart,
+                                                             audibleEnd);
+    markDirtyRange(audibleStart, audibleEnd);
+  }
   const bool hasShfcEdit = std::any_of(
       pendingEdits.begin(), pendingEdits.end(), [](const CurveEdit &edit) {
         return edit.lane == LaneType::Shfc;
       });
-  if (hasShfcEdit)
-    project->setSvcConditioningDirtyRange(minFrame, maxFrame);
+  if (hasAudibleEdits && hasShfcEdit)
+    project->setSvcConditioningDirtyRange(audibleStart, audibleEnd);
   project->setModified(true);
 
   pendingEdits.clear();
   pendingEditIndexByFrame.clear();
 
-  if (onParamEditFinished)
+  if (hasAudibleEdits && onParamEditFinished)
     onParamEditFinished();
   repaint();
 }
 
-void HNSepLaneComponent::markDirtyRange(int startFrame, int endFrame) const {
+bool HNSepLaneComponent::markDirtyRange(int startFrame, int endFrame) const {
   if (!project || startFrame < 0 || endFrame <= startFrame)
-    return;
+    return false;
 
-  for (auto *note : project->getNotesInRange(startFrame, endFrame))
+  bool markedAny = false;
+  for (auto *note : project->getNotesInRange(startFrame, endFrame)) {
+    if (!note || note->isRest())
+      continue;
     note->markDirty();
+    markedAny = true;
+  }
+  if (!markedAny)
+    return false;
+
   project->setF0DirtyRange(startFrame, endFrame);
+  return true;
 }

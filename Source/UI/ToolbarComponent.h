@@ -79,6 +79,7 @@ public:
     bool isLoopEnabled() const { return loopEnabled; }
 
     // Access to follow/loop buttons for command-driven toggling
+    juce::Button& getHNSepButton() { return hnsepModeButton; }
     juce::Button& getFollowButton() { return followButton; }
     juce::Button& getLoopButton() { return loopButton; }
 

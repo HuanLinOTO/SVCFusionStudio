@@ -95,7 +95,7 @@ private:
   void applyGesturePoint(float localX, float localY);
   void applyValueAtFrame(int frameIndex, float value);
   void commitPendingEdits();
-  void markDirtyRange(int startFrame, int endFrame) const;
+  bool markDirtyRange(int startFrame, int endFrame) const;
 
   Project *project = nullptr;
   PitchUndoManager *undoManager = nullptr;
