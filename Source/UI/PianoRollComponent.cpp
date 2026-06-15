@@ -2364,7 +2364,7 @@ void PianoRollComponent::drawPitchCurves(juce::Graphics &g) {
                  draggedNotes.end());
         if (skipDraggedNoteInStaticLayer && isDraggedNote)
           continue;
-        if (isInteractivePaint && !note.isSelected())
+        if (isInteractivePaint && !isDrawing && !note.isSelected())
           continue;
 
         const bool applyNoteOffset = !(useLiveBasePreview && isDraggedNote);
