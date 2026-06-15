@@ -1433,8 +1433,9 @@ void EditorController::analyzeAudio(
   auto modelPath = PlatformPaths::getModelFile("pc_nsf_hifigan.onnx");
   auto *voc = ensureVocoder();
   const bool vocoderMissing = !voc || (!modelPath.existsAsFile() && !voc->isLoaded());
+  const bool shouldLoadVocoder = voc && modelPath.existsAsFile() && !voc->isLoaded();
   std::future<bool> vocoderLoadFuture;
-  if (voc && modelPath.existsAsFile() && !voc->isLoaded()) {
+  if (shouldLoadVocoder && allowConcurrentModelInference) {
     vocoderLoadFuture = std::async(std::launch::async, [voc, modelPath]() {
       return voc->loadModel(modelPath);
     });
@@ -1578,6 +1579,18 @@ void EditorController::analyzeAudio(
 
   if (vocoderLoadFuture.valid()) {
     if (vocoderLoadFuture.get()) {
+      DBG("Vocoder model loaded successfully: " + modelPath.getFullPathName());
+    } else {
+      juce::MessageManager::callAsync([modelPath]() {
+        juce::AlertWindow::showMessageBoxAsync(
+            juce::AlertWindow::WarningIcon, "Inference failed",
+            "Failed to load vocoder model at:\n" + modelPath.getFullPathName() +
+                "\n\nPlease check your model installation and try again.");
+      });
+      return;
+    }
+  } else if (shouldLoadVocoder) {
+    if (voc->loadModel(modelPath)) {
       DBG("Vocoder model loaded successfully: " + modelPath.getFullPathName());
     } else {
       juce::MessageManager::callAsync([modelPath]() {

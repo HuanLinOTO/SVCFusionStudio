@@ -1170,212 +1170,304 @@ void MainComponent::openProjectFile(const juce::File &file) {
 
     loadedProject->setFilePath(audioFile);
 
-    const juce::String currentAudioSha = SHA256Utils::fileSHA256(audioFile);
-    const juce::String savedAudioSha = loadedProject->getAudioSha256();
-    const bool shaMatched = savedAudioSha.isNotEmpty() &&
-                            savedAudioSha.equalsIgnoreCase(currentAudioSha);
+    isLoadingAudio = true;
+    loadingProgress = 0.0;
+    {
+      const juce::ScopedLock sl(loadingMessageLock);
+      loadingMessage = TR("progress.loading_audio");
+    }
+    toolbar.showProgress(TR("progress.loading_audio"));
+    toolbar.setProgress(0.0f);
 
-    auto proceedWithProject =
-        [this, loadedProject, audioFile, currentAudioSha](bool reanalyze) {
-          if (reanalyze) {
-            loadAudioFile(audioFile);
-            return;
-          }
+    juce::Component::SafePointer<MainComponent> safeThis(this);
+    std::thread([safeThis, loadedProject, audioFile]() {
+      const juce::String currentAudioSha = SHA256Utils::fileSHA256(audioFile);
+      const juce::String savedAudioSha = loadedProject->getAudioSha256();
+      const bool shaMatched = savedAudioSha.isNotEmpty() &&
+                              savedAudioSha.equalsIgnoreCase(currentAudioSha);
 
-          isLoadingAudio = true;
-          loadingProgress = 0.0;
-          {
-            const juce::ScopedLock sl(loadingMessageLock);
-            loadingMessage = TR("progress.loading_audio");
-          }
-          toolbar.showProgress(TR("progress.loading_audio"));
-          toolbar.setProgress(0.0f);
+      juce::MessageManager::callAsync(
+          [safeThis, loadedProject, audioFile, currentAudioSha, shaMatched]() {
+            if (safeThis == nullptr)
+              return;
 
-          juce::Component::SafePointer<MainComponent> safeThis(this);
-          fileManager->loadAudioFileAsync(
-              audioFile,
-              [safeThis](double p, const juce::String &msg) {
-                if (safeThis == nullptr)
-                  return;
-                safeThis->loadingProgress = juce::jlimit(0.0, 1.0, p);
-                const juce::ScopedLock sl(safeThis->loadingMessageLock);
-                safeThis->loadingMessage = msg;
-              },
-              [safeThis, loadedProject, currentAudioSha](
-                  juce::AudioBuffer<float> &&buffer, int sampleRate,
-                  const juce::File &loadedFile) mutable {
-                if (safeThis == nullptr)
-                  return;
+            auto proceedWithProject =
+                [safeThis, loadedProject, audioFile, currentAudioSha](
+                    bool reanalyze) {
+                  if (safeThis == nullptr)
+                    return;
 
-                auto projectToUse = std::make_unique<Project>(*loadedProject);
-                projectToUse->setFilePath(loadedFile);
-                projectToUse->setAudioSha256(currentAudioSha);
-
-                auto &audioData = projectToUse->getAudioData();
-                audioData.waveform = std::move(buffer);
-                audioData.sampleRate = sampleRate;
-                audioData.originalWaveform.makeCopyOf(audioData.waveform);
-
-                // Recompute mel only; keep pitch/note edits from project file.
-                if (audioData.waveform.getNumSamples() > 0) {
-                  const float *samples = audioData.waveform.getReadPointer(0);
-                  const int numSamples = audioData.waveform.getNumSamples();
-                  MelSpectrogram melComputer(audioData.sampleRate, N_FFT,
-                                             HOP_SIZE, NUM_MELS, FMIN, FMAX);
-                  audioData.melSpectrogram =
-                      melComputer.compute(samples, numSamples);
-                }
-
-                if (audioData.voicedMask.empty() && !audioData.f0.empty()) {
-                  audioData.voicedMask.resize(audioData.f0.size(), false);
-                  for (size_t i = 0; i < audioData.f0.size(); ++i)
-                    audioData.voicedMask[i] = audioData.f0[i] > 0.0f;
-                }
-
-                if (audioData.basePitch.empty() || audioData.deltaPitch.empty()) {
-                  if (!audioData.f0.empty()) {
-                    PitchCurveProcessor::rebuildCurvesFromSource(*projectToUse,
-                                                                 audioData.f0);
-                  } else if (!audioData.melSpectrogram.empty()) {
-                    // Legacy project fallback: rebuild base from notes and use
-                    // zero delta so reopening can still synthesize edited notes.
-                    PitchCurveProcessor::rebuildBaseFromNotes(*projectToUse);
-                  }
-                } else {
-                  PitchCurveProcessor::composeF0InPlace(*projectToUse,
-                                                        /*applyUvMask=*/false);
-                }
-
-                if (safeThis->undoManager)
-                  safeThis->undoManager->clear();
-
-                if (safeThis->editorController)
-                  safeThis->editorController->setProject(std::move(projectToUse));
-
-                auto *project = safeThis->getProject();
-                if (!project) {
-                  safeThis->isLoadingAudio = false;
-                  return;
-                }
-
-                safeThis->pianoRoll.setProject(project);
-                safeThis->pianoRollView.setProject(project);
-                safeThis->parameterPanel.setProject(project);
-                safeThis->toolbar.setTotalTime(project->getAudioData().getDuration());
-                safeThis->toolbar.setLoopEnabled(project->getLoopRange().enabled);
-
-                auto &activeAudioData = project->getAudioData();
-                if (safeThis->isPluginMode()) {
-                  // plugin mode: no audio engine
-                } else if (auto *engine = safeThis->editorController
-                                               ? safeThis->editorController->getAudioEngine()
-                                               : nullptr) {
-                  try {
-                    engine->loadWaveform(activeAudioData.waveform,
-                                         activeAudioData.sampleRate);
-                    const auto &loopRange = project->getLoopRange();
-                    if (loopRange.enabled)
-                      engine->setLoopRange(loopRange.startSeconds,
-                                           loopRange.endSeconds);
-                    engine->setLoopEnabled(loopRange.enabled);
-                    engine->setVolumeDb(project->getVolume());
-                  } catch (...) {
-                    DBG("MainComponent::openProjectFile - EXCEPTION in loadWaveform!");
-                  }
-                }
-
-                if (auto *vocoder = safeThis->editorController
-                                        ? safeThis->editorController->getVocoder()
-                                        : nullptr;
-                    vocoder && !vocoder->isLoaded()) {
-                  auto modelPath = PlatformPaths::getModelFile("pc_nsf_hifigan.onnx");
-                  if (modelPath.existsAsFile()) {
-                    if (!vocoder->loadModel(modelPath)) {
-                      juce::AlertWindow::showMessageBoxAsync(
-                          juce::AlertWindow::WarningIcon, "Inference failed",
-                          "Failed to load vocoder model at:\n" +
-                              modelPath.getFullPathName() +
-                              "\n\nPlease check your model installation and try again.");
-                      safeThis->isLoadingAudio = false;
-                      return;
-                    }
-                  } else {
-                    juce::AlertWindow::showMessageBoxAsync(
-                        juce::AlertWindow::WarningIcon, "Missing model file",
-                        "pc_nsf_hifigan.onnx was not found at:\n" +
-                            modelPath.getFullPathName() +
-                            "\n\nPlease install the required model files and try again.");
+                  if (reanalyze) {
+                    safeThis->toolbar.hideProgress();
                     safeThis->isLoadingAudio = false;
+                    safeThis->loadAudioFile(audioFile);
                     return;
                   }
-                }
 
-                // Skip full re-analysis; run vocoder from loaded edits.
-                const int totalFrames = std::max(
-                    static_cast<int>(activeAudioData.melSpectrogram.size()),
-                    std::max(static_cast<int>(activeAudioData.f0.size()),
-                             static_cast<int>(activeAudioData.basePitch.size())));
-                if (totalFrames > 0) {
-                  project->setF0DirtyRange(0, totalFrames);
+                  if (!safeThis->fileManager) {
+                    safeThis->isLoadingAudio = false;
+                    safeThis->toolbar.hideProgress();
+                    return;
+                  }
 
-                  safeThis->toolbar.showProgress(TR("progress.synthesizing"));
-                  safeThis->toolbar.setProgress(-1.0f);
-                  safeThis->toolbar.setEnabled(false);
+                  safeThis->loadingProgress = 0.0;
+                  {
+                    const juce::ScopedLock sl(safeThis->loadingMessageLock);
+                    safeThis->loadingMessage = TR("progress.loading_audio");
+                  }
+                  safeThis->toolbar.showProgress(TR("progress.loading_audio"));
+                  safeThis->toolbar.setProgress(0.0f);
 
-                  safeThis->editorController->resynthesizeIncrementalAsync(
-                      *project,
-                      [safeThis](const juce::String &message) {
+                  safeThis->fileManager->loadAudioFileAsync(
+                      audioFile,
+                      [safeThis](double p, const juce::String &msg) {
                         if (safeThis == nullptr)
                           return;
-                        safeThis->toolbar.showProgress(message);
+                        safeThis->loadingProgress = juce::jlimit(0.0, 1.0, p);
+                        const juce::ScopedLock sl(safeThis->loadingMessageLock);
+                        safeThis->loadingMessage = msg;
                       },
-                      [safeThis](bool success) {
+                      [safeThis, loadedProject, currentAudioSha](
+                          juce::AudioBuffer<float> &&buffer, int sampleRate,
+                          const juce::File &loadedFile) mutable {
                         if (safeThis == nullptr)
                           return;
 
-                        safeThis->toolbar.setEnabled(true);
-                        safeThis->toolbar.hideProgress();
-                        safeThis->isLoadingAudio = false;
-                        safeThis->repaint();
-
-                        if (!success) {
-                          StyledMessageBox::show(
-                              safeThis.getComponent(), "Open warning",
-                              "Project opened, but applying saved pitch edits failed.\n"
-                              "You can click Re-analyze to rebuild pitch data.",
-                              StyledMessageBox::WarningIcon);
-                          return;
+                        safeThis->loadingProgress = 0.24;
+                        {
+                          const juce::ScopedLock sl(safeThis->loadingMessageLock);
+                          safeThis->loadingMessage = TR("progress.analyzing_audio");
                         }
 
-                        if (safeThis->isPluginMode())
-                          safeThis->notifyProjectDataChanged();
-                      },
-                      safeThis->pendingIncrementalResynth,
-                      safeThis->isPluginMode());
-                  return;
-                }
+                        std::thread(
+                            [safeThis, loadedProject, currentAudioSha,
+                             buffer = std::move(buffer), sampleRate,
+                             loadedFile]() mutable {
+                              auto projectToUse =
+                                  std::make_unique<Project>(*loadedProject);
+                              projectToUse->setFilePath(loadedFile);
+                              projectToUse->setAudioSha256(currentAudioSha);
 
-                safeThis->repaint();
-                safeThis->isLoadingAudio = false;
-                if (safeThis->isPluginMode())
-                  safeThis->notifyProjectDataChanged();
-              });
-        };
+                              auto &audioData = projectToUse->getAudioData();
+                              audioData.waveform = std::move(buffer);
+                              audioData.sampleRate = sampleRate;
+                              audioData.originalWaveform.makeCopyOf(
+                                  audioData.waveform);
 
-    if (!shaMatched) {
-      juce::AlertWindow::showOkCancelBox(
-          juce::AlertWindow::WarningIcon, "Audio file changed",
-          "The saved audio hash does not match current file:\n" +
-              audioFile.getFullPathName() +
-              "\n\nDo you want to re-analyze this audio?",
-          "Re-analyze", "Use Saved Edits", this,
-          juce::ModalCallbackFunction::create([proceedWithProject](int result) {
-            proceedWithProject(result != 0);
-          }));
-      return;
-    }
+                              // Recompute mel only; keep pitch/note edits from
+                              // project file. This can be expensive for long
+                              // audio, so keep it off the message thread.
+                              if (audioData.waveform.getNumSamples() > 0) {
+                                const float *samples =
+                                    audioData.waveform.getReadPointer(0);
+                                const int numSamples =
+                                    audioData.waveform.getNumSamples();
+                                MelSpectrogram melComputer(
+                                    audioData.sampleRate, N_FFT, HOP_SIZE,
+                                    NUM_MELS, FMIN, FMAX);
+                                audioData.melSpectrogram =
+                                    melComputer.compute(samples, numSamples);
+                              }
 
-    proceedWithProject(false);
+                              if (audioData.voicedMask.empty() &&
+                                  !audioData.f0.empty()) {
+                                audioData.voicedMask.resize(audioData.f0.size(),
+                                                            false);
+                                for (size_t i = 0; i < audioData.f0.size(); ++i)
+                                  audioData.voicedMask[i] =
+                                      audioData.f0[i] > 0.0f;
+                              }
+
+                              if (audioData.basePitch.empty() ||
+                                  audioData.deltaPitch.empty()) {
+                                if (!audioData.f0.empty()) {
+                                  PitchCurveProcessor::rebuildCurvesFromSource(
+                                      *projectToUse, audioData.f0);
+                                } else if (!audioData.melSpectrogram.empty()) {
+                                  // Legacy project fallback: rebuild base from
+                                  // notes and use zero delta so reopening can
+                                  // still synthesize edited notes.
+                                  PitchCurveProcessor::rebuildBaseFromNotes(
+                                      *projectToUse);
+                                }
+                              } else {
+                                PitchCurveProcessor::composeF0InPlace(
+                                    *projectToUse, /*applyUvMask=*/false);
+                              }
+
+                              juce::MessageManager::callAsync(
+                                  [safeThis,
+                                   projectToUse = std::move(projectToUse)]()
+                                      mutable {
+                                    if (safeThis == nullptr)
+                                      return;
+
+                                    if (safeThis->undoManager)
+                                      safeThis->undoManager->clear();
+
+                                    if (safeThis->editorController)
+                                      safeThis->editorController->setProject(
+                                          std::move(projectToUse));
+
+                                    auto *project = safeThis->getProject();
+                                    if (!project) {
+                                      safeThis->isLoadingAudio = false;
+                                      return;
+                                    }
+
+                                    safeThis->pianoRoll.setProject(project);
+                                    safeThis->pianoRollView.setProject(project);
+                                    safeThis->parameterPanel.setProject(project);
+                                    safeThis->toolbar.setTotalTime(
+                                        project->getAudioData().getDuration());
+                                    safeThis->toolbar.setLoopEnabled(
+                                        project->getLoopRange().enabled);
+
+                                    auto &activeAudioData =
+                                        project->getAudioData();
+                                    if (safeThis->isPluginMode()) {
+                                      // plugin mode: no audio engine
+                                    } else if (auto *engine =
+                                                   safeThis->editorController
+                                                       ? safeThis
+                                                             ->editorController
+                                                             ->getAudioEngine()
+                                                       : nullptr) {
+                                      try {
+                                        engine->loadWaveform(
+                                            activeAudioData.waveform,
+                                            activeAudioData.sampleRate);
+                                        const auto &loopRange =
+                                            project->getLoopRange();
+                                        if (loopRange.enabled)
+                                          engine->setLoopRange(
+                                              loopRange.startSeconds,
+                                              loopRange.endSeconds);
+                                        engine->setLoopEnabled(loopRange.enabled);
+                                        engine->setVolumeDb(project->getVolume());
+                                      } catch (...) {
+                                        DBG("MainComponent::openProjectFile - EXCEPTION in loadWaveform!");
+                                      }
+                                    }
+
+                                    if (auto *vocoder =
+                                            safeThis->editorController
+                                                ? safeThis->editorController
+                                                      ->getVocoder()
+                                                : nullptr;
+                                        vocoder && !vocoder->isLoaded()) {
+                                      auto modelPath = PlatformPaths::getModelFile(
+                                          "pc_nsf_hifigan.onnx");
+                                      if (modelPath.existsAsFile()) {
+                                        if (!vocoder->loadModel(modelPath)) {
+                                          juce::AlertWindow::showMessageBoxAsync(
+                                              juce::AlertWindow::WarningIcon,
+                                              "Inference failed",
+                                              "Failed to load vocoder model at:\n" +
+                                                  modelPath.getFullPathName() +
+                                                  "\n\nPlease check your model installation and try again.");
+                                          safeThis->isLoadingAudio = false;
+                                          return;
+                                        }
+                                      } else {
+                                        juce::AlertWindow::showMessageBoxAsync(
+                                            juce::AlertWindow::WarningIcon,
+                                            "Missing model file",
+                                            "pc_nsf_hifigan.onnx was not found at:\n" +
+                                                modelPath.getFullPathName() +
+                                                "\n\nPlease install the required model files and try again.");
+                                        safeThis->isLoadingAudio = false;
+                                        return;
+                                      }
+                                    }
+
+                                    // Skip full re-analysis; run vocoder from
+                                    // loaded edits.
+                                    const int totalFrames = std::max(
+                                        static_cast<int>(activeAudioData
+                                                             .melSpectrogram
+                                                             .size()),
+                                        std::max(static_cast<int>(
+                                                     activeAudioData.f0.size()),
+                                                 static_cast<int>(
+                                                     activeAudioData.basePitch
+                                                         .size())));
+                                    if (totalFrames > 0) {
+                                      project->setF0DirtyRange(0, totalFrames);
+
+                                      safeThis->toolbar.showProgress(
+                                          TR("progress.synthesizing"));
+                                      safeThis->toolbar.setProgress(-1.0f);
+                                      safeThis->toolbar.setEnabled(false);
+
+                                      safeThis->editorController
+                                          ->resynthesizeIncrementalAsync(
+                                              *project,
+                                              [safeThis](
+                                                  const juce::String &message) {
+                                                if (safeThis == nullptr)
+                                                  return;
+                                                safeThis->toolbar.showProgress(
+                                                    message);
+                                              },
+                                              [safeThis](bool success) {
+                                                if (safeThis == nullptr)
+                                                  return;
+
+                                                safeThis->toolbar.setEnabled(
+                                                    true);
+                                                safeThis->toolbar.hideProgress();
+                                                safeThis->isLoadingAudio = false;
+                                                safeThis->repaint();
+
+                                                if (!success) {
+                                                  StyledMessageBox::show(
+                                                      safeThis.getComponent(),
+                                                      "Open warning",
+                                                      "Project opened, but applying saved pitch edits failed.\n"
+                                                      "You can click Re-analyze to rebuild pitch data.",
+                                                      StyledMessageBox
+                                                          ::WarningIcon);
+                                                  return;
+                                                }
+
+                                                if (safeThis->isPluginMode())
+                                                  safeThis
+                                                      ->notifyProjectDataChanged();
+                                              },
+                                              safeThis
+                                                  ->pendingIncrementalResynth,
+                                              safeThis->isPluginMode());
+                                      return;
+                                    }
+
+                                    safeThis->repaint();
+                                    safeThis->isLoadingAudio = false;
+                                    if (safeThis->isPluginMode())
+                                      safeThis->notifyProjectDataChanged();
+                                  });
+                            })
+                            .detach();
+                      });
+                };
+
+            if (!shaMatched) {
+              juce::AlertWindow::showOkCancelBox(
+                  juce::AlertWindow::WarningIcon, "Audio file changed",
+                  "The saved audio hash does not match current file:\n" +
+                      audioFile.getFullPathName() +
+                      "\n\nDo you want to re-analyze this audio?",
+                  "Re-analyze", "Use Saved Edits", safeThis.getComponent(),
+                  juce::ModalCallbackFunction::create(
+                      [proceedWithProject](int result) {
+                        proceedWithProject(result != 0);
+                      }));
+              return;
+            }
+
+            proceedWithProject(false);
+          });
+    }).detach();
   };
 
   const juce::File audioFile = loadedProject->getFilePath();
