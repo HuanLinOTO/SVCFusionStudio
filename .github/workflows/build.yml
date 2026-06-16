@@ -77,6 +77,15 @@ jobs:
           test -f .ci-model-cache/extracted/hnsep/hnsep_VR_convstft.onnx
           test -f .ci-model-cache/extracted/hnsep/split/hnsep_core.onnx
 
+      - name: Upload Model Cache Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-model-cache
+          path: .ci-model-cache/extracted/
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
   # ===========================================
   # Windows CPU Build
   # ===========================================
@@ -150,12 +159,10 @@ jobs:
           key: windows-onnxruntime-${{ env.ONNXRUNTIME_VERSION }}-cpu
 
       - name: Restore Model Cache
-        uses: actions/cache/restore@v4
+        uses: actions/download-artifact@v4
         with:
+          name: ci-model-cache
           path: .ci-model-cache/extracted
-          key: ${{ env.MODEL_CACHE_KEY }}
-          fail-on-cache-miss: true
-          enableCrossOsArchive: true
 
       - name: Prepare Build Models (CPU fp32 slim)
         shell: pwsh
@@ -369,12 +376,10 @@ jobs:
           key: windows-onnxruntime-${{ env.ONNXRUNTIME_VERSION }}-directml-${{ env.DIRECTML_VERSION }}
 
       - name: Restore Model Cache
-        uses: actions/cache/restore@v4
+        uses: actions/download-artifact@v4
         with:
+          name: ci-model-cache
           path: .ci-model-cache/extracted
-          key: ${{ env.MODEL_CACHE_KEY }}
-          fail-on-cache-miss: true
-          enableCrossOsArchive: true
 
       - name: Download DirectML Runtime
         shell: pwsh
@@ -612,12 +617,10 @@ jobs:
           key: windows-onnxruntime-${{ env.ONNXRUNTIME_VERSION }}-cuda
 
       - name: Restore Model Cache
-        uses: actions/cache/restore@v4
+        uses: actions/download-artifact@v4
         with:
+          name: ci-model-cache
           path: .ci-model-cache/extracted
-          key: ${{ env.MODEL_CACHE_KEY }}
-          fail-on-cache-miss: true
-          enableCrossOsArchive: true
 
       - name: Prepare Build Models (CUDA fp32 slim)
         shell: pwsh
@@ -821,12 +824,10 @@ jobs:
           key: macos-onnxruntime-${{ env.ONNXRUNTIME_VERSION }}-arm64
 
       - name: Restore Model Cache
-        uses: actions/cache/restore@v4
+        uses: actions/download-artifact@v4
         with:
+          name: ci-model-cache
           path: .ci-model-cache/extracted
-          key: ${{ env.MODEL_CACHE_KEY }}
-          fail-on-cache-miss: true
-          enableCrossOsArchive: true
 
       - name: Prepare Runtime Models (CPU fp32 slim)
         shell: bash
@@ -1078,12 +1079,10 @@ jobs:
           key: linux-onnxruntime-${{ env.ONNXRUNTIME_VERSION }}-cpu
 
       - name: Restore Model Cache
-        uses: actions/cache/restore@v4
+        uses: actions/download-artifact@v4
         with:
+          name: ci-model-cache
           path: .ci-model-cache/extracted
-          key: ${{ env.MODEL_CACHE_KEY }}
-          fail-on-cache-miss: true
-          enableCrossOsArchive: true
 
       - name: Install Dependencies
         run: |
@@ -1293,12 +1292,10 @@ jobs:
           key: linux-onnxruntime-${{ env.ONNXRUNTIME_VERSION }}-gpu
 
       - name: Restore Model Cache
-        uses: actions/cache/restore@v4
+        uses: actions/download-artifact@v4
         with:
+          name: ci-model-cache
           path: .ci-model-cache/extracted
-          key: ${{ env.MODEL_CACHE_KEY }}
-          fail-on-cache-miss: true
-          enableCrossOsArchive: true
 
       - name: Install Dependencies
         run: |
