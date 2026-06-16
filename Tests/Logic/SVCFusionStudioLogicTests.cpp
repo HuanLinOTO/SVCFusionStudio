@@ -302,6 +302,7 @@ void maybeRunRVCIntegrationTest() {
   const auto modelDirEnv = getEnvValue("SVCFUSIONSTUDIO_RVC_TEST_MODEL_DIR");
   const auto contentVecEnv = getEnvValue("SVCFUSIONSTUDIO_RVC_TEST_CONTENTVEC");
   const auto outEnv = getEnvValue("SVCFUSIONSTUDIO_RVC_TEST_OUTPUT");
+  const auto secondsEnv = getEnvValue("SVCFUSIONSTUDIO_RVC_TEST_SECONDS");
   if (modelDirEnv.empty() || contentVecEnv.empty() || outEnv.empty())
     return;
 
@@ -315,7 +316,10 @@ void maybeRunRVCIntegrationTest() {
          "RVC model directory should load");
 
   constexpr int sampleRate = SAMPLE_RATE;
-  const int numSamples = sampleRate / 2;
+  const double testSeconds = secondsEnv.empty()
+      ? 0.5
+      : std::max(0.1, std::stod(secondsEnv));
+  const int numSamples = static_cast<int>(std::round(sampleRate * testSeconds));
   std::vector<float> audio(static_cast<size_t>(numSamples), 0.0f);
   for (int i = 0; i < numSamples; ++i) {
     const double phase = 2.0 * 3.14159265358979323846 * 220.0

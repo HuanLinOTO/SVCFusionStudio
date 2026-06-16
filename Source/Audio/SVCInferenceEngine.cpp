@@ -994,6 +994,36 @@ int64_t rvcF0ToCoarse(float f0)
     return static_cast<int64_t>(std::llround(mel));
 }
 
+float rvcOverlapWeight(int sample, int totalSamples, int overlapSamples,
+                       bool hasPreviousChunk, bool hasNextChunk)
+{
+    float weight = 1.0f;
+    if (overlapSamples <= 1 || totalSamples <= 0)
+        return weight;
+
+    if (hasPreviousChunk && sample < overlapSamples)
+    {
+        const float pos = static_cast<float>(sample) / static_cast<float>(overlapSamples - 1);
+        weight *= 0.5f - 0.5f * std::cos(juce::MathConstants<float>::pi * pos);
+    }
+
+    if (hasNextChunk && sample >= totalSamples - overlapSamples)
+    {
+        const int local = sample - (totalSamples - overlapSamples);
+        const float pos = static_cast<float>(local) / static_cast<float>(overlapSamples - 1);
+        weight *= 0.5f + 0.5f * std::cos(juce::MathConstants<float>::pi * pos);
+    }
+
+    return weight;
+}
+
+float rvcDeterministicNoise(int channel, int globalFrame)
+{
+    const double index = static_cast<double>(channel) * 1000003.0
+                       + static_cast<double>(globalFrame) + 1.0;
+    return static_cast<float>(std::sin(0.013 * index));
+}
+
 } // namespace
 
 // =======================================================================
@@ -1123,11 +1153,15 @@ std::vector<float> SVCInferenceEngine::inferRVC(
     for (int t = 0; t < rvcFrames; ++t)
         pitchData[static_cast<size_t>(t)] = rvcF0ToCoarse(f0Data[static_cast<size_t>(t)]);
 
-    std::vector<float> modelAudio;
-    modelAudio.reserve(static_cast<size_t>(rvcFrames * blockSize));
+    const int overlapFrames = chunkFrames > 2 ? std::min(48, chunkFrames / 2) : 0;
+    const int hopFrames = std::max(1, chunkFrames - overlapFrames);
+    const int overlapSamples = overlapFrames * blockSize;
+    const int modelAudioSamples = std::max(1, rvcFrames * blockSize);
+    std::vector<float> modelAudio(static_cast<size_t>(modelAudioSamples), 0.0f);
+    std::vector<float> modelAudioWeight(static_cast<size_t>(modelAudioSamples), 0.0f);
     auto memInfo = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
 
-    for (int start = 0, chunkIndex = 0; start < rvcFrames; start += chunkFrames, ++chunkIndex)
+    for (int start = 0; start < rvcFrames; start += hopFrames)
     {
         const int actualFrames = std::min(chunkFrames, rvcFrames - start);
         std::vector<float> phoneData(static_cast<size_t>(chunkFrames) * featureDim, 0.0f);
@@ -1147,8 +1181,15 @@ std::vector<float> SVCInferenceEngine::inferRVC(
         }
 
         std::vector<float> noiseData(static_cast<size_t>(interChannels) * chunkFrames);
-        for (size_t i = 0; i < noiseData.size(); ++i)
-            noiseData[i] = static_cast<float>(std::sin(0.013 * static_cast<double>(i + 1 + chunkIndex * 100000)));
+        for (int c = 0; c < interChannels; ++c)
+        {
+            for (int t = 0; t < chunkFrames; ++t)
+            {
+                const int globalFrame = std::min(start + t, rvcFrames - 1);
+                noiseData[static_cast<size_t>(c) * chunkFrames + static_cast<size_t>(t)] =
+                    rvcDeterministicNoise(c, globalFrame);
+            }
+        }
 
         std::vector<int64_t> phoneShape = {1, chunkFrames, featureDim};
         std::vector<int64_t> lenShape = {1};
@@ -1182,13 +1223,36 @@ std::vector<float> SVCInferenceEngine::inferRVC(
             for (auto d : outShape) audioLen *= static_cast<int>(d);
             const float* outData = outputs[0].GetTensorData<float>();
             const int keep = std::min(actualFrames * blockSize, audioLen);
-            modelAudio.insert(modelAudio.end(), outData, outData + keep);
+            const bool hasPreviousChunk = start > 0;
+            const bool hasNextChunk = start + actualFrames < rvcFrames;
+            const int chunkOffset = start * blockSize;
+            for (int i = 0; i < keep; ++i)
+            {
+                const int dst = chunkOffset + i;
+                if (dst < 0 || dst >= modelAudioSamples)
+                    continue;
+                const float w = rvcOverlapWeight(
+                    i,
+                    keep,
+                    std::min(overlapSamples, keep),
+                    hasPreviousChunk,
+                    hasNextChunk);
+                modelAudio[static_cast<size_t>(dst)] += outData[i] * w;
+                modelAudioWeight[static_cast<size_t>(dst)] += w;
+            }
         }
         catch (const Ort::Exception& e)
         {
             LOG("SVCInferenceEngine: RVC chunk failed: " + juce::String(e.what()));
             return {};
         }
+    }
+
+    for (int i = 0; i < modelAudioSamples; ++i)
+    {
+        const float w = modelAudioWeight[static_cast<size_t>(i)];
+        if (w > 1.0e-6f)
+            modelAudio[static_cast<size_t>(i)] /= w;
     }
 
     auto outAudio = resampleLinearVector(modelAudio, modelSR, sampleRate);
