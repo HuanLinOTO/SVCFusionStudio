@@ -267,6 +267,8 @@ void EditorController::runFullSVCConversionAsync(SVCProgressCallback onProgress,
 
   auto& cfg = svcModel->getConfig();
   bool isSoVITS = (cfg.modelTypeIndex == 2);
+  bool isRVC = (cfg.modelTypeIndex == 5);
+  bool isDirectAudioSVC = isSoVITS || isRVC;
   // ── End of project data copying ──
 
   svcConversionThread = std::thread([this, myGen, onProgress, onComplete,
@@ -275,9 +277,9 @@ void EditorController::runFullSVCConversionAsync(SVCProgressCallback onProgress,
                                      adjustedF0 = std::move(adjustedF0),
                                      f0ForSVC = std::move(f0ForSVC),
                                      sampleRate, totalFrames, hopSize,
-                                     totalSamples, pitchOffsetPreSVC,
-                                     hadExistingHNSepBases, voc,
-                                     isSoVITS]() {
+                                      totalSamples, pitchOffsetPreSVC,
+                                      hadExistingHNSepBases, voc,
+                                      isSoVITS, isRVC, isDirectAudioSVC]() {
     const float* origPtr = localOrig.getReadPointer(0);
 
     if (cancelSVCFlag.load()) {
@@ -357,6 +359,13 @@ void EditorController::runFullSVCConversionAsync(SVCProgressCallback onProgress,
             segAudio = svcEngine->inferSoVITS(
                 *svcModel, origPtr + seg.startSample, seg.numSamples,
                 sampleRate, segF0, svcParams);
+          } else if (isRVC) {
+            std::vector<float> segF0(adjustedF0.begin() + f0Start,
+                                     adjustedF0.begin() + f0End);
+
+            segAudio = svcEngine->inferRVC(
+                *svcModel, origPtr + seg.startSample, seg.numSamples,
+                sampleRate, segF0, svcParams);
           } else {
             // Slice F0 for SVC
             std::vector<float> segF0SVC(f0ForSVC.begin() + f0Start,
@@ -430,18 +439,21 @@ void EditorController::runFullSVCConversionAsync(SVCProgressCallback onProgress,
 
     // ── Fallback: process entire audio at once (short audio or slicer returned 0) ──
     if (!shouldSlice) {
-      if (isSoVITS) {
-        finalAudio = svcEngine->inferSoVITS(
-            *svcModel, origPtr, totalSamples, sampleRate, adjustedF0, svcParams);
+      if (isDirectAudioSVC) {
+        finalAudio = isSoVITS
+            ? svcEngine->inferSoVITS(
+                *svcModel, origPtr, totalSamples, sampleRate, adjustedF0, svcParams)
+            : svcEngine->inferRVC(
+                *svcModel, origPtr, totalSamples, sampleRate, adjustedF0, svcParams);
 
         if (cancelSVCFlag.load() || finalAudio.empty()) {
-          if (finalAudio.empty()) LOG("EditorController: SoVITS inference failed");
+          if (finalAudio.empty()) LOG("EditorController: direct-audio SVC inference failed");
           isSVCConverting = false;
           if (onComplete) juce::MessageManager::callAsync([onComplete]() { onComplete(false); });
           return;
         }
 
-        LOG("EditorController: SoVITS inference OK -- " + juce::String(finalAudio.size()) + " samples");
+        LOG("EditorController: direct-audio SVC inference OK -- " + juce::String(finalAudio.size()) + " samples");
       }
       else {
         auto svcMel = svcEngine->infer(
@@ -546,16 +558,16 @@ void EditorController::runFullSVCConversionAsync(SVCProgressCallback onProgress,
       blendedAudio[i] = blendMask[i] * svc + (1.f - blendMask[i]) * orig;
     }
 
-    // For SoVITS: recompute mel from blended SVC waveform so that subsequent
+    // For direct-audio SVC models: recompute mel from blended waveform so that subsequent
     // stretch/pitch-edit operations (which read audioData.melSpectrogram) use
     // SoVITS-derived mel through vocoder, preserving SoVITS timbre.
     // SoVITS produces audio directly (not mel), so we must analyze mel here.
     std::vector<std::vector<float>> sovitsMel;
-    if (isSoVITS && !blendedAudio.empty()) {
+    if (isDirectAudioSVC && !blendedAudio.empty()) {
       MelSpectrogram melComp(sampleRate, N_FFT, HOP_SIZE, NUM_MELS, FMIN, FMAX);
       sovitsMel = melComp.compute(blendedAudio.data(),
                                   static_cast<int>(blendedAudio.size()));
-      LOG("EditorController: SoVITS mel recomputed from blended waveform [" +
+      LOG("EditorController: direct-audio SVC mel recomputed from blended waveform [" +
           juce::String(sovitsMel.size()) + " frames]");
     }
 
@@ -591,7 +603,7 @@ void EditorController::runFullSVCConversionAsync(SVCProgressCallback onProgress,
     // Check generation to discard stale results (project may have been replaced)
     juce::MessageManager::callAsync([this, myGen,
                                      blendedAudio = std::move(blendedAudio),
-                                     writeLen, onComplete, isSoVITS, totalFrames,
+                                      writeLen, onComplete, isDirectAudioSVC, totalFrames,
                                      collectedSegMels = std::move(collectedSegMels),
                                       fullSvcMel = std::move(fullSvcMel),
                                       anySegmentFailed,
@@ -655,7 +667,7 @@ void EditorController::runFullSVCConversionAsync(SVCProgressCallback onProgress,
 
       // ── Store SVC mel in audioData.melSpectrogram so that subsequent
       //    stretch / pitch edits use SVC mel through vocoder (no re-inference) ──
-      if (isSoVITS) {
+      if (isDirectAudioSVC) {
         audioData.melFromSVC = false;
         // SoVITS produces audio directly (no mel), so we recomputed mel from
         // the blended SoVITS waveform in the worker thread.  Store it so that
@@ -665,7 +677,7 @@ void EditorController::runFullSVCConversionAsync(SVCProgressCallback onProgress,
           int copyLen = std::min(static_cast<int>(sovitsMel.size()), melSize);
           for (int i = 0; i < copyLen; ++i)
             audioData.melSpectrogram[i] = sovitsMel[i];
-          LOG("EditorController: Stored SoVITS-derived mel [" + juce::String(copyLen) + " frames]");
+          LOG("EditorController: Stored direct-audio SVC-derived mel [" + juce::String(copyLen) + " frames]");
         }
         // melFromSVC stays false for SoVITS — the mel is analysis-derived,
         // not direct SVC output; finishStretchDrag will recompute from waveform.

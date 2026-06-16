@@ -18,6 +18,7 @@
  *  2 = So-VITS-SVC     (sovits.onnx)
  *  3 = DDSP-SVC 6.1   (encoder.onnx + velocity.onnx)
  *  4 = DDSP-SVC 6.3   (encoder.onnx + velocity.onnx)
+ *  5 = RVC            (rvc.onnx + rvc_index.onnx)
  */
 class SVCModelSession
 {
@@ -37,6 +38,14 @@ public:
         juce::StringArray speakerNames;
         juce::String velocityTType;    // "int64", "float32", or "none"
         juce::Image avatar;            // optional avatar image from avatar.png
+        int rvcIfF0 = 1;
+        int rvcFeatureDim = 768;
+        int rvcInterChannels = 192;
+        int rvcOnnxFrames = 120;
+        int rvcIndexTopK = 8;
+        float rvcIndexRate = 0.75f;
+        float rvcProtect = 0.33f;
+        bool rvcHasIndex = false;
     };
 
     SVCModelSession();
@@ -65,7 +74,7 @@ public:
     const ModelConfig& getConfig() const { return config; }
 
     /** Check if this model type uses encoder+velocity (vs. single sovits.onnx). */
-    bool hasEncoderVelocity() const { return config.modelTypeIndex != 2; }
+    bool hasEncoderVelocity() const { return config.modelTypeIndex != 2 && config.modelTypeIndex != 5; }
 
     /** Check if velocity input 't' is int64 (true) or float32 (false). */
     bool isVelocityTInt64() const { return config.velocityTType == "int64"; }
@@ -74,6 +83,8 @@ public:
     Ort::Session* getEncoderSession() const { return encoderSession.get(); }
     Ort::Session* getVelocitySession() const { return velocitySession.get(); }
     Ort::Session* getSovitsSession() const { return sovitsSession.get(); }
+    Ort::Session* getRVCSession() const { return rvcSession.get(); }
+    Ort::Session* getRVCIndexSession() const { return rvcIndexSession.get(); }
 #endif
 
 private:
@@ -96,6 +107,8 @@ private:
     std::unique_ptr<Ort::Session> encoderSession;
     std::unique_ptr<Ort::Session> velocitySession;
     std::unique_ptr<Ort::Session> sovitsSession;
+    std::unique_ptr<Ort::Session> rvcSession;
+    std::unique_ptr<Ort::Session> rvcIndexSession;
 
     Ort::SessionOptions createSessionOptions(const juce::String& device, int deviceId);
 #endif

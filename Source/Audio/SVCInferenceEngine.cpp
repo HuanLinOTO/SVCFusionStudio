@@ -791,10 +791,10 @@ std::vector<std::vector<float>> SVCInferenceEngine::infer(
     auto& cfg = model.getConfig();
     int modelType = cfg.modelTypeIndex;
 
-    // SoVITS (type=2) should use inferSoVITS(), not infer()
-    if (modelType == 2)
+    // Direct-audio models should use their dedicated inference entry points.
+    if (modelType == 2 || modelType == 5)
     {
-        LOG("SVCInferenceEngine: infer() called with SoVITS model (type=2) — use inferSoVITS() instead");
+        LOG("SVCInferenceEngine: infer() called with direct-audio SVC model — use inferSoVITS()/inferRVC() instead");
         return {};
     }
 
@@ -911,6 +911,298 @@ std::vector<std::vector<float>> SVCInferenceEngine::infer(
 // =======================================================================
 // So-VITS-SVC Inference (outputs audio directly)
 // =======================================================================
+
+namespace {
+
+std::vector<float> resampleLinearVector(const std::vector<float>& input,
+                                        int srcRate,
+                                        int dstRate)
+{
+    if (input.empty() || srcRate <= 0 || dstRate <= 0)
+        return {};
+    if (srcRate == dstRate)
+        return input;
+
+    const double ratio = static_cast<double>(dstRate) / static_cast<double>(srcRate);
+    const int outLen = std::max(1, static_cast<int>(std::ceil(input.size() * ratio)));
+    std::vector<float> out(static_cast<size_t>(outLen));
+    for (int i = 0; i < outLen; ++i)
+    {
+        const double srcPos = static_cast<double>(i) / ratio;
+        const int idx0 = static_cast<int>(std::floor(srcPos));
+        const int idx1 = std::min(idx0 + 1, static_cast<int>(input.size()) - 1);
+        const float frac = static_cast<float>(srcPos - idx0);
+        out[static_cast<size_t>(i)] = input[static_cast<size_t>(idx0)] * (1.0f - frac)
+                                    + input[static_cast<size_t>(idx1)] * frac;
+    }
+    return out;
+}
+
+std::vector<std::vector<float>> alignRVCUnits(
+    const std::vector<std::vector<float>>& units50,
+    int targetFrames)
+{
+    if (units50.empty() || targetFrames <= 0)
+        return {};
+    const int dim = static_cast<int>(units50.front().size());
+    std::vector<std::vector<float>> aligned(static_cast<size_t>(targetFrames),
+                                            std::vector<float>(static_cast<size_t>(dim), 0.0f));
+    for (int t = 0; t < targetFrames; ++t)
+    {
+        const int src = std::clamp(t / 2, 0, static_cast<int>(units50.size()) - 1);
+        aligned[static_cast<size_t>(t)] = units50[static_cast<size_t>(src)];
+    }
+    return aligned;
+}
+
+std::vector<float> resampleF0ToRVCFrames(const std::vector<float>& f0,
+                                         int targetFrames,
+                                         double durationSeconds)
+{
+    std::vector<float> out(static_cast<size_t>(std::max(0, targetFrames)), 0.0f);
+    if (f0.empty() || targetFrames <= 0 || durationSeconds <= 0.0)
+        return out;
+
+    const double sourceFps = static_cast<double>(f0.size()) / durationSeconds;
+    constexpr double rvcFps = 100.0;
+    for (int t = 0; t < targetFrames; ++t)
+    {
+        const double time = static_cast<double>(t) / rvcFps;
+        const double srcPos = time * sourceFps;
+        const int idx0 = std::clamp(static_cast<int>(std::floor(srcPos)), 0,
+                                    static_cast<int>(f0.size()) - 1);
+        const int idx1 = std::min(idx0 + 1, static_cast<int>(f0.size()) - 1);
+        const float frac = static_cast<float>(srcPos - idx0);
+        out[static_cast<size_t>(t)] = f0[static_cast<size_t>(idx0)] * (1.0f - frac)
+                                   + f0[static_cast<size_t>(idx1)] * frac;
+    }
+    return out;
+}
+
+int64_t rvcF0ToCoarse(float f0)
+{
+    constexpr float f0Min = 50.0f;
+    constexpr float f0Max = 1100.0f;
+    constexpr float f0Bin = 256.0f;
+    const float melMin = 1127.0f * std::log(1.0f + f0Min / 700.0f);
+    const float melMax = 1127.0f * std::log(1.0f + f0Max / 700.0f);
+    float mel = f0 > 0.0f ? 1127.0f * std::log(1.0f + f0 / 700.0f) : 0.0f;
+    if (mel > 0.0f)
+        mel = (mel - melMin) * (f0Bin - 2.0f) / (melMax - melMin) + 1.0f;
+    if (mel <= 1.0f) mel = 1.0f;
+    if (mel > f0Bin - 1.0f) mel = f0Bin - 1.0f;
+    return static_cast<int64_t>(std::llround(mel));
+}
+
+} // namespace
+
+// =======================================================================
+// RVC Inference (outputs audio directly)
+// =======================================================================
+
+std::vector<float> SVCInferenceEngine::inferRVC(
+    SVCModelSession& model,
+    const float* originalAudio,
+    int numSamples,
+    int sampleRate,
+    const std::vector<float>& f0,
+    InferenceParams params)
+{
+#ifdef HAVE_ONNXRUNTIME
+    std::lock_guard<std::mutex> lock(inferenceMutex);
+
+    if (!model.isLoaded() || !contentVecLoaded)
+        return {};
+
+    auto* rvcSession = model.getRVCSession();
+    auto* indexSession = model.getRVCIndexSession();
+    if (!rvcSession || !indexSession)
+    {
+        LOG("SVCInferenceEngine: RVC session missing");
+        return {};
+    }
+
+    const auto& cfg = model.getConfig();
+    if (cfg.rvcFeatureDim != 768)
+    {
+        LOG("SVCInferenceEngine: only RVC v2/contentvec768 is supported");
+        return {};
+    }
+
+    const int modelSR = cfg.sampleRate;
+    const int blockSize = cfg.blockSize;
+    const int featureDim = cfg.rvcFeatureDim;
+    const int interChannels = cfg.rvcInterChannels;
+    const int chunkFrames = std::max(1, cfg.rvcOnnxFrames);
+    const double durationSeconds = numSamples > 0 && sampleRate > 0
+        ? static_cast<double>(numSamples) / static_cast<double>(sampleRate)
+        : 0.0;
+
+    auto tTotal = std::chrono::steady_clock::now();
+    auto tStep = tTotal;
+
+    auto audio16k = resampleTo16k(originalAudio, numSamples, sampleRate);
+    const int rvcFrames = std::max(1, static_cast<int>(std::ceil(audio16k.size() / 160.0)));
+    { auto now = std::chrono::steady_clock::now();
+      LOG("  [Timer] RVC Resample 16kHz: " + juce::String(std::chrono::duration_cast<std::chrono::milliseconds>(now - tStep).count()) + " ms");
+      tStep = now; }
+
+    auto hubertRaw = extractContentVec(audio16k.data(), static_cast<int>(audio16k.size()));
+    if (hubertRaw.empty())
+        return {};
+    { auto now = std::chrono::steady_clock::now();
+      LOG("  [Timer] RVC ContentVec: " + juce::String(std::chrono::duration_cast<std::chrono::milliseconds>(now - tStep).count()) + " ms");
+      tStep = now; }
+
+    auto indexed50 = hubertRaw;
+    try
+    {
+        auto memInfo = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+        const int64_t T50 = static_cast<int64_t>(hubertRaw.size());
+        std::vector<float> featureData(static_cast<size_t>(T50) * featureDim);
+        for (int t = 0; t < static_cast<int>(T50); ++t)
+            std::copy(hubertRaw[static_cast<size_t>(t)].begin(), hubertRaw[static_cast<size_t>(t)].end(),
+                      featureData.begin() + static_cast<size_t>(t) * featureDim);
+        std::vector<int64_t> featureShape = {1, T50, featureDim};
+        auto input = Ort::Value::CreateTensor<float>(
+            memInfo, featureData.data(), featureData.size(), featureShape.data(), featureShape.size());
+        const char* inputNames[] = {"features"};
+        const char* outputNames[] = {"retrieved"};
+        auto outputs = indexSession->Run(Ort::RunOptions{nullptr}, inputNames, &input, 1, outputNames, 1);
+        const float* outData = outputs[0].GetTensorData<float>();
+        for (int t = 0; t < static_cast<int>(T50); ++t)
+            std::copy(outData + static_cast<size_t>(t) * featureDim,
+                      outData + static_cast<size_t>(t + 1) * featureDim,
+                      indexed50[static_cast<size_t>(t)].begin());
+    }
+    catch (const Ort::Exception& e)
+    {
+        LOG("SVCInferenceEngine: RVC index failed: " + juce::String(e.what()));
+        return {};
+    }
+
+    const float indexRate = cfg.rvcHasIndex ? juce::jlimit(0.0f, 1.0f, cfg.rvcIndexRate) : 0.0f;
+    if (indexRate > 0.0f)
+    {
+        for (size_t t = 0; t < indexed50.size(); ++t)
+            for (int d = 0; d < featureDim; ++d)
+                indexed50[t][static_cast<size_t>(d)] = indexed50[t][static_cast<size_t>(d)] * indexRate
+                    + hubertRaw[t][static_cast<size_t>(d)] * (1.0f - indexRate);
+    }
+
+    auto units = alignRVCUnits(indexed50, rvcFrames);
+    auto rawUnits = alignRVCUnits(hubertRaw, rvcFrames);
+    if (units.empty() || rawUnits.empty())
+        return {};
+
+    auto f0Data = resampleF0ToRVCFrames(f0, rvcFrames, durationSeconds);
+    if (params.keyShift != 0)
+    {
+        const float shiftFactor = std::pow(2.0f, params.keyShift / 12.0f);
+        for (auto& v : f0Data)
+            if (v > 0.0f) v *= shiftFactor;
+    }
+
+    if (cfg.rvcProtect < 0.5f)
+    {
+        const float protect = juce::jlimit(0.0f, 0.5f, cfg.rvcProtect);
+        for (int t = 0; t < rvcFrames; ++t)
+        {
+            const float voicedWeight = f0Data[static_cast<size_t>(t)] > 0.0f ? 1.0f : protect;
+            if (voicedWeight >= 1.0f)
+                continue;
+            for (int d = 0; d < featureDim; ++d)
+            {
+                auto& v = units[static_cast<size_t>(t)][static_cast<size_t>(d)];
+                v = v * voicedWeight + rawUnits[static_cast<size_t>(t)][static_cast<size_t>(d)] * (1.0f - voicedWeight);
+            }
+        }
+    }
+
+    std::vector<int64_t> pitchData(static_cast<size_t>(rvcFrames), 1);
+    for (int t = 0; t < rvcFrames; ++t)
+        pitchData[static_cast<size_t>(t)] = rvcF0ToCoarse(f0Data[static_cast<size_t>(t)]);
+
+    std::vector<float> modelAudio;
+    modelAudio.reserve(static_cast<size_t>(rvcFrames * blockSize));
+    auto memInfo = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+
+    for (int start = 0, chunkIndex = 0; start < rvcFrames; start += chunkFrames, ++chunkIndex)
+    {
+        const int actualFrames = std::min(chunkFrames, rvcFrames - start);
+        std::vector<float> phoneData(static_cast<size_t>(chunkFrames) * featureDim, 0.0f);
+        std::vector<int64_t> chunkPitch(static_cast<size_t>(chunkFrames), 1);
+        std::vector<float> chunkPitchF(static_cast<size_t>(chunkFrames), 0.0f);
+
+        for (int t = 0; t < chunkFrames; ++t)
+        {
+            const int srcFrame = std::min(start + t, rvcFrames - 1);
+            std::copy(units[static_cast<size_t>(srcFrame)].begin(), units[static_cast<size_t>(srcFrame)].end(),
+                      phoneData.begin() + static_cast<size_t>(t) * featureDim);
+            if (t < actualFrames)
+            {
+                chunkPitch[static_cast<size_t>(t)] = pitchData[static_cast<size_t>(srcFrame)];
+                chunkPitchF[static_cast<size_t>(t)] = f0Data[static_cast<size_t>(srcFrame)];
+            }
+        }
+
+        std::vector<float> noiseData(static_cast<size_t>(interChannels) * chunkFrames);
+        for (size_t i = 0; i < noiseData.size(); ++i)
+            noiseData[i] = static_cast<float>(std::sin(0.013 * static_cast<double>(i + 1 + chunkIndex * 100000)));
+
+        std::vector<int64_t> phoneShape = {1, chunkFrames, featureDim};
+        std::vector<int64_t> lenShape = {1};
+        std::vector<int64_t> pitchShape = {1, chunkFrames};
+        std::vector<int64_t> sidShape = {1};
+        std::vector<int64_t> noiseShape = {1, interChannels, chunkFrames};
+        std::vector<int64_t> phoneLengths = {static_cast<int64_t>(actualFrames)};
+        std::vector<int64_t> sid = {0};
+
+        std::vector<Ort::Value> inputs;
+        inputs.push_back(Ort::Value::CreateTensor<float>(
+            memInfo, phoneData.data(), phoneData.size(), phoneShape.data(), phoneShape.size()));
+        inputs.push_back(Ort::Value::CreateTensor<int64_t>(
+            memInfo, phoneLengths.data(), phoneLengths.size(), lenShape.data(), lenShape.size()));
+        inputs.push_back(Ort::Value::CreateTensor<int64_t>(
+            memInfo, chunkPitch.data(), chunkPitch.size(), pitchShape.data(), pitchShape.size()));
+        inputs.push_back(Ort::Value::CreateTensor<float>(
+            memInfo, chunkPitchF.data(), chunkPitchF.size(), pitchShape.data(), pitchShape.size()));
+        inputs.push_back(Ort::Value::CreateTensor<int64_t>(
+            memInfo, sid.data(), sid.size(), sidShape.data(), sidShape.size()));
+        inputs.push_back(Ort::Value::CreateTensor<float>(
+            memInfo, noiseData.data(), noiseData.size(), noiseShape.data(), noiseShape.size()));
+
+        const char* inputNames[] = {"phone", "phone_lengths", "pitch", "pitchf", "sid", "noise"};
+        const char* outputNames[] = {"audio"};
+        try
+        {
+            auto outputs = rvcSession->Run(Ort::RunOptions{nullptr}, inputNames, inputs.data(), inputs.size(), outputNames, 1);
+            auto outShape = outputs[0].GetTensorTypeAndShapeInfo().GetShape();
+            int audioLen = 1;
+            for (auto d : outShape) audioLen *= static_cast<int>(d);
+            const float* outData = outputs[0].GetTensorData<float>();
+            const int keep = std::min(actualFrames * blockSize, audioLen);
+            modelAudio.insert(modelAudio.end(), outData, outData + keep);
+        }
+        catch (const Ort::Exception& e)
+        {
+            LOG("SVCInferenceEngine: RVC chunk failed: " + juce::String(e.what()));
+            return {};
+        }
+    }
+
+    auto outAudio = resampleLinearVector(modelAudio, modelSR, sampleRate);
+    outAudio.resize(static_cast<size_t>(std::max(0, numSamples)), 0.0f);
+
+    { auto now = std::chrono::steady_clock::now();
+      LOG("  [Timer] RVC Total: " + juce::String(std::chrono::duration_cast<std::chrono::milliseconds>(now - tTotal).count()) + " ms"); }
+    LOG("SVCInferenceEngine: RVC OK -- audio[" + juce::String(static_cast<int>(outAudio.size())) + "] frames=" + juce::String(rvcFrames));
+    return outAudio;
+#else
+    juce::ignoreUnused(model, originalAudio, numSamples, sampleRate, f0, params);
+    return {};
+#endif
+}
 
 std::vector<float> SVCInferenceEngine::inferSoVITS(
     SVCModelSession& model,

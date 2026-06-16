@@ -609,12 +609,17 @@ void VoicebankPanel::scanDirectory(const juce::File& dir, VoicebankInfo& info)
     bool hasEncoder = dir.getChildFile("encoder.onnx").existsAsFile();
     bool hasVelocity = dir.getChildFile("velocity.onnx").existsAsFile();
     bool hasSovits = dir.getChildFile("sovits.onnx").existsAsFile();
+    bool hasRVC = dir.getChildFile("rvc.onnx").existsAsFile();
 
     // Try to read config.yaml or config.json for model metadata
     auto configYaml = dir.getChildFile("config.yaml");
     auto configJson = dir.getChildFile("config.json");
 
-    if (hasSovits)
+    if (hasRVC)
+    {
+        info.modelTypeIndex = 5;
+    }
+    else if (hasSovits)
     {
         // So-VITS-SVC (type 2) - single sovits.onnx file
         info.modelTypeIndex = 2;
@@ -851,6 +856,7 @@ juce::String VoicebankPanel::getModelTypeName(int typeIndex) const
         case 2: return "So-VITS-SVC";
         case 3: return "DDSP-SVC 6.1";
         case 4: return "DDSP-SVC 6.3";
+        case 5: return "RVC";
         default: return TR("voicebank.unknown");
     }
 }

@@ -1,11 +1,16 @@
 #include "../../Source/Models/Project.h"
+#include "../../Source/Audio/SVCInferenceEngine.h"
+#include "../../Source/Audio/SVCModelSession.h"
 #include "../../Source/UI/PianoRoll/NoteSplitter.h"
 #include "../../Source/Utils/Constants.h"
 #include "../../Source/Utils/CurveResampler.h"
 #include "../../Source/Utils/HNSepCurveProcessor.h"
+#include "../../Source/Utils/OnnxRuntimeLoader.h"
 
 #include <cmath>
+#include <cstdlib>
 #include <exception>
+#include <fstream>
 #include <iostream>
 #include <numeric>
 #include <sstream>
@@ -278,12 +283,69 @@ void testStretchRebuildResamplesHNSepMasterCurves() {
                     "restored master voicing");
 }
 
+std::string getEnvValue(const char *name) {
+#if defined(_WIN32)
+  char *value = nullptr;
+  size_t length = 0;
+  if (_dupenv_s(&value, &length, name) != 0 || value == nullptr)
+    return {};
+  std::string result(value);
+  std::free(value);
+  return result;
+#else
+  const char *value = std::getenv(name);
+  return value != nullptr ? std::string(value) : std::string();
+#endif
+}
+
+void maybeRunRVCIntegrationTest() {
+  const auto modelDirEnv = getEnvValue("SVCFUSIONSTUDIO_RVC_TEST_MODEL_DIR");
+  const auto contentVecEnv = getEnvValue("SVCFUSIONSTUDIO_RVC_TEST_CONTENTVEC");
+  const auto outEnv = getEnvValue("SVCFUSIONSTUDIO_RVC_TEST_OUTPUT");
+  if (modelDirEnv.empty() || contentVecEnv.empty() || outEnv.empty())
+    return;
+
+  expect(OnnxRuntimeLoader::ensureLoaded(), "ONNX Runtime should load for RVC integration test");
+
+  SVCInferenceEngine engine;
+  SVCModelSession session;
+  expect(engine.loadContentVec(juce::File(contentVecEnv), "CPU", 0),
+         "ContentVec should load for RVC integration test");
+  expect(session.loadFromDirectory(juce::File(modelDirEnv), "CPU", 0),
+         "RVC model directory should load");
+
+  constexpr int sampleRate = SAMPLE_RATE;
+  const int numSamples = sampleRate / 2;
+  std::vector<float> audio(static_cast<size_t>(numSamples), 0.0f);
+  for (int i = 0; i < numSamples; ++i) {
+    const double phase = 2.0 * 3.14159265358979323846 * 220.0
+                       * static_cast<double>(i) / static_cast<double>(sampleRate);
+    audio[static_cast<size_t>(i)] = 0.08f * static_cast<float>(std::sin(phase));
+  }
+
+  const int f0Frames = (numSamples + HOP_SIZE - 1) / HOP_SIZE;
+  std::vector<float> f0(static_cast<size_t>(f0Frames), 220.0f);
+  auto out = engine.inferRVC(session, audio.data(), numSamples, sampleRate, f0,
+                             SVCInferenceParams{});
+  expect(!out.empty(), "RVC integration output should not be empty");
+  expectEqual(out.size(), audio.size(), "RVC integration output size");
+
+  std::ofstream stream(outEnv, std::ios::binary);
+  expect(stream.good(), "RVC integration output file should open");
+  stream.write(reinterpret_cast<const char *>(out.data()),
+               static_cast<std::streamsize>(out.size() * sizeof(float)));
+  expect(stream.good(), "RVC integration output file should write");
+  std::cout << "RVC integration output: " << outEnv << " samples=" << out.size()
+            << std::endl;
+}
+
 } // namespace
 
 int main() {
   try {
     testSplitPreservesHNSepStateAndUndoRedo();
     testStretchRebuildResamplesHNSepMasterCurves();
+    maybeRunRVCIntegrationTest();
     std::cout << "SVCFusionStudio logic tests passed." << std::endl;
     return 0;
   } catch (const std::exception &exception) {

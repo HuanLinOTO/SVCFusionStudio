@@ -19,6 +19,8 @@ void SVCModelSession::unload()
     encoderSession.reset();
     velocitySession.reset();
     sovitsSession.reset();
+    rvcSession.reset();
+    rvcIndexSession.reset();
 #endif
     loaded = false;
 
@@ -59,6 +61,22 @@ bool SVCModelSession::parseConfig(const juce::File& sfsFile)
     config.nSpk            = static_cast<int>(obj->getProperty("n_spk"));
     config.nHidden         = static_cast<int>(obj->getProperty("n_hidden"));
     config.velocityTType   = obj->getProperty("velocity_t_type").toString();
+    if (obj->hasProperty("rvc_if_f0"))
+        config.rvcIfF0 = static_cast<int>(obj->getProperty("rvc_if_f0"));
+    if (obj->hasProperty("rvc_feature_dim"))
+        config.rvcFeatureDim = static_cast<int>(obj->getProperty("rvc_feature_dim"));
+    if (obj->hasProperty("rvc_inter_channels"))
+        config.rvcInterChannels = static_cast<int>(obj->getProperty("rvc_inter_channels"));
+    if (obj->hasProperty("rvc_onnx_frames"))
+        config.rvcOnnxFrames = static_cast<int>(obj->getProperty("rvc_onnx_frames"));
+    if (obj->hasProperty("rvc_index_top_k"))
+        config.rvcIndexTopK = static_cast<int>(obj->getProperty("rvc_index_top_k"));
+    if (obj->hasProperty("rvc_index_rate"))
+        config.rvcIndexRate = static_cast<float>(static_cast<double>(obj->getProperty("rvc_index_rate")));
+    if (obj->hasProperty("rvc_protect"))
+        config.rvcProtect = static_cast<float>(static_cast<double>(obj->getProperty("rvc_protect")));
+    if (obj->hasProperty("rvc_has_index"))
+        config.rvcHasIndex = static_cast<bool>(obj->getProperty("rvc_has_index"));
 
     if (obj->hasProperty("speaker_names"))
     {
@@ -103,6 +121,22 @@ bool SVCModelSession::parseConfigFromDir(const juce::File& directory)
     config.nSpk            = static_cast<int>(obj->getProperty("n_spk"));
     config.nHidden         = static_cast<int>(obj->getProperty("n_hidden"));
     config.velocityTType   = obj->getProperty("velocity_t_type").toString();
+    if (obj->hasProperty("rvc_if_f0"))
+        config.rvcIfF0 = static_cast<int>(obj->getProperty("rvc_if_f0"));
+    if (obj->hasProperty("rvc_feature_dim"))
+        config.rvcFeatureDim = static_cast<int>(obj->getProperty("rvc_feature_dim"));
+    if (obj->hasProperty("rvc_inter_channels"))
+        config.rvcInterChannels = static_cast<int>(obj->getProperty("rvc_inter_channels"));
+    if (obj->hasProperty("rvc_onnx_frames"))
+        config.rvcOnnxFrames = static_cast<int>(obj->getProperty("rvc_onnx_frames"));
+    if (obj->hasProperty("rvc_index_top_k"))
+        config.rvcIndexTopK = static_cast<int>(obj->getProperty("rvc_index_top_k"));
+    if (obj->hasProperty("rvc_index_rate"))
+        config.rvcIndexRate = static_cast<float>(static_cast<double>(obj->getProperty("rvc_index_rate")));
+    if (obj->hasProperty("rvc_protect"))
+        config.rvcProtect = static_cast<float>(static_cast<double>(obj->getProperty("rvc_protect")));
+    if (obj->hasProperty("rvc_has_index"))
+        config.rvcHasIndex = static_cast<bool>(obj->getProperty("rvc_has_index"));
 
     if (obj->hasProperty("speaker_names"))
     {
@@ -186,9 +220,23 @@ bool SVCModelSession::loadOnnxFromDir(const juce::File& directory,
 {
 #ifdef HAVE_ONNXRUNTIME
     bool isSoVITS = (config.modelTypeIndex == 2);
+    bool isRVC = (config.modelTypeIndex == 5);
 
     // Verify required ONNX files exist
-    if (isSoVITS)
+    if (isRVC)
+    {
+        if (!directory.getChildFile("rvc.onnx").existsAsFile())
+        {
+            DBG("SVCModelSession: rvc.onnx not found in " + directory.getFullPathName());
+            return false;
+        }
+        if (!directory.getChildFile("rvc_index.onnx").existsAsFile())
+        {
+            DBG("SVCModelSession: rvc_index.onnx not found in " + directory.getFullPathName());
+            return false;
+        }
+    }
+    else if (isSoVITS)
     {
         if (!directory.getChildFile("sovits.onnx").existsAsFile())
         {
@@ -225,7 +273,24 @@ bool SVCModelSession::loadOnnxFromDir(const juce::File& directory,
 
     try
     {
-        if (isSoVITS)
+        if (isRVC)
+        {
+            auto rvcPath = directory.getChildFile("rvc.onnx");
+            auto rvcIndexPath = directory.getChildFile("rvc_index.onnx");
+            auto rvcOpts = createSessionOptions(executionDevice, deviceId);
+            auto rvcIndexOpts = createSessionOptions("CPU", 0);
+#ifdef _WIN32
+            std::wstring wRvc(rvcPath.getFullPathName().toWideCharPointer());
+            std::wstring wIdx(rvcIndexPath.getFullPathName().toWideCharPointer());
+            rvcSession = std::make_unique<Ort::Session>(*onnxEnv, wRvc.c_str(), rvcOpts);
+            rvcIndexSession = std::make_unique<Ort::Session>(*onnxEnv, wIdx.c_str(), rvcIndexOpts);
+#else
+            rvcSession = std::make_unique<Ort::Session>(*onnxEnv, rvcPath.getFullPathName().toRawUTF8(), rvcOpts);
+            rvcIndexSession = std::make_unique<Ort::Session>(*onnxEnv, rvcIndexPath.getFullPathName().toRawUTF8(), rvcIndexOpts);
+#endif
+            DBG("SVCModelSession: rvc.onnx + rvc_index.onnx sessions created from directory");
+        }
+        else if (isSoVITS)
         {
             auto sovitsPath = directory.getChildFile("sovits.onnx");
 #ifdef _WIN32
@@ -286,9 +351,15 @@ bool SVCModelSession::extractAndLoadOnnx(const juce::File& sfsFile,
 
     // Determine which ONNX files to extract
     bool isSoVITS = (config.modelTypeIndex == 2);
+    bool isRVC = (config.modelTypeIndex == 5);
     juce::StringArray onnxFiles;
 
-    if (isSoVITS)
+    if (isRVC)
+    {
+        onnxFiles.add("rvc.onnx");
+        onnxFiles.add("rvc_index.onnx");
+    }
+    else if (isSoVITS)
         onnxFiles.add("sovits.onnx");
     else
     {
@@ -332,7 +403,24 @@ bool SVCModelSession::extractAndLoadOnnx(const juce::File& sfsFile,
 
     try
     {
-        if (isSoVITS)
+        if (isRVC)
+        {
+            auto rvcPath = tempDir.getChildFile("rvc.onnx");
+            auto rvcIndexPath = tempDir.getChildFile("rvc_index.onnx");
+            auto rvcOpts = createSessionOptions(executionDevice, deviceId);
+            auto rvcIndexOpts = createSessionOptions("CPU", 0);
+#ifdef _WIN32
+            std::wstring wRvc(rvcPath.getFullPathName().toWideCharPointer());
+            std::wstring wIdx(rvcIndexPath.getFullPathName().toWideCharPointer());
+            rvcSession = std::make_unique<Ort::Session>(*onnxEnv, wRvc.c_str(), rvcOpts);
+            rvcIndexSession = std::make_unique<Ort::Session>(*onnxEnv, wIdx.c_str(), rvcIndexOpts);
+#else
+            rvcSession = std::make_unique<Ort::Session>(*onnxEnv, rvcPath.getFullPathName().toRawUTF8(), rvcOpts);
+            rvcIndexSession = std::make_unique<Ort::Session>(*onnxEnv, rvcIndexPath.getFullPathName().toRawUTF8(), rvcIndexOpts);
+#endif
+            DBG("SVCModelSession: rvc.onnx + rvc_index.onnx sessions created");
+        }
+        else if (isSoVITS)
         {
             auto sovitsPath = tempDir.getChildFile("sovits.onnx");
 #ifdef _WIN32

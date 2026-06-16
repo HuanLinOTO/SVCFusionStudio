@@ -93,6 +93,17 @@ public:
         InferenceParams params = SVCInferenceParams{});
 
     /**
+     * Run RVC inference (outputs audio directly).
+     */
+    std::vector<float> inferRVC(
+        SVCModelSession& model,
+        const float* originalAudio,
+        int numSamples,
+        int sampleRate,
+        const std::vector<float>& f0,
+        InferenceParams params = SVCInferenceParams{});
+
+    /**
      * Extract volume envelope from waveform (std-based, matching Python).
      * @param audio     Input waveform
      * @param numSamples Number of samples

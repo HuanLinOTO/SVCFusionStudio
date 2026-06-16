@@ -252,6 +252,8 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
   bool svcActive = svcEngine && svcModel && svcModel->isLoaded()
                    && svcEngine->isContentVecLoaded();
   bool isSoVITS = svcActive && (svcModel->getConfig().modelTypeIndex == 2);
+  bool isRVC = svcActive && (svcModel->getConfig().modelTypeIndex == 5);
+  bool isDirectAudioSVC = isSoVITS || isRVC;
 
   // When melFromSVC is true, audioData.melSpectrogram already contains SVC mel.
   // We can skip expensive SVC re-inference and just use the stored mel through
@@ -262,8 +264,8 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
     hasSvcConditioningDirty = conditioningDirtyRange.first < endFrame &&
                               conditioningDirtyRange.second > startFrame;
   }
-  bool useSvcMelDirect = svcActive && !isSoVITS && audioData.melFromSVC &&
-                         !hasSvcConditioningDirty;
+  bool useSvcMelDirect = svcActive && !isDirectAudioSVC && audioData.melFromSVC &&
+                          !hasSvcConditioningDirty;
 
   // Copy waveform segment for blending.
   // When SVC is active, blend against the *current* waveform (which already
@@ -290,6 +292,7 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
   }
   LOG("[STRETCH-DBG] svcActive=" + juce::String((int)svcActive)
       + " isSoVITS=" + juce::String((int)isSoVITS)
+      + " isRVC=" + juce::String((int)isRVC)
       + " melFromSVC=" + juce::String((int)audioData.melFromSVC)
       + " svcConditioningDirty=" + juce::String((int)hasSvcConditioningDirty)
       + " useSvcMelDirect=" + juce::String((int)useSvcMelDirect));
@@ -361,14 +364,14 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
   // F0 for SVC: may exclude global pitch offset in post-SVC mode
   bool pitchOffsetPreSVC = project->isPitchOffsetBeforeSVC();
   std::vector<float> f0ForSVC;
-  if (svcActive && !useSvcMelDirect && !isSoVITS) {
+  if (svcActive && !useSvcMelDirect && !isDirectAudioSVC) {
     f0ForSVC = pitchOffsetPreSVC ? adjustedF0Range
                                  : project->getAdjustedF0ForRangeNoGlobalOffset(startFrame, endFrame);
     f0ForSVC = HNSepCurveProcessor::applyShfcToF0(
         f0ForSVC, audioData.shfcCurve, startFrame);
   }
 
-  // For SoVITS incremental (stretch/pitch-edit):
+  // For direct-audio SVC incremental (stretch/pitch-edit):
   //   Re-running inferSoVITS on the original audio with updated F0 only changes
   //   the pitch, NOT the timing, because ContentVec keeps the original content
   //   positions.  Instead, we use mel analyzed from the existing SoVITS waveform
@@ -376,7 +379,7 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
   //   the vocoder with the updated F0.  This correctly adjusts both timing
   //   (via mel resampling) and pitch (via F0).
   // For DDSP/Reflow: infer() returns mel, then vocoder generates audio.
-  std::vector<float> svcDirectAudio; // only used for SoVITS full inference (not stretch)
+  std::vector<float> svcDirectAudio; // only used for direct-audio full inference (not stretch)
 
   if (useSvcMelDirect)
   {
@@ -391,13 +394,12 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
           audioData.melSpectrogram.begin() + endFrame);
     }
   }
-  else if (isSoVITS)
+  else if (isDirectAudioSVC)
   {
-    // SoVITS stretch: use mel from SoVITS waveform analysis through vocoder.
-    // This preserves SoVITS timbre while correctly time-stretching.
-    LOG("[STRETCH-DBG] SoVITS: using mel+vocoder path for stretch (skip re-inference)");
+    // Direct-audio SVC stretch: use mel from converted waveform analysis through vocoder.
+    LOG("[STRETCH-DBG] direct-audio SVC: using mel+vocoder path for stretch (skip re-inference)");
     if (!hnsepMelRange.empty()) {
-      LOG("[STRETCH-DBG] applying HNSep-regenerated mel on SoVITS path");
+      LOG("[STRETCH-DBG] applying HNSep-regenerated mel on direct-audio SVC path");
       melRange = hnsepMelRange;
     } else {
       melRange.assign(
@@ -476,8 +478,8 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
     }
   }
 
-  // For SoVITS direct audio path, skip vocoder entirely
-  if (isSoVITS && !svcDirectAudio.empty())
+  // For direct audio path, skip vocoder entirely
+  if (isDirectAudioSVC && !svcDirectAudio.empty())
   {
     if (onProgress)
       onProgress(TR("progress.synthesizing"));
@@ -494,7 +496,7 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
     auto capturedCancelFlag = cancelFlag;
     auto capturedProject = project;
 
-    DBG("synthesizeRegion (SoVITS direct): frames [" << startFrame << ", " << endFrame << "]");
+    DBG("synthesizeRegion (direct-audio SVC): frames [" << startFrame << ", " << endFrame << "]");
 
     // Go directly to the blend+write thread — no vocoder needed
     applySynthesizedAudio(std::move(svcDirectAudio), std::move(blendMask),
