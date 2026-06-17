@@ -1,6 +1,6 @@
 <div align="center">
   <h1>SVCFusion Studio</h1>
-  <img src="logo.png" alt="Logo" width="300" />
+  <img src="efc4695dc0bf6bdf922dd174b6acf3d1_720.png" alt="Logo" width="300" />
   <p>A lightweight pitch editor built with JUCE, featuring neural pitch detection and vocoder resynthesis for real-time preview.</p>
 </div>
 

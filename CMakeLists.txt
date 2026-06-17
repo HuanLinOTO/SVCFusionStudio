@@ -161,6 +161,8 @@ juce_add_gui_app(SVCFusionStudio
     PRODUCT_NAME "SVCFusion Studio"
     COMPANY_NAME "OpenVPI"
     BUNDLE_ID "com.openvpi.svcfusionstudio"
+    ICON_BIG "${CMAKE_CURRENT_SOURCE_DIR}/efc4695dc0bf6bdf922dd174b6acf3d1_720.png"
+    ICON_SMALL "${CMAKE_CURRENT_SOURCE_DIR}/efc4695dc0bf6bdf922dd174b6acf3d1_720.png"
     COMPANY_COPYRIGHT "Copyright 2026"
     MICROPHONE_PERMISSION_ENABLED TRUE
     FILE_SHARING_ENABLED TRUE
@@ -192,6 +194,8 @@ juce_add_plugin(SVCFusionStudioPlugin
     PRODUCT_NAME "SVCFusion Studio"
     COMPANY_NAME "OpenVPI"
     BUNDLE_ID "com.openvpi.svcfusionstudio"
+    ICON_BIG "${CMAKE_CURRENT_SOURCE_DIR}/efc4695dc0bf6bdf922dd174b6acf3d1_720.png"
+    ICON_SMALL "${CMAKE_CURRENT_SOURCE_DIR}/efc4695dc0bf6bdf922dd174b6acf3d1_720.png"
     PLUGIN_MANUFACTURER_CODE OPVP
     PLUGIN_CODE PTE1
     FORMATS VST3 AU $<$<BOOL:${AAX_AVAILABLE}>:AAX>

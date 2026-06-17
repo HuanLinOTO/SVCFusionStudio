@@ -2,7 +2,7 @@ English: [README_EN.md](README_EN.md)
 
 <div align="center">
   <h1>SVCFusion Studio</h1>
-  <img src="logo.png" alt="Logo" width="300" />
+  <img src="efc4695dc0bf6bdf922dd174b6acf3d1_720.png" alt="Logo" width="300" />
   <p>基于 JUCE 构建的轻量级音高编辑器，具备神经音高检测和声码器重合成，支持实时预览。</p>
 </div>
 
