@@ -59,7 +59,7 @@ The build expects required model files in `Resources/models` and will fail if an
 - `hnsep/split/hnsep_core.onnx`
 - `hnsep/split/hnsep_post.onnx`
 
-### GAME (optional, for GAME-based analysis)
+### GAME (note segmentation and MIDI prediction)
 
 - `GAME/bd2dur.onnx`
 - `GAME/config.json`

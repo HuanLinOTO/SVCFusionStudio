@@ -67,7 +67,7 @@ SVCFusion Studio 是一款独立应用及音频插件，用于在钢琴卷帘中
 - `hnsep/split/hnsep_core.onnx`
 - `hnsep/split/hnsep_post.onnx`
 
-### GAME（可选，用于基于 GAME 的分析）
+### GAME（音符拆分与 MIDI 预测）
 
 - `GAME/bd2dur.onnx`
 - `GAME/config.json`
