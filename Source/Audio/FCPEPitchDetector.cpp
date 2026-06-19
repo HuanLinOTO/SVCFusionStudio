@@ -242,6 +242,20 @@ bool FCPEPitchDetector::loadModel(const juce::File &modelPath,
 #endif
 }
 
+void FCPEPitchDetector::unload() {
+#ifdef HAVE_ONNXRUNTIME
+  onnxSession.reset();
+  allocator.reset();
+  onnxEnv.reset();
+  inputNames.clear();
+  outputNames.clear();
+  inputNameStrings.clear();
+  outputNameStrings.clear();
+#endif
+  loaded = false;
+  DBG("FCPE model unloaded");
+}
+
 std::vector<float> FCPEPitchDetector::resampleTo16k(const float *audio,
                                                     int numSamples,
                                                     int srcRate) {

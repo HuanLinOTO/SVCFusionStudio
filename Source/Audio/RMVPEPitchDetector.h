@@ -47,6 +47,7 @@ public:
     bool loadModel(const juce::File& modelPath,
                    GPUProvider provider = GPUProvider::CPU,
                    int deviceId = 0);
+    void unload();
 
     /**
      * Check if model is loaded.

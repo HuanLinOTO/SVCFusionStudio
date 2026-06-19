@@ -80,6 +80,9 @@ EditorController::~EditorController() {
     incrementalSynth->cancel();
   if (incrementalSynthThread.joinable())
     incrementalSynthThread.join();
+  ++hnsepPrewarmGeneration;
+  if (hnsepPrewarmThread.joinable())
+    hnsepPrewarmThread.join();
   cancelSVCFlag = true;
   if (svcConversionThread.joinable())
     svcConversionThread.join();
@@ -88,7 +91,12 @@ EditorController::~EditorController() {
 }
 
 void EditorController::setProject(std::unique_ptr<Project> newProject) {
+  ++hnsepPrewarmGeneration;
+  if (hnsepPrewarmThread.joinable())
+    hnsepPrewarmThread.join();
   project = std::move(newProject);
+  if (project)
+    prewarmHNSepBasesAsync(*project);
 }
 
 Vocoder *EditorController::ensureVocoder() {
@@ -137,6 +145,8 @@ bool EditorController::loadSVCModel(const juce::File& sfsModelFile) {
       " (" + cfg.name + ") sr=" + juce::String(cfg.sampleRate) +
       " hop=" + juce::String(cfg.blockSize) +
       " spk=" + juce::String(cfg.nSpk));
+  lastSVCModelPath = sfsModelFile;
+  lastSVCModelWasDirectory = false;
   return true;
 }
 
@@ -170,6 +180,8 @@ bool EditorController::loadSVCModelFromDirectory(const juce::File& voicebankDir)
       " (" + cfg.name + ") sr=" + juce::String(cfg.sampleRate) +
       " hop=" + juce::String(cfg.blockSize) +
       " spk=" + juce::String(cfg.nSpk));
+  lastSVCModelPath = voicebankDir;
+  lastSVCModelWasDirectory = true;
   return true;
 }
 
@@ -179,6 +191,53 @@ void EditorController::unloadSVCModel() {
 
 bool EditorController::isSVCModelActive() const {
   return svcModel && svcModel->isLoaded();
+}
+
+bool EditorController::ensureSVCModelReady() {
+  if (!svcEngine || !svcModel)
+    return false;
+
+  if (svcModel->isLoaded() && svcEngine->isContentVecLoaded())
+    return true;
+
+  if (!lastSVCModelPath.exists()) {
+    LOG("EditorController: cannot restore SVC model, no previous voicebank path");
+    return false;
+  }
+
+  LOG("EditorController: restoring SVC model on demand from " +
+      lastSVCModelPath.getFullPathName());
+
+  auto contentVecPath = PlatformPaths::getModelFile("contentvec768l12.onnx");
+  if (!contentVecPath.existsAsFile()) {
+    LOG("EditorController: ContentVec ONNX not found at: " +
+        contentVecPath.getFullPathName());
+    return false;
+  }
+
+  if (!svcEngine->isContentVecLoaded() &&
+      !svcEngine->loadContentVec(contentVecPath, device, deviceId)) {
+    LOG("EditorController: Failed to restore ContentVec");
+    return false;
+  }
+
+  if (svcModel->isLoaded())
+    return true;
+
+  const bool ok = lastSVCModelWasDirectory
+                      ? svcModel->loadFromDirectory(lastSVCModelPath, device,
+                                                    deviceId)
+                      : svcModel->loadFromSfsModel(lastSVCModelPath, device,
+                                                   deviceId);
+  if (!ok) {
+    LOG("EditorController: Failed to restore SVC model");
+    return false;
+  }
+
+  auto &cfg = svcModel->getConfig();
+  LOG("EditorController: SVC model restored -- " + cfg.modelTypeName +
+      " (" + cfg.name + ")");
+  return true;
 }
 
 void EditorController::cancelSVCConversion() {
@@ -261,10 +320,6 @@ void EditorController::runFullSVCConversionAsync(SVCProgressCallback onProgress,
                                     : project->getAdjustedF0NoGlobalOffset();
   f0ForSVC = HNSepCurveProcessor::applyShfcToF0(f0ForSVC,
                                                 audioData.shfcCurve);
-  const bool hadExistingHNSepBases =
-      audioData.harmonicWaveform.getNumSamples() > 0 ||
-      audioData.noiseWaveform.getNumSamples() > 0;
-
   auto& cfg = svcModel->getConfig();
   bool isSoVITS = (cfg.modelTypeIndex == 2);
   bool isRVC = (cfg.modelTypeIndex == 5);
@@ -276,10 +331,9 @@ void EditorController::runFullSVCConversionAsync(SVCProgressCallback onProgress,
                                      localVoiced = std::move(localVoicedMask),
                                      adjustedF0 = std::move(adjustedF0),
                                      f0ForSVC = std::move(f0ForSVC),
-                                     sampleRate, totalFrames, hopSize,
-                                      totalSamples, pitchOffsetPreSVC,
-                                      hadExistingHNSepBases, voc,
-                                      isSoVITS, isRVC, isDirectAudioSVC]() {
+                                      sampleRate, totalFrames, hopSize,
+                                       totalSamples, pitchOffsetPreSVC, voc,
+                                       isSoVITS, isRVC, isDirectAudioSVC]() {
     const float* origPtr = localOrig.getReadPointer(0);
 
     if (cancelSVCFlag.load()) {
@@ -623,31 +677,6 @@ void EditorController::runFullSVCConversionAsync(SVCProgressCallback onProgress,
           juce::String(sovitsMel.size()) + " frames]");
     }
 
-    // HNSep edits must operate on the *current* converted audio, otherwise the
-    // edited segment falls back toward the original singer. Refresh the cached
-    // harmonic/noise bases here so later HNSep edits stay in the SVC timbre.
-    std::vector<float> svcHarmonic;
-    std::vector<float> svcNoise;
-    bool refreshHNSepBases = false;
-    bool clearStaleHNSepBases = false;
-    if (!blendedAudio.empty()) {
-      if (hnsepModel && hnsepModel->isLoaded()) {
-        refreshHNSepBases = hnsepModel->separate(
-            blendedAudio.data(), static_cast<int>(blendedAudio.size()),
-            svcHarmonic, svcNoise);
-        if (refreshHNSepBases) {
-          LOG("EditorController: Refreshed HNSep bases from converted SVC audio [" +
-              juce::String(svcHarmonic.size()) + " samples]");
-        } else {
-          clearStaleHNSepBases = true;
-          LOG("EditorController: Failed to refresh HNSep bases from converted SVC audio; clearing stale pre-SVC bases");
-        }
-      } else if (hadExistingHNSepBases) {
-        clearStaleHNSepBases = true;
-        LOG("EditorController: HNSep model unavailable after SVC conversion; clearing stale pre-SVC HNSep bases");
-      }
-    }
-
     if (onProgress)
       juce::MessageManager::callAsync([onProgress]() { onProgress("Applying SVC audio..."); });
 
@@ -657,13 +686,9 @@ void EditorController::runFullSVCConversionAsync(SVCProgressCallback onProgress,
                                      blendedAudio = std::move(blendedAudio),
                                       writeLen, onComplete, isDirectAudioSVC, totalFrames,
                                      collectedSegMels = std::move(collectedSegMels),
-                                      fullSvcMel = std::move(fullSvcMel),
-                                      anySegmentFailed,
-                                      sovitsMel = std::move(sovitsMel),
-                                     svcHarmonic = std::move(svcHarmonic),
-                                     svcNoise = std::move(svcNoise),
-                                     refreshHNSepBases,
-                                     clearStaleHNSepBases]() {
+                                       fullSvcMel = std::move(fullSvcMel),
+                                       anySegmentFailed,
+                                       sovitsMel = std::move(sovitsMel)]() {
       // If generation doesn't match, a newer conversion superseded us — discard
       if (svcGeneration.load() != myGen) {
         LOG("EditorController: Discarding stale SVC result (generation mismatch)");
@@ -686,35 +711,6 @@ void EditorController::runFullSVCConversionAsync(SVCProgressCallback onProgress,
         int writeable = std::min(writeLen, audioData.waveform.getNumSamples());
         for (int i = 0; i < writeable; ++i)
           dst[i] = blendedAudio[i];
-      }
-
-      if (refreshHNSepBases) {
-        const int totalWaveSamples = audioData.waveform.getNumSamples();
-        const int harmonicCopyLen = std::min(totalWaveSamples,
-                                             static_cast<int>(svcHarmonic.size()));
-        const int noiseCopyLen = std::min(totalWaveSamples,
-                                          static_cast<int>(svcNoise.size()));
-
-        audioData.harmonicWaveform.setSize(1, totalWaveSamples,
-                                           false, false, true);
-        audioData.harmonicWaveform.clear();
-        if (harmonicCopyLen > 0) {
-          juce::FloatVectorOperations::copy(
-              audioData.harmonicWaveform.getWritePointer(0),
-              svcHarmonic.data(), harmonicCopyLen);
-        }
-
-        audioData.noiseWaveform.setSize(1, totalWaveSamples,
-                                        false, false, true);
-        audioData.noiseWaveform.clear();
-        if (noiseCopyLen > 0) {
-          juce::FloatVectorOperations::copy(
-              audioData.noiseWaveform.getWritePointer(0),
-              svcNoise.data(), noiseCopyLen);
-        }
-      } else if (clearStaleHNSepBases) {
-        audioData.harmonicWaveform.setSize(1, 0);
-        audioData.noiseWaveform.setSize(1, 0);
       }
 
       // ── Store SVC mel in audioData.melSpectrogram so that subsequent
@@ -798,22 +794,35 @@ void EditorController::reloadInferenceModels(bool async) {
   auto melPath = melFilterbankPath;
   auto centPath = centTablePath;
   auto rmvpePath = rmvpeModelPath;
-  auto gamePath = gameModelDir;
-  auto hnsepPath = hnsepModelDir;
+  auto selectedPitchDetector = pitchDetectorType;
 
   auto reloadTask = [device = device,
-                     provider,
-                     resolvedDeviceId,
-                     fcpePath,
-                     melPath,
-                     centPath,
-                     rmvpePath,
-                     gamePath,
-                     hnsepPath](EditorController *self) {
+                      provider,
+                      resolvedDeviceId,
+                      fcpePath,
+                      melPath,
+                      centPath,
+                      rmvpePath,
+                      selectedPitchDetector](EditorController *self) {
     if (!self)
       return;
 
-    if (self->fcpePitchDetector && fcpePath.existsAsFile()) {
+    if (self->gameDetector && self->gameDetector->isLoaded())
+      self->gameDetector->unload();
+    if (self->hnsepModel && self->hnsepModel->isLoaded())
+      self->hnsepModel->unload();
+
+    if (selectedPitchDetector == PitchDetectorType::FCPE &&
+        self->rmvpePitchDetector && self->rmvpePitchDetector->isLoaded()) {
+      self->rmvpePitchDetector->unload();
+    }
+    if (selectedPitchDetector == PitchDetectorType::RMVPE &&
+        self->fcpePitchDetector && self->fcpePitchDetector->isLoaded()) {
+      self->fcpePitchDetector->unload();
+    }
+
+    if (selectedPitchDetector == PitchDetectorType::FCPE &&
+        self->fcpePitchDetector && fcpePath.existsAsFile()) {
       LOG("EditorController: loading FCPE model (device " + device +
           ", id " + juce::String(resolvedDeviceId) + ")...");
       if (self->fcpePitchDetector->loadModel(fcpePath, melPath, centPath,
@@ -822,11 +831,13 @@ void EditorController::reloadInferenceModels(bool async) {
       } else {
         LOG("Failed to load FCPE model");
       }
-    } else if (self->fcpePitchDetector) {
+    } else if (selectedPitchDetector == PitchDetectorType::FCPE &&
+               self->fcpePitchDetector) {
       LOG("FCPE model not found at: " + fcpePath.getFullPathName());
     }
 
-    if (self->rmvpePitchDetector && rmvpePath.existsAsFile()) {
+    if (selectedPitchDetector == PitchDetectorType::RMVPE &&
+        self->rmvpePitchDetector && rmvpePath.existsAsFile()) {
       LOG("EditorController: loading RMVPE model (device " + device +
           ", id " + juce::String(resolvedDeviceId) + ")...");
       if (self->rmvpePitchDetector->loadModel(rmvpePath, provider,
@@ -835,60 +846,9 @@ void EditorController::reloadInferenceModels(bool async) {
       } else {
         LOG("Failed to load RMVPE model");
       }
-    } else if (self->rmvpePitchDetector) {
+    } else if (selectedPitchDetector == PitchDetectorType::RMVPE &&
+               self->rmvpePitchDetector) {
       LOG("RMVPE model not found at: " + rmvpePath.getFullPathName());
-    }
-
-    if (self->gameDetector && gamePath.isDirectory()) {
-      LOG("EditorController: loading GAME models from " +
-          gamePath.getFullPathName() + " (device " + device + ", id " +
-          juce::String(resolvedDeviceId) + ")...");
-      if (self->gameDetector->loadModels(gamePath, provider,
-                                         resolvedDeviceId)) {
-        LOG("GAME detector loaded successfully, isLoaded=" +
-            juce::String(self->gameDetector->isLoaded() ? "true" : "false"));
-      } else {
-        LOG("Failed to load GAME models from " + gamePath.getFullPathName());
-      }
-    } else if (self->gameDetector) {
-      LOG("GAME model directory not found: " + gamePath.getFullPathName() +
-          " isDirectory=" + juce::String(gamePath.isDirectory() ? "true" : "false"));
-    } else {
-      LOG("GAME detector not created (gameDetector is null)");
-    }
-
-    if (self->hnsepModel && hnsepPath.isDirectory()) {
-      const auto hnsepCpuFile = hnsepPath.getChildFile("hnsep_VR.onnx");
-      const auto hnsepDmlFile = hnsepPath.getChildFile("hnsep_VR_convstft.onnx");
-      auto hnsepFile = provider == GPUProvider::DirectML && hnsepDmlFile.existsAsFile()
-                           ? hnsepDmlFile
-                           : hnsepCpuFile;
-      if (hnsepFile.existsAsFile()) {
-        LOG("EditorController: loading hnsep model from " +
-            hnsepFile.getFullPathName() + " (device " + device + ", id " +
-            juce::String(resolvedDeviceId) + ")...");
-        if (self->hnsepModel->loadModel(hnsepFile, provider,
-                                        resolvedDeviceId)) {
-          LOG("hnsep model loaded successfully");
-        } else if (provider == GPUProvider::DirectML && hnsepFile != hnsepCpuFile &&
-                   hnsepCpuFile.existsAsFile()) {
-          LOG("Retrying hnsep with CPU fallback model: " +
-              hnsepCpuFile.getFullPathName());
-          if (self->hnsepModel->loadModel(hnsepCpuFile, GPUProvider::CPU, 0)) {
-            LOG("hnsep CPU fallback model loaded successfully");
-          } else {
-            LOG("Failed to load hnsep CPU fallback model from " +
-                hnsepCpuFile.getFullPathName());
-          }
-        } else {
-          LOG("Failed to load hnsep model from " +
-              hnsepFile.getFullPathName());
-        }
-      } else {
-        LOG("hnsep model file not found: " + hnsepFile.getFullPathName());
-      }
-    } else if (self->hnsepModel) {
-      LOG("hnsep model directory not found: " + hnsepPath.getFullPathName());
     }
   };
 
@@ -957,6 +917,127 @@ juce::String EditorController::getModelDebugStatusText() const {
   }
 
   return lines.joinIntoString("\n");
+}
+
+bool EditorController::ensureHNSepModelLoadedForAnalysis() {
+  if (!hnsepModel)
+    return false;
+  if (hnsepModel->isLoaded())
+    return true;
+
+  if (svcModel && svcModel->isLoaded())
+    svcModel->unload();
+  if (svcEngine && svcEngine->isContentVecLoaded())
+    svcEngine->unloadContentVec();
+
+  if (!hnsepModelDir.isDirectory()) {
+    LOG("hnsep model directory not found: " + hnsepModelDir.getFullPathName());
+    return false;
+  }
+
+  const auto provider = getProviderFromDevice(device);
+  const int resolvedDeviceId = deviceId < 0 ? 0 : deviceId;
+  const auto hnsepCpuFile = hnsepModelDir.getChildFile("hnsep_VR.onnx");
+  const auto hnsepDmlFile = hnsepModelDir.getChildFile("hnsep_VR_convstft.onnx");
+  auto hnsepFile = provider == GPUProvider::DirectML && hnsepDmlFile.existsAsFile()
+                       ? hnsepDmlFile
+                       : hnsepCpuFile;
+  if (!hnsepFile.existsAsFile()) {
+    LOG("hnsep model file not found: " + hnsepFile.getFullPathName());
+    return false;
+  }
+
+  LOG("EditorController: loading hnsep model on demand from " +
+      hnsepFile.getFullPathName() + " (device " + device + ", id " +
+      juce::String(resolvedDeviceId) + ")...");
+  if (hnsepModel->loadModel(hnsepFile, provider, resolvedDeviceId))
+    return true;
+
+  if (provider == GPUProvider::DirectML && hnsepFile != hnsepCpuFile &&
+      hnsepCpuFile.existsAsFile()) {
+    LOG("Retrying hnsep with CPU fallback model: " +
+        hnsepCpuFile.getFullPathName());
+    return hnsepModel->loadModel(hnsepCpuFile, GPUProvider::CPU, 0);
+  }
+
+  return false;
+}
+
+bool EditorController::ensureHNSepBases(Project &targetProject) {
+  auto &audioData = targetProject.getAudioData();
+  const int numSamples = audioData.waveform.getNumSamples();
+  if (numSamples <= 0)
+    return false;
+  if (audioData.harmonicWaveform.getNumSamples() > 0 &&
+      audioData.noiseWaveform.getNumSamples() > 0)
+    return true;
+  if (!ensureHNSepModelLoadedForAnalysis())
+    return false;
+
+  std::vector<float> harmonic;
+  std::vector<float> noise;
+  const float *samples = audioData.waveform.getReadPointer(0);
+  if (!hnsepModel->separate(samples, numSamples, harmonic, noise)) {
+    LOG("HNSep on-demand separation failed");
+    hnsepModel->unload();
+    return false;
+  }
+
+  const int harmonicCopyLen = std::min(numSamples, static_cast<int>(harmonic.size()));
+  const int noiseCopyLen = std::min(numSamples, static_cast<int>(noise.size()));
+  audioData.harmonicWaveform.setSize(1, numSamples);
+  audioData.harmonicWaveform.clear();
+  if (harmonicCopyLen > 0) {
+    juce::FloatVectorOperations::copy(
+        audioData.harmonicWaveform.getWritePointer(0), harmonic.data(),
+        harmonicCopyLen);
+  }
+  audioData.noiseWaveform.setSize(1, numSamples);
+  audioData.noiseWaveform.clear();
+  if (noiseCopyLen > 0) {
+    juce::FloatVectorOperations::copy(
+        audioData.noiseWaveform.getWritePointer(0), noise.data(), noiseCopyLen);
+  }
+
+  LOG("HNSep on-demand separation complete: " + juce::String(numSamples) +
+      " samples separated into harmonic + noise");
+  hnsepModel->unload();
+  return true;
+}
+
+void EditorController::prewarmHNSepBasesAsync(Project &targetProject) {
+  auto &audioData = targetProject.getAudioData();
+  const auto curveFrameCount = std::max(
+      audioData.voicingCurve.size(),
+      std::max(audioData.breathCurve.size(), audioData.tensionCurve.size()));
+  const int frameCount = static_cast<int>(curveFrameCount);
+  if (frameCount <= 0)
+    return;
+
+  if (!HNSepCurveProcessor::hasActiveEdits(targetProject, 0, frameCount))
+    return;
+
+  if (audioData.harmonicWaveform.getNumSamples() > 0 &&
+      audioData.noiseWaveform.getNumSamples() > 0)
+    return;
+
+  ++hnsepPrewarmGeneration;
+  if (hnsepPrewarmThread.joinable())
+    hnsepPrewarmThread.join();
+
+  auto generation = hnsepPrewarmGeneration.load();
+  auto *projectPtr = &targetProject;
+  hnsepPrewarmThread = std::thread([this, projectPtr, generation]() {
+    if (hnsepPrewarmGeneration.load() != generation)
+      return;
+
+    LOG("EditorController: prewarming HNSep bases for restored project");
+    if (!ensureHNSepBases(*projectPtr)) {
+      LOG("EditorController: HNSep bases prewarm failed");
+      return;
+    }
+    LOG("EditorController: HNSep bases prewarm complete");
+  });
 }
 
 void EditorController::requestCancelLoading() {
@@ -1312,7 +1393,9 @@ void EditorController::resynthesizeIncrementalAsync(
     return;
   }
 
-  auto [dirtyStart, dirtyEnd] = project.getDirtyFrameRange();
+  auto dirtyRange = project.getDirtyFrameRange();
+  auto dirtyStart = dirtyRange.first;
+  auto dirtyEnd = dirtyRange.second;
   LOG("[STRETCH-DBG] resynthIncrAsync: dirtyRange=[" + juce::String(dirtyStart) + ", " + juce::String(dirtyEnd) + "]");
   if (dirtyStart < 0 || dirtyEnd < 0) {
     if (onComplete)
@@ -1323,15 +1406,8 @@ void EditorController::resynthesizeIncrementalAsync(
   synth->setProject(&project);
   synth->setVocoder(voc);
 
-  // Pass SVC engine/model to the synthesizer if active
-  if (isSVCModelActive()) {
-    synth->setSVCEngine(svcEngine.get());
-    synth->setSVCModel(svcModel.get());
-    synth->setSVCParams(svcParams);
-  } else {
-    synth->setSVCEngine(nullptr);
-    synth->setSVCModel(nullptr);
-  }
+  synth->setSVCEngine(nullptr);
+  synth->setSVCModel(nullptr);
 
   pendingRerun.store(false);
 
@@ -1395,8 +1471,30 @@ void EditorController::resynthesizeIncrementalAsync(
   };
 
   incrementalSynthThread = std::thread(
-      [synth, progress = std::move(progressOnMessageThread),
+      [this, synth, projectPtr = &project, dirtyStart, dirtyEnd,
+       progress = std::move(progressOnMessageThread),
        complete = std::move(completeOnMessageThread)]() mutable {
+        const bool hasHNSepEdits =
+            HNSepCurveProcessor::hasActiveEdits(*projectPtr, dirtyStart,
+                                                dirtyEnd);
+        if (hasHNSepEdits && !ensureHNSepBases(*projectPtr)) {
+          LOG("[STRETCH-DBG] resynthIncrAsync: HNSep edits present but bases unavailable");
+        }
+        const auto &audioData = projectPtr->getAudioData();
+        const bool shouldRestoreSVC =
+            projectPtr->hasSvcConditioningDirtyRange() ||
+            (hasHNSepEdits &&
+             (audioData.melFromSVC || lastSVCModelPath.exists()));
+        if (shouldRestoreSVC)
+          ensureSVCModelReady();
+        if (isSVCModelActive()) {
+          synth->setSVCEngine(svcEngine.get());
+          synth->setSVCModel(svcModel.get());
+          synth->setSVCParams(svcParams);
+        } else {
+          synth->setSVCEngine(nullptr);
+          synth->setSVCModel(nullptr);
+        }
         synth->synthesizeRegion(std::move(progress), std::move(complete));
       });
 }
@@ -1475,6 +1573,25 @@ void EditorController::analyzeAudio(
   const auto provider = getProviderFromDevice(device);
   const bool allowConcurrentModelInference = provider == GPUProvider::CPU;
   const int predictedFrames = std::max(1, numSamples / HOP_SIZE + 1);
+  const int resolvedDeviceId = deviceId < 0 ? 0 : deviceId;
+
+  auto loadGameForAnalysis = [&]() {
+    if (!gameDetector || gameDetector->isLoaded())
+      return;
+    if (!gameModelDir.isDirectory()) {
+      LOG("GAME model directory not found: " + gameModelDir.getFullPathName());
+      return;
+    }
+
+    LOG("EditorController: loading GAME models for analysis from " +
+        gameModelDir.getFullPathName() + " (device " + device + ", id " +
+        juce::String(resolvedDeviceId) + ")...");
+    if (!gameDetector->loadModels(gameModelDir, provider, resolvedDeviceId))
+      LOG("Failed to load GAME models from " + gameModelDir.getFullPathName());
+  };
+
+  ensureHNSepModelLoadedForAnalysis();
+  loadGameForAnalysis();
 
   struct HNSepResult {
     bool attempted = false;
@@ -1725,6 +1842,11 @@ void EditorController::analyzeAudio(
 
   PitchCurveProcessor::rebuildCurvesFromSource(targetProject, audioData.f0);
   HNSepCurveProcessor::initializeCurves(targetProject);
+
+  if (hnsepModel && hnsepModel->isLoaded())
+    hnsepModel->unload();
+  if (gameDetector && gameDetector->isLoaded())
+    gameDetector->unload();
 
   if (onComplete)
     onComplete();

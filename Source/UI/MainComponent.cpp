@@ -414,6 +414,7 @@ MainComponent::MainComponent(bool enableAudioDevice)
   modelDebugPanel.setScrollbarsShown(true);
   modelDebugPanel.setCaretVisible(false);
   modelDebugPanel.setPopupMenuEnabled(true);
+  modelDebugPanel.setInterceptsMouseClicks(false, false);
   modelDebugPanel.setColour(juce::TextEditor::backgroundColourId,
                             APP_COLOR_SURFACE.withAlpha(0.95f));
   modelDebugPanel.setColour(juce::TextEditor::textColourId,
@@ -843,8 +844,15 @@ void MainComponent::resized() {
   workspace.setBounds(bounds);
 
   if (modelDebugPanelVisible) {
-    auto panelBounds = bounds.removeFromRight(340).reduced(12);
-    panelBounds.setHeight(260);
+    const auto pianoBounds = getLocalArea(&pianoRoll, pianoRoll.getLocalBounds());
+    const int panelWidth = std::min(320, std::max(220, pianoBounds.getWidth() / 3));
+    const int panelHeight = std::min(220, std::max(150, pianoBounds.getHeight() / 3));
+    const int margin = 14;
+    const int bottomControlClearance = 34;
+    auto panelBounds = juce::Rectangle<int>(panelWidth, panelHeight)
+                           .withRightX(pianoBounds.getRight() - margin)
+                           .withBottomY(pianoBounds.getBottom() -
+                                        bottomControlClearance);
     modelDebugPanel.setBounds(panelBounds);
     modelDebugPanel.toFront(false);
   }

@@ -423,6 +423,24 @@ bool HNSepModel::loadModel(const juce::File &modelPath,
 #endif
 }
 
+void HNSepModel::unload() {
+#ifdef HAVE_ONNXRUNTIME
+  splitPipelineEnabled = false;
+  preSession.reset();
+  coreSession.reset();
+  postSession.reset();
+  onnxSession.reset();
+  allocator.reset();
+  onnxEnv.reset();
+  inputNames.clear();
+  outputNames.clear();
+  inputNameStrings.clear();
+  outputNameStrings.clear();
+#endif
+  loaded = false;
+  LOG("HNSep model unloaded");
+}
+
 bool HNSepModel::separateChunk(const float *audio, int numSamples,
                                std::vector<float> &harmonic,
                                std::vector<float> &noise) {

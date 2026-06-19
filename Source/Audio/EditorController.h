@@ -146,6 +146,10 @@ public:
 private:
   GPUProvider getProviderFromDevice(const juce::String &device) const;
   Vocoder *ensureVocoder();
+  bool ensureHNSepModelLoadedForAnalysis();
+  bool ensureHNSepBases(Project &targetProject);
+  bool ensureSVCModelReady();
+  void prewarmHNSepBasesAsync(Project &targetProject);
 
   struct GameSegmentationResult {
     bool attempted = false;
@@ -170,6 +174,8 @@ private:
   std::unique_ptr<SVCInferenceEngine> svcEngine;
   std::unique_ptr<SVCModelSession> svcModel;
   SVCInferenceEngine::InferenceParams svcParams;
+  juce::File lastSVCModelPath;
+  bool lastSVCModelWasDirectory = false;
 
   juce::File fcpeModelPath;
   juce::File melFilterbankPath;
@@ -200,6 +206,9 @@ private:
   // Async incremental synthesis launcher. The synthesizer owns the longer
   // vocoder/apply work after this thread has prepared the region.
   std::thread incrementalSynthThread;
+
+  std::thread hnsepPrewarmThread;
+  std::atomic<std::uint64_t> hnsepPrewarmGeneration{0};
 
   // Async SVC conversion state
   std::thread svcConversionThread;

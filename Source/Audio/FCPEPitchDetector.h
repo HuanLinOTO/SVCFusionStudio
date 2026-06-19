@@ -64,6 +64,7 @@ public:
                    const juce::File& centTablePath = juce::File(),
                    GPUProvider provider = GPUProvider::CPU,
                    int deviceId = 0);
+    void unload();
     
     /**
      * Check if model is loaded.

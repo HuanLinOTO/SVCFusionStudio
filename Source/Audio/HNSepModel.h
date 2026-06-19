@@ -32,6 +32,7 @@ public:
   bool loadModel(const juce::File &modelPath,
                  GPUProvider provider = GPUProvider::CPU,
                  int deviceId = 0);
+  void unload();
   bool isLoaded() const { return loaded; }
 
   bool separate(const float *audio, int numSamples,

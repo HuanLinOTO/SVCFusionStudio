@@ -265,6 +265,9 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
     hasSvcConditioningDirty = conditioningDirtyRange.first < endFrame &&
                               conditioningDirtyRange.second > startFrame;
   }
+  const bool hasHNSepActiveEdits =
+      HNSepCurveProcessor::hasActiveEdits(*project, startFrame, endFrame);
+  hasSvcConditioningDirty = hasSvcConditioningDirty || hasHNSepActiveEdits;
   bool useSvcMelDirect = svcActive && !isDirectAudioSVC && audioData.melFromSVC &&
                           !hasSvcConditioningDirty;
 
@@ -304,7 +307,7 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
       audioData.noiseWaveform.getNumSamples() > 0) {
     HNSepCurveProcessor::rebuildCurvesForRange(*project, startFrame, endFrame);
 
-    if (HNSepCurveProcessor::hasActiveEdits(*project, startFrame, endFrame)) {
+    if (hasHNSepActiveEdits) {
       const int numFrames = endFrame - startFrame;
       const int harmonicAvail = audioData.harmonicWaveform.getNumSamples();
       const int noiseAvail = audioData.noiseWaveform.getNumSamples();

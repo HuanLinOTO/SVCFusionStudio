@@ -139,6 +139,15 @@ bool SVCInferenceEngine::isContentVecLoaded() const
     return contentVecLoaded;
 }
 
+void SVCInferenceEngine::unloadContentVec()
+{
+#ifdef HAVE_ONNXRUNTIME
+    contentVecSession.reset();
+#endif
+    contentVecLoaded = false;
+    LOG("SVCInferenceEngine: ContentVec unloaded");
+}
+
 // =======================================================================
 // ContentVec Feature Extraction
 // =======================================================================

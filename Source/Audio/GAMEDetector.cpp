@@ -245,6 +245,19 @@ bool GAMEDetector::loadModels(const juce::File& gameDir, GPUProvider provider,
 #endif
 }
 
+void GAMEDetector::unload() {
+#ifdef HAVE_ONNXRUNTIME
+  encoder.session.reset();
+  segmenter.session.reset();
+  estimator.session.reset();
+  bd2dur.session.reset();
+  onnxEnv.reset();
+#endif
+  lastChunkRanges.clear();
+  loaded = false;
+  LOG("GAME models unloaded");
+}
+
 std::vector<GAMEDetector::NoteEvent> GAMEDetector::detectNotes(
     const float* audio, int numSamples, int sampleRate) {
   return detectNotesWithProgress(audio, numSamples, sampleRate, nullptr);

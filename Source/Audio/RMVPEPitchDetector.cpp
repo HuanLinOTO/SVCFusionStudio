@@ -119,6 +119,20 @@ bool RMVPEPitchDetector::loadModel(const juce::File &modelPath,
 #endif
 }
 
+void RMVPEPitchDetector::unload() {
+#ifdef HAVE_ONNXRUNTIME
+  onnxSession.reset();
+  allocator.reset();
+  onnxEnv.reset();
+  inputNames.clear();
+  outputNames.clear();
+  inputNameStrings.clear();
+  outputNameStrings.clear();
+#endif
+  loaded = false;
+  DBG("RMVPE model unloaded");
+}
+
 std::vector<float> RMVPEPitchDetector::resampleTo16k(const float *audio,
                                                      int numSamples,
                                                      int srcRate) {

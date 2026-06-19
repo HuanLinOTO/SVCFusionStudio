@@ -60,6 +60,7 @@ public:
     bool loadContentVec(const juce::File& onnxPath,
                         const juce::String& device = "CPU",
                         int deviceId = 0);
+    void unloadContentVec();
     bool isContentVecLoaded() const;
 
     /**

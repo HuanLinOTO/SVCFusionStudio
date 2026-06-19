@@ -46,6 +46,7 @@ public:
   bool loadModels(const juce::File& gameDir,
                   GPUProvider provider = GPUProvider::CPU,
                   int deviceId = 0);
+  void unload();
   bool isLoaded() const { return loaded; }
 
   std::vector<NoteEvent> detectNotes(const float* audio, int numSamples,
