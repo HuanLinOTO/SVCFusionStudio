@@ -60,6 +60,10 @@ public:
   bool isLoading() const { return isLoadingAudio.load(); }
   bool isRendering() const { return isRenderingFlag.load(); }
   juce::String getModelDebugStatusText() const;
+  void setBackgroundStatusCallback(
+      std::function<void(const juce::String &, bool)> callback) {
+    backgroundStatusCallback = std::move(callback);
+  }
 
   using ProgressCallback =
       std::function<void(double, const juce::String &)>;
@@ -150,6 +154,7 @@ private:
   bool ensureHNSepBases(Project &targetProject);
   bool ensureSVCModelReady();
   void prewarmHNSepBasesAsync(Project &targetProject);
+  void notifyBackgroundStatus(const juce::String &message, bool active);
 
   struct GameSegmentationResult {
     bool attempted = false;
@@ -176,6 +181,7 @@ private:
   SVCInferenceEngine::InferenceParams svcParams;
   juce::File lastSVCModelPath;
   bool lastSVCModelWasDirectory = false;
+  std::function<void(const juce::String &, bool)> backgroundStatusCallback;
 
   juce::File fcpeModelPath;
   juce::File melFilterbankPath;

@@ -380,6 +380,17 @@ MainComponent::MainComponent(bool enableAudioDevice)
   LOG("MainComponent: audio initialized");
 
   LOG("MainComponent: setting up callbacks...");
+  if (editorController) {
+    editorController->setBackgroundStatusCallback(
+        [this](const juce::String &message, bool active) {
+          if (active) {
+            toolbar.showProgress(message);
+            toolbar.setProgress(-1.0f);
+          } else if (!isLoadingAudio.load()) {
+            toolbar.hideProgress();
+          }
+        });
+  }
 
   // Initialize view state from settings
   pianoRoll.setShowDeltaPitch(settingsManager->getShowDeltaPitch());

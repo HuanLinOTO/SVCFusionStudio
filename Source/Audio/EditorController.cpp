@@ -925,6 +925,16 @@ juce::String EditorController::getModelDebugStatusText() const {
   return lines.joinIntoString("\n");
 }
 
+void EditorController::notifyBackgroundStatus(const juce::String &message,
+                                              bool active) {
+  if (!backgroundStatusCallback)
+    return;
+  juce::MessageManager::callAsync(
+      [callback = backgroundStatusCallback, message, active]() {
+        callback(message, active);
+      });
+}
+
 bool EditorController::ensureHNSepModelLoadedForAnalysis() {
   if (!hnsepModel)
     return false;
@@ -977,8 +987,11 @@ bool EditorController::ensureHNSepBases(Project &targetProject) {
   if (audioData.harmonicWaveform.getNumSamples() > 0 &&
       audioData.noiseWaveform.getNumSamples() > 0)
     return true;
-  if (!ensureHNSepModelLoadedForAnalysis())
+  notifyBackgroundStatus("Preparing HNSep harmonic/noise bases...", true);
+  if (!ensureHNSepModelLoadedForAnalysis()) {
+    notifyBackgroundStatus({}, false);
     return false;
+  }
 
   std::vector<float> harmonic;
   std::vector<float> noise;
@@ -986,6 +999,7 @@ bool EditorController::ensureHNSepBases(Project &targetProject) {
   if (!hnsepModel->separate(samples, numSamples, harmonic, noise)) {
     LOG("HNSep on-demand separation failed");
     hnsepModel->unload();
+    notifyBackgroundStatus({}, false);
     return false;
   }
 
@@ -1008,6 +1022,7 @@ bool EditorController::ensureHNSepBases(Project &targetProject) {
   LOG("HNSep on-demand separation complete: " + juce::String(numSamples) +
       " samples separated into harmonic + noise");
   hnsepModel->unload();
+  notifyBackgroundStatus({}, false);
   return true;
 }
 
@@ -1483,6 +1498,8 @@ void EditorController::resynthesizeIncrementalAsync(
         const bool hasHNSepEdits =
             HNSepCurveProcessor::hasActiveEdits(*projectPtr, dirtyStart,
                                                 dirtyEnd);
+        if (hasHNSepEdits)
+          progress("Preparing HNSep harmonic/noise bases...");
         if (hasHNSepEdits && !ensureHNSepBases(*projectPtr)) {
           LOG("[STRETCH-DBG] resynthIncrAsync: HNSep edits present but bases unavailable");
         }
