@@ -249,11 +249,11 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
   std::vector<float> adjustedF0Range =
       project->getAdjustedF0ForRange(startFrame, endFrame);
 
-  // Check if SVC model is active — if so, run SVC inference
-  bool svcActive = svcEngine && svcModel && svcModel->isLoaded()
-                   && svcEngine->isContentVecLoaded();
-  bool isSoVITS = svcActive && (svcModel->getConfig().modelTypeIndex == 2);
-  bool isRVC = svcActive && (svcModel->getConfig().modelTypeIndex == 5);
+  const bool svcModelLoaded = svcModel && svcModel->isLoaded();
+  const bool svcCanInfer = svcEngine && svcModelLoaded &&
+                           svcEngine->isContentVecLoaded();
+  bool isSoVITS = svcModelLoaded && (svcModel->getConfig().modelTypeIndex == 2);
+  bool isRVC = svcModelLoaded && (svcModel->getConfig().modelTypeIndex == 5);
   bool isDirectAudioSVC = isSoVITS || isRVC;
 
   // When melFromSVC is true, audioData.melSpectrogram already contains SVC mel.
@@ -268,7 +268,7 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
   const bool hasHNSepActiveEdits =
       HNSepCurveProcessor::hasActiveEdits(*project, startFrame, endFrame);
   hasSvcConditioningDirty = hasSvcConditioningDirty || hasHNSepActiveEdits;
-  bool useSvcMelDirect = svcActive && !isDirectAudioSVC && audioData.melFromSVC &&
+  bool useSvcMelDirect = svcModelLoaded && !isDirectAudioSVC && audioData.melFromSVC &&
                           !hasSvcConditioningDirty;
 
   // Copy waveform segment for blending.
@@ -276,7 +276,7 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
   // contains SVC audio) to avoid timbral/pitch seams at region boundaries.
   // For non-SVC paths, use the pristine originalWaveform.
   const auto &origWaveform =
-      svcActive
+      (svcModelLoaded && audioData.melFromSVC)
           ? audioData.waveform
           : (audioData.originalWaveform.getNumSamples() > 0
                  ? audioData.originalWaveform
@@ -294,7 +294,8 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
       std::copy(origPtr + startSample, origPtr + startSample + copyLen,
                 originalSegment.begin());
   }
-  LOG("[STRETCH-DBG] svcActive=" + juce::String((int)svcActive)
+  LOG("[STRETCH-DBG] svcModelLoaded=" + juce::String((int)svcModelLoaded)
+      + " svcCanInfer=" + juce::String((int)svcCanInfer)
       + " isSoVITS=" + juce::String((int)isSoVITS)
       + " isRVC=" + juce::String((int)isRVC)
       + " melFromSVC=" + juce::String((int)audioData.melFromSVC)
@@ -368,7 +369,7 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
   // F0 for SVC: may exclude global pitch offset in post-SVC mode
   bool pitchOffsetPreSVC = project->isPitchOffsetBeforeSVC();
   std::vector<float> f0ForSVC;
-  if (svcActive && !useSvcMelDirect &&
+  if (svcCanInfer && !useSvcMelDirect &&
       (!isDirectAudioSVC || hasSvcConditioningDirty)) {
     f0ForSVC = pitchOffsetPreSVC ? adjustedF0Range
                                  : project->getAdjustedF0ForRangeNoGlobalOffset(startFrame, endFrame);
@@ -398,7 +399,7 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
           audioData.melSpectrogram.begin() + endFrame);
     }
   }
-  else if (isDirectAudioSVC)
+  else if (svcCanInfer && isDirectAudioSVC)
   {
     if (hasSvcConditioningDirty) {
       LOG("[STRETCH-DBG] direct-audio SVC: conditioning changed, re-running SVC inference for mel");
@@ -479,7 +480,7 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
       }
     }
   }
-  else if (svcActive)
+  else if (svcCanInfer)
   {
     DBG("IncrementalSynthesizer: SVC mode — type="
         + juce::String(svcModel->getConfig().modelTypeIndex)

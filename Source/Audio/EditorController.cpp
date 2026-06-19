@@ -258,7 +258,7 @@ void EditorController::runFullSVCConversionAsync(SVCProgressCallback onProgress,
     return;
   }
 
-  if (!isSVCModelActive() || !svcEngine->isContentVecLoaded()) {
+  if (!ensureSVCModelReady()) {
     LOG("EditorController::runFullSVCConversion: SVC not ready");
     if (onComplete) onComplete(false);
     return;
@@ -693,12 +693,16 @@ void EditorController::runFullSVCConversionAsync(SVCProgressCallback onProgress,
       if (svcGeneration.load() != myGen) {
         LOG("EditorController: Discarding stale SVC result (generation mismatch)");
         // Don't touch isSVCConverting — the newer conversion owns it
+        if (svcEngine && svcEngine->isContentVecLoaded())
+          svcEngine->unloadContentVec();
         if (onComplete) onComplete(false);
         return;
       }
 
       if (!project) {
         isSVCConverting = false;
+        if (svcEngine && svcEngine->isContentVecLoaded())
+          svcEngine->unloadContentVec();
         if (onComplete) onComplete(false);
         return;
       }
@@ -768,6 +772,8 @@ void EditorController::runFullSVCConversionAsync(SVCProgressCallback onProgress,
 
       LOG("EditorController: Full SVC conversion complete -- " + juce::String(writeLen) + " samples replaced");
       isSVCConverting = false;
+      if (svcEngine && svcEngine->isContentVecLoaded())
+        svcEngine->unloadContentVec();
       if (onComplete) onComplete(true);
     });
   });
@@ -1496,6 +1502,8 @@ void EditorController::resynthesizeIncrementalAsync(
           synth->setSVCModel(nullptr);
         }
         synth->synthesizeRegion(std::move(progress), std::move(complete));
+        if (shouldRestoreSVC && svcEngine && svcEngine->isContentVecLoaded())
+          svcEngine->unloadContentVec();
       });
 }
 
