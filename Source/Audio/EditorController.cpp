@@ -352,20 +352,51 @@ void EditorController::runFullSVCConversionAsync(SVCProgressCallback onProgress,
           std::vector<float> segAudio;
 
           if (isSoVITS) {
-            // Slice F0 (always use adjustedF0 for SoVITS)
-            std::vector<float> segF0(adjustedF0.begin() + f0Start,
-                                     adjustedF0.begin() + f0End);
+            std::vector<float> segF0(f0ForSVC.begin() + f0Start,
+                                     f0ForSVC.begin() + f0End);
 
-            segAudio = svcEngine->inferSoVITS(
+            auto directAudio = svcEngine->inferSoVITS(
                 *svcModel, origPtr + seg.startSample, seg.numSamples,
                 sampleRate, segF0, svcParams);
+
+            if (!directAudio.empty()) {
+              MelSpectrogram melComp(sampleRate, N_FFT, hopSize, NUM_MELS,
+                                     FMIN, FMAX);
+              auto segMel = melComp.compute(directAudio.data(),
+                                            static_cast<int>(directAudio.size()));
+              std::vector<float> segF0Voc(adjustedF0.begin() + f0Start,
+                                          adjustedF0.begin() + f0End);
+              if (static_cast<int>(segMel.size()) > segFrames) {
+                segMel.resize(static_cast<size_t>(segFrames));
+              } else if (static_cast<int>(segMel.size()) < segFrames &&
+                         !segMel.empty()) {
+                segMel.resize(static_cast<size_t>(segFrames), segMel.back());
+              }
+              segAudio = voc->infer(segMel, segF0Voc);
+            }
           } else if (isRVC) {
-            std::vector<float> segF0(adjustedF0.begin() + f0Start,
-                                     adjustedF0.begin() + f0End);
+            std::vector<float> segF0(f0ForSVC.begin() + f0Start,
+                                     f0ForSVC.begin() + f0End);
 
-            segAudio = svcEngine->inferRVC(
+            auto directAudio = svcEngine->inferRVC(
                 *svcModel, origPtr + seg.startSample, seg.numSamples,
                 sampleRate, segF0, svcParams);
+
+            if (!directAudio.empty()) {
+              MelSpectrogram melComp(sampleRate, N_FFT, hopSize, NUM_MELS,
+                                     FMIN, FMAX);
+              auto segMel = melComp.compute(directAudio.data(),
+                                            static_cast<int>(directAudio.size()));
+              std::vector<float> segF0Voc(adjustedF0.begin() + f0Start,
+                                          adjustedF0.begin() + f0End);
+              if (static_cast<int>(segMel.size()) > segFrames) {
+                segMel.resize(static_cast<size_t>(segFrames));
+              } else if (static_cast<int>(segMel.size()) < segFrames &&
+                         !segMel.empty()) {
+                segMel.resize(static_cast<size_t>(segFrames), segMel.back());
+              }
+              segAudio = voc->infer(segMel, segF0Voc);
+            }
           } else {
             // Slice F0 for SVC
             std::vector<float> segF0SVC(f0ForSVC.begin() + f0Start,
@@ -440,20 +471,41 @@ void EditorController::runFullSVCConversionAsync(SVCProgressCallback onProgress,
     // ── Fallback: process entire audio at once (short audio or slicer returned 0) ──
     if (!shouldSlice) {
       if (isDirectAudioSVC) {
-        finalAudio = isSoVITS
+        auto directAudio = isSoVITS
             ? svcEngine->inferSoVITS(
-                *svcModel, origPtr, totalSamples, sampleRate, adjustedF0, svcParams)
+                *svcModel, origPtr, totalSamples, sampleRate, f0ForSVC, svcParams)
             : svcEngine->inferRVC(
-                *svcModel, origPtr, totalSamples, sampleRate, adjustedF0, svcParams);
+                *svcModel, origPtr, totalSamples, sampleRate, f0ForSVC, svcParams);
 
-        if (cancelSVCFlag.load() || finalAudio.empty()) {
-          if (finalAudio.empty()) LOG("EditorController: direct-audio SVC inference failed");
+        if (cancelSVCFlag.load() || directAudio.empty()) {
+          if (directAudio.empty()) LOG("EditorController: direct-audio SVC inference failed");
           isSVCConverting = false;
           if (onComplete) juce::MessageManager::callAsync([onComplete]() { onComplete(false); });
           return;
         }
 
-        LOG("EditorController: direct-audio SVC inference OK -- " + juce::String(finalAudio.size()) + " samples");
+        LOG("EditorController: direct-audio SVC inference OK -- " + juce::String(directAudio.size()) + " samples");
+
+        MelSpectrogram melComp(sampleRate, N_FFT, hopSize, NUM_MELS, FMIN,
+                               FMAX);
+        auto directMel = melComp.compute(directAudio.data(),
+                                         static_cast<int>(directAudio.size()));
+        if (static_cast<int>(directMel.size()) > totalFrames) {
+          directMel.resize(static_cast<size_t>(totalFrames));
+        } else if (static_cast<int>(directMel.size()) < totalFrames &&
+                   !directMel.empty()) {
+          directMel.resize(static_cast<size_t>(totalFrames), directMel.back());
+        }
+
+        finalAudio = voc->infer(directMel, adjustedF0);
+        if (cancelSVCFlag.load() || finalAudio.empty()) {
+          if (finalAudio.empty()) LOG("EditorController: Vocoder inference failed on direct-audio SVC mel");
+          isSVCConverting = false;
+          if (onComplete) juce::MessageManager::callAsync([onComplete]() { onComplete(false); });
+          return;
+        }
+
+        LOG("EditorController: Vocoder OK on direct-audio SVC mel -- " + juce::String(finalAudio.size()) + " samples");
       }
       else {
         auto svcMel = svcEngine->infer(
@@ -1200,10 +1252,20 @@ void EditorController::resynthesizeIncrementalAsync(
     return;
   }
   if (!voc->isLoaded()) {
-    LOG("[STRETCH-DBG] resynthIncrAsync: BAIL — vocoder not loaded");
-    if (onComplete)
-      onComplete(false);
-    return;
+    auto modelPath = PlatformPaths::getModelFile("pc_nsf_hifigan.onnx");
+    if (!modelPath.existsAsFile()) {
+      LOG("[STRETCH-DBG] resynthIncrAsync: BAIL — vocoder model not found");
+      if (onComplete)
+        onComplete(false);
+      return;
+    }
+
+    if (!voc->loadModel(modelPath)) {
+      LOG("[STRETCH-DBG] resynthIncrAsync: BAIL — vocoder load failed");
+      if (onComplete)
+        onComplete(false);
+      return;
+    }
   }
 
   if (!project.hasDirtyNotes() && !project.hasF0DirtyRange()) {

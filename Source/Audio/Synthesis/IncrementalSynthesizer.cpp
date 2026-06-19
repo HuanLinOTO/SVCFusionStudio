@@ -229,6 +229,7 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
   // Generate blend mask before async call (voicedMask is stable here)
   int hopSize = vocoder->getHopSize();
   std::vector<float> blendMask = generateBlendMask(startFrame, endFrame, hopSize);
+  const int numFrames = endFrame - startFrame;
 
   // Early exit: if blend mask is all-zero, nothing to synthesize
   bool hasVoiced = std::any_of(blendMask.begin(), blendMask.end(),
@@ -364,7 +365,8 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
   // F0 for SVC: may exclude global pitch offset in post-SVC mode
   bool pitchOffsetPreSVC = project->isPitchOffsetBeforeSVC();
   std::vector<float> f0ForSVC;
-  if (svcActive && !useSvcMelDirect && !isDirectAudioSVC) {
+  if (svcActive && !useSvcMelDirect &&
+      (!isDirectAudioSVC || hasSvcConditioningDirty)) {
     f0ForSVC = pitchOffsetPreSVC ? adjustedF0Range
                                  : project->getAdjustedF0ForRangeNoGlobalOffset(startFrame, endFrame);
     f0ForSVC = HNSepCurveProcessor::applyShfcToF0(
@@ -379,7 +381,6 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
   //   the vocoder with the updated F0.  This correctly adjusts both timing
   //   (via mel resampling) and pitch (via F0).
   // For DDSP/Reflow: infer() returns mel, then vocoder generates audio.
-  std::vector<float> svcDirectAudio; // only used for direct-audio full inference (not stretch)
 
   if (useSvcMelDirect)
   {
@@ -396,15 +397,83 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
   }
   else if (isDirectAudioSVC)
   {
-    // Direct-audio SVC stretch: use mel from converted waveform analysis through vocoder.
-    LOG("[STRETCH-DBG] direct-audio SVC: using mel+vocoder path for stretch (skip re-inference)");
-    if (!hnsepMelRange.empty()) {
-      LOG("[STRETCH-DBG] applying HNSep-regenerated mel on direct-audio SVC path");
-      melRange = hnsepMelRange;
+    if (hasSvcConditioningDirty) {
+      LOG("[STRETCH-DBG] direct-audio SVC: conditioning changed, re-running SVC inference for mel");
+
+      const auto& origWF = audioData.originalWaveform.getNumSamples() > 0
+                              ? audioData.originalWaveform
+                              : audioData.waveform;
+      int origSR = static_cast<int>(audioData.sampleRate);
+      int origStartSample = startFrame * hopSize;
+      int origNumSamples = (endFrame - startFrame) * hopSize;
+      int origAvail = origWF.getNumSamples();
+
+      std::vector<float> audioSegment(origNumSamples, 0.f);
+      if (!hnsepRebuiltSegment.empty()) {
+        const int copyLen = std::min(origNumSamples,
+                                     static_cast<int>(hnsepRebuiltSegment.size()));
+        std::copy(hnsepRebuiltSegment.begin(),
+                  hnsepRebuiltSegment.begin() + copyLen,
+                  audioSegment.begin());
+        LOG("[STRETCH-DBG] applying HNSep-rebuilt audio segment before direct-audio SVC inference");
+      } else if (origStartSample < origAvail) {
+        int copyLen = std::min(origNumSamples, origAvail - origStartSample);
+        const float* ptr = origWF.getReadPointer(0);
+        std::copy(ptr + origStartSample, ptr + origStartSample + copyLen,
+                  audioSegment.begin());
+      }
+
+      auto directAudio = isSoVITS
+          ? svcEngine->inferSoVITS(*svcModel, audioSegment.data(), origNumSamples,
+                                   origSR, f0ForSVC, svcParams)
+          : svcEngine->inferRVC(*svcModel, audioSegment.data(), origNumSamples,
+                                origSR, f0ForSVC, svcParams);
+
+      if (!directAudio.empty()) {
+        MelSpectrogram melComputer(audioData.sampleRate, N_FFT, hopSize,
+                                   NUM_MELS, FMIN, FMAX);
+        melRange = melComputer.compute(directAudio.data(),
+                                       static_cast<int>(directAudio.size()));
+
+        if (static_cast<int>(melRange.size()) > numFrames) {
+          melRange.resize(static_cast<size_t>(numFrames));
+        } else if (static_cast<int>(melRange.size()) < numFrames &&
+                   !melRange.empty()) {
+          melRange.resize(static_cast<size_t>(numFrames), melRange.back());
+        }
+
+        if (static_cast<int>(melRange.size()) == numFrames) {
+          melRangeFromSvcInference = true;
+          LOG("[STRETCH-DBG] direct-audio SVC mel recomputed from SVC-line inference [" +
+              juce::String(melRange.size()) + " frames]");
+        } else {
+          melRange.clear();
+          LOG("[STRETCH-DBG] direct-audio SVC mel size mismatch after re-inference");
+        }
+      } else {
+        LOG("[STRETCH-DBG] direct-audio SVC re-inference failed, falling back to stored mel");
+      }
+
+      if (melRange.empty()) {
+        if (!hnsepMelRange.empty()) {
+          melRange = hnsepMelRange;
+        } else {
+          melRange.assign(
+              audioData.melSpectrogram.begin() + startFrame,
+              audioData.melSpectrogram.begin() + endFrame);
+        }
+      }
     } else {
-      melRange.assign(
-          audioData.melSpectrogram.begin() + startFrame,
-          audioData.melSpectrogram.begin() + endFrame);
+      // Direct-audio SVC stretch: use mel from converted waveform analysis through vocoder.
+      LOG("[STRETCH-DBG] direct-audio SVC: using mel+vocoder path for stretch (skip re-inference)");
+      if (!hnsepMelRange.empty()) {
+        LOG("[STRETCH-DBG] applying HNSep-regenerated mel on direct-audio SVC path");
+        melRange = hnsepMelRange;
+      } else {
+        melRange.assign(
+            audioData.melSpectrogram.begin() + startFrame,
+            audioData.melSpectrogram.begin() + endFrame);
+      }
     }
   }
   else if (svcActive)
@@ -478,34 +547,6 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
     }
   }
 
-  // For direct audio path, skip vocoder entirely
-  if (isDirectAudioSVC && !svcDirectAudio.empty())
-  {
-    if (onProgress)
-      onProgress(TR("progress.synthesizing"));
-
-    // Cancel previous job
-    if (cancelFlag)
-      cancelFlag->store(true);
-    cancelFlag = std::make_shared<std::atomic<bool>>(false);
-    uint64_t currentJobId = ++jobId;
-    isBusy = true;
-
-    int capturedStartFrame = startFrame;
-    int capturedEndFrame = endFrame;
-    auto capturedCancelFlag = cancelFlag;
-    auto capturedProject = project;
-
-    DBG("synthesizeRegion (direct-audio SVC): frames [" << startFrame << ", " << endFrame << "]");
-
-    // Go directly to the blend+write thread — no vocoder needed
-    applySynthesizedAudio(std::move(svcDirectAudio), std::move(blendMask),
-                          std::move(originalSegment), capturedProject,
-                          capturedStartFrame, capturedEndFrame, hopSize,
-                          currentJobId, capturedCancelFlag, onComplete);
-    return;
-  }
-
   if (melRange.empty() || adjustedF0Range.empty()) {
     completeNow(false);
     return;
@@ -519,7 +560,7 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
       audioData.melSpectrogram[static_cast<size_t>(startFrame + i)] =
           melRange[static_cast<size_t>(i)];
     if (copyLen > 0)
-      audioData.melFromSVC = true;
+      audioData.melFromSVC = !isDirectAudioSVC;
   }
 
   if (onProgress)

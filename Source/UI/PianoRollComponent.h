@@ -33,6 +33,17 @@ enum class EditMode {
   Split   // Note splitting mode
 };
 
+enum class PitchDrawingTarget {
+  Output,
+  Svc
+};
+
+struct SvcPitchFrameEdit {
+  int idx = -1;
+  float oldValue = 0.0f;
+  float newValue = 0.0f;
+};
+
 /**
  * Piano roll component for displaying and editing notes.
  * Supports DPI-aware scaling for multi-monitor setups.
@@ -294,9 +305,11 @@ private:
   void cancelStretchDrag();
 
   // Pitch drawing helpers
-  void applyPitchDrawing(float x, float y);
+  void applyPitchDrawing(float x, float y, PitchDrawingTarget target,
+                         bool resetToReference);
   void commitPitchDrawing();
-  void applyPitchPoint(int frameIndex, int midiCents);
+  void applyPitchPoint(int frameIndex, int midiCents,
+                       PitchDrawingTarget target, bool resetToReference);
   void startNewPitchCurve(int frameIndex, int midiCents);
 
   Project *project = nullptr;
@@ -392,10 +405,14 @@ private:
   // Pitch drawing state
   bool isDrawing = false;
   bool isPendingDraw = false;
+  PitchDrawingTarget drawingTarget = PitchDrawingTarget::Output;
+  bool pendingDrawReset = false;
   float pendingDrawStartX = 0.0f;
   float pendingDrawStartY = 0.0f;
   std::vector<F0FrameEdit> drawingEdits; // unique edits per frame
   std::unordered_map<int, size_t> drawingEditIndexByFrame;
+  std::vector<SvcPitchFrameEdit> svcDrawingEdits;
+  std::unordered_map<int, size_t> svcDrawingEditIndexByFrame;
   int lastDrawFrame = -1;
   int lastDrawValueCents = 0;
   DrawCurve *activeDrawCurve = nullptr;
@@ -486,6 +503,7 @@ private:
   juce::Path pitchRenderPath;
   juce::Path pitchActualPath;
   juce::Path pitchBasePath;
+  juce::Path pitchSvcPath;
   juce::Path pitchDashedPath;
 
   struct RenderProfileStats {

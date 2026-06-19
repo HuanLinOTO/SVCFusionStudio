@@ -1381,24 +1381,94 @@ void MainComponent::openProjectFile(const juce::File &file) {
                                       }
                                     }
 
-                                    // Skip full re-analysis; run vocoder from
-                                    // loaded edits.
-                                    const int totalFrames = std::max(
-                                        static_cast<int>(activeAudioData
-                                                             .melSpectrogram
-                                                             .size()),
-                                        std::max(static_cast<int>(
-                                                     activeAudioData.f0.size()),
-                                                 static_cast<int>(
-                                                     activeAudioData.basePitch
-                                                         .size())));
-                                    if (totalFrames > 0) {
-                                      project->setF0DirtyRange(0, totalFrames);
+                                     // Skip full re-analysis; run synthesis from
+                                     // loaded edits.
+                                      const int totalFrames = std::max(
+                                          static_cast<int>(activeAudioData
+                                                               .melSpectrogram
+                                                               .size()),
+                                          std::max(static_cast<int>(
+                                                       activeAudioData.f0.size()),
+                                                   static_cast<int>(
+                                                       activeAudioData.basePitch
+                                                           .size())));
+                                      if (totalFrames > 0) {
+                                        const auto *svcModel =
+                                            safeThis->editorController
+                                                ? safeThis->editorController
+                                                      ->getSVCModel()
+                                                : nullptr;
+                                        const bool isDirectAudioSVC =
+                                            svcModel && svcModel->isLoaded() &&
+                                            (svcModel->getConfig()
+                                                     .modelTypeIndex == 2 ||
+                                             svcModel->getConfig()
+                                                     .modelTypeIndex == 5);
 
-                                      safeThis->toolbar.showProgress(
-                                          TR("progress.synthesizing"));
-                                      safeThis->toolbar.setProgress(-1.0f);
-                                      safeThis->toolbar.setEnabled(false);
+                                        if (isDirectAudioSVC &&
+                                            safeThis->editorController) {
+                                          safeThis->toolbar.showProgress(
+                                              TR("progress.synthesizing"));
+                                          safeThis->toolbar.setProgress(-1.0f);
+                                          safeThis->toolbar.setEnabled(false);
+                                          LOG("MainComponent: restored direct-audio SVC project using full sliced SVC conversion");
+
+                                          safeThis->editorController
+                                              ->runFullSVCConversionAsync(
+                                                  [safeThis](
+                                                      const juce::String
+                                                          &message) {
+                                                    if (safeThis == nullptr)
+                                                      return;
+                                                    safeThis->toolbar
+                                                        .showProgress(message);
+                                                  },
+                                                  [safeThis](bool success) {
+                                                    if (safeThis == nullptr)
+                                                      return;
+
+                                                    safeThis->toolbar
+                                                        .setEnabled(true);
+                                                    safeThis->toolbar
+                                                        .hideProgress();
+                                                    safeThis->isLoadingAudio =
+                                                        false;
+                                                    safeThis->repaint();
+
+                                                    if (!success) {
+                                                      StyledMessageBox::show(
+                                                          safeThis
+                                                              .getComponent(),
+                                                          "Open warning",
+                                                          "Project opened, but restoring the RVC/SVC result failed.\n"
+                                                          "You can click Re-analyze to rebuild pitch data.",
+                                                          StyledMessageBox
+                                                              ::WarningIcon);
+                                                      return;
+                                                    }
+
+                                                    if (safeThis
+                                                            ->isPluginMode())
+                                                      safeThis
+                                                          ->notifyProjectDataChanged();
+                                                  });
+                                          return;
+                                        }
+
+                                        project->setF0DirtyRange(0, totalFrames);
+                                        if (safeThis->editorController &&
+                                            safeThis->editorController
+                                                ->isSVCModelActive()) {
+                                         project->setSvcConditioningDirtyRange(
+                                             0, totalFrames);
+                                         LOG("MainComponent: restored project marked SVC conditioning dirty for full range [0, " +
+                                             juce::String(totalFrames) + "]");
+                                       }
+
+                                       safeThis->toolbar.showProgress(
+                                           TR("progress.synthesizing"));
+                                       safeThis->toolbar.setProgress(-1.0f);
+                                       safeThis->toolbar.setEnabled(false);
 
                                       safeThis->editorController
                                           ->resynthesizeIncrementalAsync(

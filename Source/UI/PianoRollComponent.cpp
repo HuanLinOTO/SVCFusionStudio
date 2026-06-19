@@ -13,6 +13,61 @@
 #include <limits>
 #include <unordered_set>
 
+namespace {
+void markSvcPitchEdited(Project *project, int minFrame, int maxFrame) {
+  if (!project || minFrame > maxFrame)
+    return;
+
+  const int startFrame = minFrame;
+  const int endFrame = maxFrame + 1;
+  HNSepCurveProcessor::extractNoteCurvesFromMasterForRange(*project,
+                                                           startFrame,
+                                                           endFrame);
+  for (auto *note : project->getNotesInRange(startFrame, endFrame)) {
+    if (note && !note->isRest())
+      note->markDirty();
+  }
+  project->setF0DirtyRange(startFrame, endFrame);
+  project->setSvcConditioningDirtyRange(startFrame, endFrame);
+  project->setModified(true);
+}
+
+class SvcPitchEditAction final : public UndoableAction {
+public:
+  SvcPitchEditAction(Project *project, std::vector<float> *shfcCurve,
+                     std::vector<SvcPitchFrameEdit> edits)
+      : project(project), shfcCurve(shfcCurve), edits(std::move(edits)) {}
+
+  void undo() override { apply(false); }
+  void redo() override { apply(true); }
+  juce::String getName() const override { return "Edit SVC Pitch Curve"; }
+
+private:
+  void apply(bool useNewValues) {
+    if (!shfcCurve || edits.empty())
+      return;
+
+    int minFrame = std::numeric_limits<int>::max();
+    int maxFrame = std::numeric_limits<int>::min();
+    for (const auto &edit : edits) {
+      if (edit.idx < 0 || edit.idx >= static_cast<int>(shfcCurve->size()))
+        continue;
+      (*shfcCurve)[static_cast<size_t>(edit.idx)] =
+          useNewValues ? edit.newValue : edit.oldValue;
+      minFrame = std::min(minFrame, edit.idx);
+      maxFrame = std::max(maxFrame, edit.idx);
+    }
+
+    if (minFrame <= maxFrame)
+      markSvcPitchEdited(project, minFrame, maxFrame);
+  }
+
+  Project *project = nullptr;
+  std::vector<float> *shfcCurve = nullptr;
+  std::vector<SvcPitchFrameEdit> edits;
+};
+} // namespace
+
 PianoRollComponent::PianoRollComponent() {
   // Initialize modular components
   coordMapper = std::make_unique<CoordinateMapper>();
@@ -360,7 +415,7 @@ void PianoRollComponent::paint(juce::Graphics &g) {
     if (isDragging && draggedNote)
       drawDragPitchOverlay(g);
     else if ((pitchEditor && pitchEditor->isDraggingMultiNotes()) ||
-             isDeltaScaleDragging || isDeltaOffsetDragging)
+             isDrawing || isDeltaScaleDragging || isDeltaOffsetDragging)
       drawPitchCurves(g);
     drawStretchGuides(g);
     drawSelectionRect(g);
@@ -1099,7 +1154,7 @@ bool PianoRollComponent::isStaticPianoLayerValid(
                           showUvInterpolationDebug || showActualF0Debug;
   const bool interactivePitch = isDragging ||
                                 (pitchEditor && pitchEditor->isDraggingMultiNotes()) ||
-                                isDeltaScaleDragging || isDeltaOffsetDragging;
+                                isDrawing || isDeltaScaleDragging || isDeltaOffsetDragging;
   const double renderScrollX = getStaticLayerRenderScrollX(scrollX);
   const int requiredRenderWidth = mainArea.getWidth() + staticLayerOverscanPx * 2;
   return staticPianoLayerValid && staticPianoLayer.isValid() &&
@@ -1179,7 +1234,7 @@ void PianoRollComponent::rebuildStaticPianoLayer(
     const bool singleNoteDrag = isDragging && draggedNote != nullptr;
     if ((!isDragging || singleNoteDrag) &&
         !(pitchEditor && pitchEditor->isDraggingMultiNotes()) &&
-        !isDeltaScaleDragging && !isDeltaOffsetDragging) {
+        !isDrawing && !isDeltaScaleDragging && !isDeltaOffsetDragging) {
       sectionStartTicks =
           profileRebuild ? juce::Time::getHighResolutionTicks() : 0;
       drawPitchCurves(cacheGraphics);
@@ -1205,7 +1260,7 @@ void PianoRollComponent::rebuildStaticPianoLayer(
                               showUvInterpolationDebug || showActualF0Debug;
   staticPianoLayerInteractivePitch = isDragging ||
                                      (pitchEditor && pitchEditor->isDraggingMultiNotes()) ||
-                                     isDeltaScaleDragging || isDeltaOffsetDragging;
+                                     isDrawing || isDeltaScaleDragging || isDeltaOffsetDragging;
   staticPianoLayerSkippedDragNote = isDragging ? draggedNote : nullptr;
 
   if (profileRebuild)
@@ -1291,7 +1346,7 @@ void PianoRollComponent::drawStaticPianoContentDirect(
   const bool singleNoteDrag = isDragging && draggedNote != nullptr;
   if ((!isDragging || singleNoteDrag) &&
       !(pitchEditor && pitchEditor->isDraggingMultiNotes()) &&
-      !isDeltaScaleDragging && !isDeltaOffsetDragging) {
+      !isDrawing && !isDeltaScaleDragging && !isDeltaOffsetDragging) {
     sectionStartTicks = profileSections ? juce::Time::getHighResolutionTicks() : 0;
     drawPitchCurves(g);
     if (profileSections)
@@ -2411,6 +2466,82 @@ void PianoRollComponent::drawPitchCurves(juce::Graphics &g) {
     }
   }
 
+  // SVC conditioning pitch: the pitch sent to the SVC model before vocoder.
+  // It is stored as shfcCurve, a semitone offset from the SVC base F0.
+  if (showDeltaPitch) {
+    const bool useLiveBasePreview =
+        (isDragging || pitchEditor->isDraggingMultiNotes());
+    const auto &draggedNotes = pitchEditor->getDraggedNotes();
+    const float svcGlobalOffset =
+        project->isPitchOffsetBeforeSVC() ? globalOffset : 0.0f;
+
+    g.setColour(juce::Colour(0xffffb36b).withAlpha(0.82f));
+
+    for (const auto *notePtr : pitchRenderVisibleNotes) {
+      const auto &note = *notePtr;
+      const bool isDraggedNote =
+          (isDragging && draggedNote == &note) ||
+          (pitchEditor->isDraggingMultiNotes() &&
+           std::find(draggedNotes.begin(), draggedNotes.end(), &note) !=
+               draggedNotes.end());
+      if (skipDraggedNoteInStaticLayer && isDraggedNote)
+        continue;
+      if (isInteractivePaint && !isDrawing && !note.isSelected())
+        continue;
+
+      const bool applyNoteOffset = !(useLiveBasePreview && isDraggedNote);
+      const int startFrame = std::max(note.getStartFrame(), visibleStartFrame);
+      const int endFrame = std::min(note.getEndFrame(), visibleEndFrame);
+      if (endFrame <= startFrame)
+        continue;
+
+      pitchSvcPath.clear();
+      bool pathStarted = false;
+      for (int i = startFrame; i < endFrame; i += curveFrameStep) {
+        float baseMidi =
+            (i < static_cast<int>(audioData.basePitch.size()))
+                ? audioData.basePitch[static_cast<size_t>(i)]
+                : ((i < static_cast<int>(audioData.f0.size()) &&
+                    audioData.f0[static_cast<size_t>(i)] > 0.0f)
+                       ? freqToMidi(audioData.f0[static_cast<size_t>(i)])
+                       : 0.0f);
+        if (applyNoteOffset)
+          baseMidi += note.getPitchOffset();
+
+        const float deltaMidi =
+            (i < static_cast<int>(audioData.deltaPitch.size()))
+                ? audioData.deltaPitch[static_cast<size_t>(i)]
+                : 0.0f;
+        const float shfc = (i < static_cast<int>(audioData.shfcCurve.size()))
+                               ? audioData.shfcCurve[static_cast<size_t>(i)]
+                               : 0.0f;
+        const float svcMidi = baseMidi + deltaMidi + svcGlobalOffset + shfc;
+        if (svcMidi <= 0.0f) {
+          pathStarted = false;
+          continue;
+        }
+
+        const float x = framesToSeconds(i) * pixelsPerSecond;
+        const float y = midiToY(svcMidi) + pixelsPerSemitone * 0.5f;
+        if (!pathStarted) {
+          pitchSvcPath.startNewSubPath(x, y);
+          pathStarted = true;
+        } else {
+          pitchSvcPath.lineTo(x, y);
+        }
+      }
+
+      if (pathStarted) {
+        pitchDashedPath.clear();
+        juce::PathStrokeType stroke(1.6f);
+        const float dashLengths[] = {6.0f, 4.0f};
+        stroke.createDashedStroke(pitchDashedPath, pitchSvcPath,
+                                  dashLengths, 2);
+        g.strokePath(pitchDashedPath, juce::PathStrokeType(1.6f));
+      }
+    }
+  }
+
   if (showActualF0Debug) {
     g.setColour(juce::Colour(0xffffb36b).withAlpha(0.70f));
 
@@ -2728,8 +2859,13 @@ void PianoRollComponent::mouseDown(const juce::MouseEvent &e) {
   if (editMode == EditMode::Draw) {
     isDrawing = false;
     isPendingDraw = true;
+    drawingTarget = e.mods.isRightButtonDown() ? PitchDrawingTarget::Svc
+                                               : PitchDrawingTarget::Output;
+    pendingDrawReset = e.mods.isCtrlDown();
     drawingEdits.clear();
     drawingEditIndexByFrame.clear();
+    svcDrawingEdits.clear();
+    svcDrawingEditIndexByFrame.clear();
     drawCurves.clear();
     activeDrawCurve = nullptr;
     lastDrawFrame = -1;
@@ -3049,14 +3185,16 @@ void PianoRollComponent::mouseDrag(const juce::MouseEvent &e) {
   if (editMode == EditMode::Draw && isPendingDraw) {
     isPendingDraw = false;
     isDrawing = true;
-    applyPitchDrawing(pendingDrawStartX, pendingDrawStartY);
+    applyPitchDrawing(pendingDrawStartX, pendingDrawStartY, drawingTarget,
+                      pendingDrawReset);
 
     if (onPitchEdited)
       onPitchEdited();
   }
 
   if (editMode == EditMode::Draw && isDrawing) {
-    applyPitchDrawing(adjustedX, adjustedY);
+    applyPitchDrawing(adjustedX, adjustedY, drawingTarget,
+                      e.mods.isCtrlDown());
 
     if (onPitchEdited)
       onPitchEdited();
@@ -3254,6 +3392,8 @@ void PianoRollComponent::mouseUp(const juce::MouseEvent &e) {
     isPendingDraw = false;
     drawingEdits.clear();
     drawingEditIndexByFrame.clear();
+    svcDrawingEdits.clear();
+    svcDrawingEditIndexByFrame.clear();
     lastDrawFrame = -1;
     lastDrawValueCents = 0;
     activeDrawCurve = nullptr;
@@ -5255,7 +5395,9 @@ void PianoRollComponent::reapplyBasePitchForNote(Note *note) {
   repaint();
 }
 
-void PianoRollComponent::applyPitchDrawing(float x, float y) {
+void PianoRollComponent::applyPitchDrawing(float x, float y,
+                                           PitchDrawingTarget target,
+                                           bool resetToReference) {
   if (!project)
     return;
 
@@ -5267,17 +5409,69 @@ void PianoRollComponent::applyPitchDrawing(float x, float y) {
   double time = xToTime(x);
   // Compensate for centering offset used in display
   float midi = yToMidi(y - pixelsPerSemitone * 0.5f);
-  // Remove global pitch offset so drawing maps to what is shown on screen
-  if (project)
+  // Output F0 stores pitch before the final global offset; SVC F0 stores the
+  // displayed SVC pitch as an offset from its own SVC base.
+  if (target == PitchDrawingTarget::Output)
     midi -= project->getGlobalPitchOffset();
   int frameIndex = static_cast<int>(secondsToFrames(static_cast<float>(time)));
   int midiCents = static_cast<int>(std::round(midi * 100.0f));
-  applyPitchPoint(frameIndex, midiCents);
+  applyPitchPoint(frameIndex, midiCents, target, resetToReference);
 }
 
 void PianoRollComponent::commitPitchDrawing() {
-  if (drawingEdits.empty())
+  if (drawingTarget == PitchDrawingTarget::Svc) {
+    if (svcDrawingEdits.empty()) {
+      svcDrawingEditIndexByFrame.clear();
+      drawingEdits.clear();
+      drawingEditIndexByFrame.clear();
+      lastDrawFrame = -1;
+      lastDrawValueCents = 0;
+      activeDrawCurve = nullptr;
+      drawCurves.clear();
+      return;
+    }
+
+    int minFrame = std::numeric_limits<int>::max();
+    int maxFrame = std::numeric_limits<int>::min();
+    for (const auto &e : svcDrawingEdits) {
+      minFrame = std::min(minFrame, e.idx);
+      maxFrame = std::max(maxFrame, e.idx);
+    }
+
+    if (project && minFrame <= maxFrame)
+      markSvcPitchEdited(project, minFrame, maxFrame);
+
+    if (undoManager && project) {
+      auto &audioData = project->getAudioData();
+      undoManager->addAction(std::make_unique<SvcPitchEditAction>(
+          project, &audioData.shfcCurve, svcDrawingEdits));
+    }
+
+    svcDrawingEdits.clear();
+    svcDrawingEditIndexByFrame.clear();
+    drawingEdits.clear();
+    drawingEditIndexByFrame.clear();
+    lastDrawFrame = -1;
+    lastDrawValueCents = 0;
+    activeDrawCurve = nullptr;
+    drawCurves.clear();
+    invalidateStaticPianoLayer();
+
+    if (onPitchEditFinished)
+      onPitchEditFinished();
     return;
+  }
+
+  if (drawingEdits.empty()) {
+    drawingEditIndexByFrame.clear();
+    svcDrawingEdits.clear();
+    svcDrawingEditIndexByFrame.clear();
+    lastDrawFrame = -1;
+    lastDrawValueCents = 0;
+    activeDrawCurve = nullptr;
+    drawCurves.clear();
+    return;
+  }
 
   // Calculate the dirty frame range from the changes
   int minFrame = std::numeric_limits<int>::max();
@@ -5328,12 +5522,15 @@ void PianoRollComponent::commitPitchDrawing() {
 
   drawingEdits.clear();
   drawingEditIndexByFrame.clear();
+  svcDrawingEdits.clear();
+  svcDrawingEditIndexByFrame.clear();
   lastDrawFrame = -1;
   lastDrawValueCents = 0;
   activeDrawCurve = nullptr;
   drawCurves.clear();
 
   // Trigger synthesis
+  invalidateStaticPianoLayer();
   if (onPitchEditFinished)
     onPitchEditFinished();
 }
@@ -5343,6 +5540,8 @@ void PianoRollComponent::cancelDrawing() {
     isPendingDraw = false;
     drawingEdits.clear();
     drawingEditIndexByFrame.clear();
+    svcDrawingEdits.clear();
+    svcDrawingEditIndexByFrame.clear();
     lastDrawFrame = -1;
     lastDrawValueCents = 0;
     activeDrawCurve = nullptr;
@@ -5370,11 +5569,21 @@ void PianoRollComponent::cancelDrawing() {
     }
   }
 
+  if (project && !svcDrawingEdits.empty()) {
+    auto &audioData = project->getAudioData();
+    for (const auto &e : svcDrawingEdits) {
+      if (e.idx >= 0 && e.idx < static_cast<int>(audioData.shfcCurve.size()))
+        audioData.shfcCurve[static_cast<size_t>(e.idx)] = e.oldValue;
+    }
+  }
+
   // Clear drawing state
   isDrawing = false;
   isPendingDraw = false;
   drawingEdits.clear();
   drawingEditIndexByFrame.clear();
+  svcDrawingEdits.clear();
+  svcDrawingEditIndexByFrame.clear();
   lastDrawFrame = -1;
   lastDrawValueCents = 0;
   activeDrawCurve = nullptr;
@@ -5383,7 +5592,9 @@ void PianoRollComponent::cancelDrawing() {
   repaint();
 }
 
-void PianoRollComponent::applyPitchPoint(int frameIndex, int midiCents) {
+void PianoRollComponent::applyPitchPoint(int frameIndex, int midiCents,
+                                         PitchDrawingTarget target,
+                                         bool resetToReference) {
   if (!project)
     return;
 
@@ -5396,65 +5607,47 @@ void PianoRollComponent::applyPitchPoint(int frameIndex, int midiCents) {
     audioData.deltaPitch.resize(audioData.f0.size(), 0.0f);
   if (audioData.basePitch.size() < audioData.f0.size())
     audioData.basePitch.resize(audioData.f0.size(), 0.0f);
+  if (audioData.shfcCurve.size() < audioData.f0.size())
+    audioData.shfcCurve.resize(audioData.f0.size(), 0.0f);
   if (frameIndex < 0 || frameIndex >= f0Size)
     return;
 
-  // Only start a new curve if there's no active curve (first point of drawing)
-  if (!activeDrawCurve) {
-    startNewPitchCurve(frameIndex, midiCents);
-    // First point of the new curve: apply and exit
-    auto applyFrameFirst = [&](int idx, int cents) {
-      const float newFreq = midiToFreq(static_cast<float>(cents) / 100.0f);
-      const float oldF0 = audioData.f0[idx];
+  auto getOutputBaseMidi = [&](int idx) {
+    if (idx >= 0 && idx < static_cast<int>(audioData.basePitch.size()))
+      return audioData.basePitch[static_cast<size_t>(idx)];
+    if (idx >= 0 && idx < static_cast<int>(audioData.f0.size()) &&
+        audioData.f0[static_cast<size_t>(idx)] > 0.0f) {
       const float oldDelta =
-          (idx < static_cast<int>(audioData.deltaPitch.size()))
-              ? audioData.deltaPitch[idx]
+          idx < static_cast<int>(audioData.deltaPitch.size())
+              ? audioData.deltaPitch[static_cast<size_t>(idx)]
               : 0.0f;
-      const bool oldVoiced =
-          (idx < static_cast<int>(audioData.voicedMask.size()))
-              ? audioData.voicedMask[idx]
-              : false;
+      return freqToMidi(audioData.f0[static_cast<size_t>(idx)]) - oldDelta;
+    }
+    return 0.0f;
+  };
 
-      float baseMidi = (idx < static_cast<int>(audioData.basePitch.size()))
-                           ? audioData.basePitch[static_cast<size_t>(idx)]
-                           : 0.0f;
-      float newMidi = static_cast<float>(cents) / 100.0f;
-      float newDelta = newMidi - baseMidi;
+  auto getOutputMidiNoGlobal = [&](int idx) {
+    const float baseMidi = getOutputBaseMidi(idx);
+    const float deltaMidi =
+        idx >= 0 && idx < static_cast<int>(audioData.deltaPitch.size())
+            ? audioData.deltaPitch[static_cast<size_t>(idx)]
+            : 0.0f;
+    return baseMidi + deltaMidi;
+  };
 
-      auto it = drawingEditIndexByFrame.find(idx);
-      if (it == drawingEditIndexByFrame.end()) {
-        drawingEditIndexByFrame.emplace(idx, drawingEdits.size());
-        drawingEdits.push_back(F0FrameEdit{idx, oldF0, newFreq, oldDelta,
-                                           newDelta, oldVoiced, true});
-        // Clear deltaPitch for any note containing this frame so changes are
-        // visible immediately
-        auto &notes = project->getNotes();
-        for (auto &note : notes) {
-          if (note.getStartFrame() <= idx && note.getEndFrame() > idx &&
-              note.hasDeltaPitch()) {
-            note.setDeltaPitch(std::vector<float>());
-            break;
-          }
-        }
-      } else {
-        auto &e = drawingEdits[it->second];
-        e.newF0 = newFreq;
-        e.newDelta = newDelta;
-        e.newVoiced = true;
-      }
+  auto getTargetCentsForFrame = [&](int idx, int drawnCents) {
+    if (!resetToReference)
+      return drawnCents;
 
-      audioData.f0[idx] = newFreq;
-      if (idx < static_cast<int>(audioData.deltaPitch.size())) {
-        audioData.deltaPitch[static_cast<size_t>(idx)] = newDelta;
-      }
-      if (idx < static_cast<int>(audioData.voicedMask.size()))
-        audioData.voicedMask[idx] = true;
-    };
-    applyFrameFirst(frameIndex, midiCents);
-    return;
-  }
+    if (target == PitchDrawingTarget::Output)
+      return static_cast<int>(std::round(getOutputBaseMidi(idx) * 100.0f));
 
-  auto applyFrame = [&](int idx, int cents) {
+    const float outputMidi = getOutputMidiNoGlobal(idx) +
+                             project->getGlobalPitchOffset();
+    return static_cast<int>(std::round(outputMidi * 100.0f));
+  };
+
+  auto applyOutputFrame = [&](int idx, int cents) {
     if (idx < 0 || idx >= f0Size)
       return;
 
@@ -5467,11 +5660,9 @@ void PianoRollComponent::applyPitchPoint(int frameIndex, int midiCents) {
                                ? audioData.voicedMask[idx]
                                : false;
 
-    float baseMidi = (idx < static_cast<int>(audioData.basePitch.size()))
-                         ? audioData.basePitch[static_cast<size_t>(idx)]
-                         : 0.0f;
-    float newMidi = static_cast<float>(cents) / 100.0f;
-    float newDelta = newMidi - baseMidi;
+    const float baseMidi = getOutputBaseMidi(idx);
+    const float newMidi = static_cast<float>(cents) / 100.0f;
+    const float newDelta = newMidi - baseMidi;
 
     auto it = drawingEditIndexByFrame.find(idx);
     if (it == drawingEditIndexByFrame.end()) {
@@ -5479,8 +5670,6 @@ void PianoRollComponent::applyPitchPoint(int frameIndex, int midiCents) {
       drawingEdits.push_back(F0FrameEdit{idx, oldF0, newFreq, oldDelta,
                                          newDelta, oldVoiced, true});
 
-      // Clear deltaPitch for any note containing this frame so changes are
-      // visible immediately
       auto &notes = project->getNotes();
       for (auto &note : notes) {
         if (note.getStartFrame() <= idx && note.getEndFrame() > idx &&
@@ -5497,12 +5686,51 @@ void PianoRollComponent::applyPitchPoint(int frameIndex, int midiCents) {
     }
 
     audioData.f0[idx] = newFreq;
-    if (idx < static_cast<int>(audioData.deltaPitch.size())) {
+    if (idx < static_cast<int>(audioData.deltaPitch.size()))
       audioData.deltaPitch[static_cast<size_t>(idx)] = newDelta;
-    }
     if (idx < static_cast<int>(audioData.voicedMask.size()))
       audioData.voicedMask[idx] = true;
   };
+
+  auto applySvcFrame = [&](int idx, int cents) {
+    if (idx < 0 || idx >= f0Size ||
+        idx >= static_cast<int>(audioData.shfcCurve.size()))
+      return;
+
+    const float outputMidiNoGlobal = getOutputMidiNoGlobal(idx);
+    const float svcBaseMidi = outputMidiNoGlobal +
+                              (project->isPitchOffsetBeforeSVC()
+                                   ? project->getGlobalPitchOffset()
+                                   : 0.0f);
+    const float targetDisplayMidi = static_cast<float>(cents) / 100.0f;
+    const float oldValue = audioData.shfcCurve[static_cast<size_t>(idx)];
+    const float newValue = targetDisplayMidi - svcBaseMidi;
+
+    auto it = svcDrawingEditIndexByFrame.find(idx);
+    if (it == svcDrawingEditIndexByFrame.end()) {
+      svcDrawingEditIndexByFrame.emplace(idx, svcDrawingEdits.size());
+      svcDrawingEdits.push_back(SvcPitchFrameEdit{idx, oldValue, newValue});
+    } else {
+      svcDrawingEdits[it->second].newValue = newValue;
+    }
+
+    audioData.shfcCurve[static_cast<size_t>(idx)] = newValue;
+  };
+
+  auto applyFrame = [&](int idx, int cents) {
+    if (target == PitchDrawingTarget::Svc)
+      applySvcFrame(idx, cents);
+    else
+      applyOutputFrame(idx, cents);
+  };
+
+  // Only start a new curve if there's no active curve (first point of drawing)
+  if (!activeDrawCurve) {
+    const int targetCents = getTargetCentsForFrame(frameIndex, midiCents);
+    startNewPitchCurve(frameIndex, targetCents);
+    applyFrame(frameIndex, targetCents);
+    return;
+  }
 
   auto appendValue = [&](int idx, int cents) {
     if (!activeDrawCurve)
@@ -5535,28 +5763,32 @@ void PianoRollComponent::applyPitchPoint(int frameIndex, int midiCents) {
   };
 
   if (lastDrawFrame < 0) {
-    appendValue(frameIndex, midiCents);
-    applyFrame(frameIndex, midiCents);
+    const int targetCents = getTargetCentsForFrame(frameIndex, midiCents);
+    appendValue(frameIndex, targetCents);
+    applyFrame(frameIndex, targetCents);
   } else {
     int start = lastDrawFrame;
     int end = frameIndex;
     int startVal = lastDrawValueCents;
-    int endVal = midiCents;
+    int endVal = getTargetCentsForFrame(frameIndex, midiCents);
 
     if (start == end) {
-      appendValue(frameIndex, midiCents);
-      applyFrame(frameIndex, midiCents);
+      appendValue(frameIndex, endVal);
+      applyFrame(frameIndex, endVal);
     } else {
       int step = (end > start) ? 1 : -1;
       int length = std::abs(end - start);
       for (int i = 0; i <= length; ++i) {
         int idx = start + i * step;
-        float t = length == 0
-                      ? 0.0f
-                      : static_cast<float>(i) / static_cast<float>(length);
-        float v = juce::jmap(t, 0.0f, 1.0f, static_cast<float>(startVal),
-                             static_cast<float>(endVal));
-        int cents = static_cast<int>(std::round(v));
+        int cents = getTargetCentsForFrame(idx, midiCents);
+        if (!resetToReference) {
+          float t = length == 0
+                        ? 0.0f
+                        : static_cast<float>(i) / static_cast<float>(length);
+          float v = juce::jmap(t, 0.0f, 1.0f, static_cast<float>(startVal),
+                               static_cast<float>(endVal));
+          cents = static_cast<int>(std::round(v));
+        }
         appendValue(idx, cents);
         applyFrame(idx, cents);
       }
@@ -5564,7 +5796,7 @@ void PianoRollComponent::applyPitchPoint(int frameIndex, int midiCents) {
   }
 
   lastDrawFrame = frameIndex;
-  lastDrawValueCents = midiCents;
+  lastDrawValueCents = getTargetCentsForFrame(frameIndex, midiCents);
 }
 
 void PianoRollComponent::startNewPitchCurve(int frameIndex, int midiCents) {
