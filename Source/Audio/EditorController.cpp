@@ -922,6 +922,43 @@ bool EditorController::isInferenceBusy() const {
   return false;
 }
 
+juce::String EditorController::getModelDebugStatusText() const {
+  auto loadedText = [](bool loaded) { return loaded ? "loaded" : "not loaded"; };
+  auto deviceText = [this]() {
+    return device + " #" + juce::String(deviceId);
+  };
+
+  juce::StringArray lines;
+  lines.add("Model Debug");
+  lines.add("Device: " + deviceText());
+  lines.add("Reloading: " + juce::String(isReloadingModels.load() ? "yes" : "no"));
+  lines.add(juce::String());
+  lines.add("FCPE: " + juce::String(loadedText(fcpePitchDetector && fcpePitchDetector->isLoaded())));
+  lines.add("RMVPE: " + juce::String(loadedText(rmvpePitchDetector && rmvpePitchDetector->isLoaded())));
+  lines.add("GAME: " + juce::String(loadedText(gameDetector && gameDetector->isLoaded())));
+  lines.add("HNSep: " + juce::String(loadedText(hnsepModel && hnsepModel->isLoaded())));
+
+  const bool vocoderLoaded = vocoder && vocoder->isLoaded();
+  juce::String vocoderDevice = deviceText();
+  if (vocoder) {
+    vocoderDevice = vocoder->getExecutionDevice() + " #" +
+                    juce::String(vocoder->getExecutionDeviceId());
+  }
+  lines.add("Vocoder: " + juce::String(loadedText(vocoderLoaded)) +
+            " (" + vocoderDevice + ")");
+
+  lines.add("ContentVec: " + juce::String(loadedText(svcEngine && svcEngine->isContentVecLoaded())));
+
+  if (svcModel && svcModel->isLoaded()) {
+    const auto &cfg = svcModel->getConfig();
+    lines.add("SVC: loaded (" + cfg.modelTypeName + ", " + cfg.name + ")");
+  } else {
+    lines.add("SVC: not loaded");
+  }
+
+  return lines.joinIntoString("\n");
+}
+
 void EditorController::requestCancelLoading() {
   cancelLoadingFlag = true;
 }

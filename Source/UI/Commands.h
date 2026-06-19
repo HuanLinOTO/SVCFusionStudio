@@ -28,6 +28,7 @@ namespace CommandIDs
         showDeltaPitch      = 0x2020,
         showBasePitch       = 0x2021,
         showSettings        = 0x2022,
+        toggleModelDebugPanel = 0x2023,
         
         // Transport Commands (0x2030-0x203F)
         playPause           = 0x2030,

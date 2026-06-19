@@ -59,6 +59,7 @@ public:
   bool isInferenceBusy() const;
   bool isLoading() const { return isLoadingAudio.load(); }
   bool isRendering() const { return isRenderingFlag.load(); }
+  juce::String getModelDebugStatusText() const;
 
   using ProgressCallback =
       std::function<void(double, const juce::String &)>;

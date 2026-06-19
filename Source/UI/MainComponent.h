@@ -147,6 +147,7 @@ private:
 
   void reloadInferenceModels(bool async = false);
   bool isInferenceBusy() const;
+  void setModelDebugPanelVisible(bool visible);
 
   void loadAudioFile(const juce::File &file);
   void openProjectFile(const juce::File &file);
@@ -183,6 +184,9 @@ private:
   PianoRollWorkspaceView pianoRollView;
   ParameterPanel parameterPanel;
   VoicebankPanel voicebankPanel;
+  juce::TextEditor modelDebugPanel;
+  bool modelDebugPanelVisible = false;
+  juce::String lastModelDebugText;
 
   std::unique_ptr<SettingsOverlay> settingsOverlay;
 

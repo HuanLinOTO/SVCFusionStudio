@@ -408,6 +408,20 @@ MainComponent::MainComponent(bool enableAudioDevice)
 #endif
   addAndMakeVisible(toolbar);
   addAndMakeVisible(workspace);
+  addChildComponent(modelDebugPanel);
+  modelDebugPanel.setMultiLine(true);
+  modelDebugPanel.setReadOnly(true);
+  modelDebugPanel.setScrollbarsShown(true);
+  modelDebugPanel.setCaretVisible(false);
+  modelDebugPanel.setPopupMenuEnabled(true);
+  modelDebugPanel.setColour(juce::TextEditor::backgroundColourId,
+                            APP_COLOR_SURFACE.withAlpha(0.95f));
+  modelDebugPanel.setColour(juce::TextEditor::textColourId,
+                            APP_COLOR_TEXT_PRIMARY);
+  modelDebugPanel.setColour(juce::TextEditor::outlineColourId,
+                            APP_COLOR_BORDER);
+  modelDebugPanel.setColour(juce::TextEditor::focusedOutlineColourId,
+                            APP_COLOR_PRIMARY);
 #if !JUCE_MAC
   menuBar.toFront(false);
 #endif
@@ -828,6 +842,13 @@ void MainComponent::resized() {
   // Workspace takes remaining space (includes piano roll, panels, and sidebar)
   workspace.setBounds(bounds);
 
+  if (modelDebugPanelVisible) {
+    auto panelBounds = bounds.removeFromRight(340).reduced(12);
+    panelBounds.setHeight(260);
+    modelDebugPanel.setBounds(panelBounds);
+    modelDebugPanel.toFront(false);
+  }
+
   if (settingsOverlay)
     settingsOverlay->setBounds(getLocalBounds());
 
@@ -898,6 +919,26 @@ void MainComponent::timerCallback() {
     toolbar.hideProgress();
     lastLoadingMessage.clear();
   }
+
+  if (modelDebugPanelVisible && editorController) {
+    auto text = editorController->getModelDebugStatusText();
+    if (text != lastModelDebugText) {
+      modelDebugPanel.setText(text, juce::dontSendNotification);
+      lastModelDebugText = text;
+    }
+  }
+}
+
+void MainComponent::setModelDebugPanelVisible(bool visible) {
+  modelDebugPanelVisible = visible;
+  modelDebugPanel.setVisible(visible);
+  if (visible && editorController) {
+    lastModelDebugText = editorController->getModelDebugStatusText();
+    modelDebugPanel.setText(lastModelDebugText, juce::dontSendNotification);
+  }
+  resized();
+  if (commandManager)
+    commandManager->commandStatusChanged();
 }
 
 bool MainComponent::keyPressed(const juce::KeyPress &key,
@@ -2690,6 +2731,7 @@ void MainComponent::getAllCommands(juce::Array<juce::CommandID>& commands) {
         CommandIDs::showSettings,
         CommandIDs::showDeltaPitch,
         CommandIDs::showBasePitch,
+        CommandIDs::toggleModelDebugPanel,
         
         // Transport commands
         CommandIDs::playPause,
@@ -2797,6 +2839,11 @@ void MainComponent::getCommandInfo(juce::CommandID commandID,
             result.setInfo(TR("command.show_base_pitch"), TR("command.show_base_pitch.desp"), "View", 0);
             result.addDefaultKeypress('b', primaryModifier | juce::ModifierKeys::shiftModifier);
             result.setTicked(settingsManager->getShowBasePitch());
+            break;
+
+        case CommandIDs::toggleModelDebugPanel:
+            result.setInfo("Model Debug Panel", "Show loaded model and inference device status", "View", 0);
+            result.setTicked(modelDebugPanelVisible);
             break;
             
         // Transport commands
@@ -2962,6 +3009,10 @@ bool MainComponent::perform(const ApplicationCommandTarget::InvocationInfo& info
             commandManager->commandStatusChanged();
             return true;
         }
+
+        case CommandIDs::toggleModelDebugPanel:
+            setModelDebugPanelVisible(!modelDebugPanelVisible);
+            return true;
         
         // Transport commands
         case CommandIDs::playPause:
