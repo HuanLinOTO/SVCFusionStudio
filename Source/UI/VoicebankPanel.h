@@ -71,6 +71,7 @@ public:
     void removeSelectedVoicebank();
     const VoicebankInfo* getSelectedVoicebank() const;
     const VoicebankInfo* getActiveVoicebank() const;
+    bool setActiveVoicebankByPath(const juce::File& path);
 
     /** Scan the persistent voicebanks directory and populate the list. */
     void scanVoicebanksDirectory();

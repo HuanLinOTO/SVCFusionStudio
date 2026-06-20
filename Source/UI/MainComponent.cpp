@@ -1419,6 +1419,17 @@ void MainComponent::openProjectFile(const juce::File &file) {
 
                                       safeThis->pianoRollView.getHNSepLane()
                                           .setShfcEnabled(voicebankLoaded);
+                                      if (voicebankLoaded) {
+                                        if (!safeThis->voicebankPanel
+                                                 .setActiveVoicebankByPath(
+                                                     voicebankPath)) {
+                                          safeThis->voicebankPanel
+                                              .scanVoicebanksDirectory();
+                                          safeThis->voicebankPanel
+                                              .setActiveVoicebankByPath(
+                                                  voicebankPath);
+                                        }
+                                      }
                                       if (!voicebankLoaded) {
                                         LOG("MainComponent: saved SVC voicebank could not be restored: " +
                                             activeAudioData.svcVoicebankPath);

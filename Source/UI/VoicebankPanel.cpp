@@ -508,6 +508,26 @@ const VoicebankPanel::VoicebankInfo* VoicebankPanel::getActiveVoicebank() const
     return nullptr;
 }
 
+bool VoicebankPanel::setActiveVoicebankByPath(const juce::File& path)
+{
+    const auto targetPath = path.getFullPathName();
+    for (int i = 0; i < static_cast<int>(voicebanks.size()); ++i)
+    {
+        const auto itemPath = juce::File(voicebanks[static_cast<size_t>(i)].path)
+                                  .getFullPathName();
+        if (itemPath.equalsIgnoreCase(targetPath))
+        {
+            activeIndex = i;
+            listBox.selectRow(i, juce::dontSendNotification);
+            listBox.repaint();
+            updateInfoDisplay();
+            startInfoAnimation(true);
+            return true;
+        }
+    }
+    return false;
+}
+
 // ==== Private Helpers ====
 
 bool VoicebankPanel::parseSfsModelConfig(const juce::File& sfsFile, VoicebankInfo& info)
