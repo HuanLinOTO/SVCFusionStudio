@@ -1385,6 +1385,46 @@ void MainComponent::openProjectFile(const juce::File &file) {
 
                                     auto &activeAudioData =
                                         project->getAudioData();
+                                    if (activeAudioData.svcEnabled &&
+                                        safeThis->editorController) {
+                                      juce::File voicebankPath(
+                                          activeAudioData.svcVoicebankPath);
+                                      if (!voicebankPath.exists() &&
+                                          activeAudioData.svcVoicebankName
+                                              .isNotEmpty()) {
+                                        voicebankPath =
+                                            PlatformPaths::getVoicebanksDirectory()
+                                                .getChildFile(activeAudioData
+                                                                  .svcVoicebankName);
+                                      }
+
+                                      bool voicebankLoaded = false;
+                                      if (voicebankPath.isDirectory()) {
+                                        safeThis->toolbar.showProgress(
+                                            "Loading saved SVC voicebank...");
+                                        safeThis->toolbar.setProgress(-1.0f);
+                                        voicebankLoaded = safeThis
+                                                              ->editorController
+                                                              ->loadSVCModelFromDirectory(
+                                                                  voicebankPath);
+                                      } else if (voicebankPath.existsAsFile()) {
+                                        safeThis->toolbar.showProgress(
+                                            "Loading saved SVC voicebank...");
+                                        safeThis->toolbar.setProgress(-1.0f);
+                                        voicebankLoaded = safeThis
+                                                              ->editorController
+                                                              ->loadSVCModel(
+                                                                  voicebankPath);
+                                      }
+
+                                      safeThis->pianoRollView.getHNSepLane()
+                                          .setShfcEnabled(voicebankLoaded);
+                                      if (!voicebankLoaded) {
+                                        LOG("MainComponent: saved SVC voicebank could not be restored: " +
+                                            activeAudioData.svcVoicebankPath);
+                                      }
+                                    }
+
                                     if (safeThis->isPluginMode()) {
                                       // plugin mode: no audio engine
                                     } else if (auto *engine =
@@ -1470,7 +1510,6 @@ void MainComponent::openProjectFile(const juce::File &file) {
                                           safeThis->toolbar.showProgress(
                                               TR("progress.synthesizing"));
                                           safeThis->toolbar.setProgress(-1.0f);
-                                          safeThis->toolbar.setEnabled(false);
                                           LOG("MainComponent: restored direct-audio SVC project using full sliced SVC conversion");
 
                                           safeThis->editorController
@@ -1487,8 +1526,6 @@ void MainComponent::openProjectFile(const juce::File &file) {
                                                     if (safeThis == nullptr)
                                                       return;
 
-                                                    safeThis->toolbar
-                                                        .setEnabled(true);
                                                     safeThis->toolbar
                                                         .hideProgress();
                                                     safeThis->isLoadingAudio =
@@ -1528,7 +1565,6 @@ void MainComponent::openProjectFile(const juce::File &file) {
                                        safeThis->toolbar.showProgress(
                                            TR("progress.synthesizing"));
                                        safeThis->toolbar.setProgress(-1.0f);
-                                       safeThis->toolbar.setEnabled(false);
 
                                       safeThis->editorController
                                           ->resynthesizeIncrementalAsync(
@@ -1544,8 +1580,6 @@ void MainComponent::openProjectFile(const juce::File &file) {
                                                 if (safeThis == nullptr)
                                                   return;
 
-                                                safeThis->toolbar.setEnabled(
-                                                    true);
                                                 safeThis->toolbar.hideProgress();
                                                 safeThis->isLoadingAudio = false;
                                                 safeThis->repaint();

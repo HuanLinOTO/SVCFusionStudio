@@ -147,6 +147,13 @@ bool EditorController::loadSVCModel(const juce::File& sfsModelFile) {
       " spk=" + juce::String(cfg.nSpk));
   lastSVCModelPath = sfsModelFile;
   lastSVCModelWasDirectory = false;
+  if (project) {
+    auto &audioData = project->getAudioData();
+    audioData.svcEnabled = true;
+    audioData.svcVoicebankWasDirectory = false;
+    audioData.svcVoicebankName = sfsModelFile.getFileNameWithoutExtension();
+    audioData.svcVoicebankPath = sfsModelFile.getFullPathName();
+  }
   return true;
 }
 
@@ -182,6 +189,13 @@ bool EditorController::loadSVCModelFromDirectory(const juce::File& voicebankDir)
       " spk=" + juce::String(cfg.nSpk));
   lastSVCModelPath = voicebankDir;
   lastSVCModelWasDirectory = true;
+  if (project) {
+    auto &audioData = project->getAudioData();
+    audioData.svcEnabled = true;
+    audioData.svcVoicebankWasDirectory = true;
+    audioData.svcVoicebankName = voicebankDir.getFileName();
+    audioData.svcVoicebankPath = voicebankDir.getFullPathName();
+  }
   return true;
 }
 
@@ -237,6 +251,15 @@ bool EditorController::ensureSVCModelReady() {
   auto &cfg = svcModel->getConfig();
   LOG("EditorController: SVC model restored -- " + cfg.modelTypeName +
       " (" + cfg.name + ")");
+  if (project) {
+    auto &audioData = project->getAudioData();
+    audioData.svcEnabled = true;
+    audioData.svcVoicebankWasDirectory = lastSVCModelWasDirectory;
+    audioData.svcVoicebankName = lastSVCModelPath.getFileNameWithoutExtension();
+    if (lastSVCModelWasDirectory)
+      audioData.svcVoicebankName = lastSVCModelPath.getFileName();
+    audioData.svcVoicebankPath = lastSVCModelPath.getFullPathName();
+  }
   return true;
 }
 
@@ -677,6 +700,33 @@ void EditorController::runFullSVCConversionAsync(SVCProgressCallback onProgress,
           juce::String(sovitsMel.size()) + " frames]");
     }
 
+    std::vector<float> svcHarmonic;
+    std::vector<float> svcNoise;
+    bool refreshedSVCBases = false;
+    bool clearStaleHNSepBases = false;
+    if (!blendedAudio.empty()) {
+      std::lock_guard<std::mutex> lock(hnsepBasesMutex);
+      notifyBackgroundStatus("Preparing HNSep harmonic/noise bases...", true);
+      if (ensureHNSepModelLoadedForAnalysis()) {
+        refreshedSVCBases = hnsepModel->separate(
+            blendedAudio.data(), static_cast<int>(blendedAudio.size()),
+            svcHarmonic, svcNoise);
+        if (refreshedSVCBases) {
+          LOG("EditorController: refreshed HNSep bases from SVC result [" +
+              juce::String(svcHarmonic.size()) + " samples]");
+        } else {
+          clearStaleHNSepBases = true;
+          LOG("EditorController: failed to refresh HNSep bases from SVC result");
+        }
+        hnsepModel->unload();
+      } else {
+        clearStaleHNSepBases = true;
+      }
+      if (lastSVCModelPath.exists())
+        ensureSVCModelReady();
+      notifyBackgroundStatus({}, false);
+    }
+
     if (onProgress)
       juce::MessageManager::callAsync([onProgress]() { onProgress("Applying SVC audio..."); });
 
@@ -685,10 +735,14 @@ void EditorController::runFullSVCConversionAsync(SVCProgressCallback onProgress,
     juce::MessageManager::callAsync([this, myGen,
                                      blendedAudio = std::move(blendedAudio),
                                       writeLen, onComplete, isDirectAudioSVC, totalFrames,
-                                     collectedSegMels = std::move(collectedSegMels),
-                                       fullSvcMel = std::move(fullSvcMel),
-                                       anySegmentFailed,
-                                       sovitsMel = std::move(sovitsMel)]() {
+                                      collectedSegMels = std::move(collectedSegMels),
+                                        fullSvcMel = std::move(fullSvcMel),
+                                        anySegmentFailed,
+                                        sovitsMel = std::move(sovitsMel),
+                                        svcHarmonic = std::move(svcHarmonic),
+                                        svcNoise = std::move(svcNoise),
+                                        refreshedSVCBases,
+                                        clearStaleHNSepBases]() {
       // If generation doesn't match, a newer conversion superseded us — discard
       if (svcGeneration.load() != myGen) {
         LOG("EditorController: Discarding stale SVC result (generation mismatch)");
@@ -716,6 +770,9 @@ void EditorController::runFullSVCConversionAsync(SVCProgressCallback onProgress,
         for (int i = 0; i < writeable; ++i)
           dst[i] = blendedAudio[i];
       }
+      audioData.waveformFromSVC = true;
+      audioData.svcRendered = true;
+      audioData.hnsepCurvesTargetSVC = true;
 
       // ── Store SVC mel in audioData.melSpectrogram so that subsequent
       //    stretch / pitch edits use SVC mel through vocoder (no re-inference) ──
@@ -759,6 +816,35 @@ void EditorController::runFullSVCConversionAsync(SVCProgressCallback onProgress,
         } else if (anySegmentFailed) {
           LOG("EditorController: No sliced SVC mel was stored after segment failures; melFromSVC disabled");
         }
+      }
+
+      if (refreshedSVCBases) {
+        const int totalWaveSamples = audioData.waveform.getNumSamples();
+        const int harmonicCopyLen = std::min(
+            totalWaveSamples, static_cast<int>(svcHarmonic.size()));
+        const int noiseCopyLen = std::min(totalWaveSamples,
+                                          static_cast<int>(svcNoise.size()));
+        audioData.harmonicWaveform.setSize(1, totalWaveSamples,
+                                           false, false, true);
+        audioData.harmonicWaveform.clear();
+        if (harmonicCopyLen > 0) {
+          juce::FloatVectorOperations::copy(
+              audioData.harmonicWaveform.getWritePointer(0),
+              svcHarmonic.data(), harmonicCopyLen);
+        }
+        audioData.noiseWaveform.setSize(1, totalWaveSamples,
+                                        false, false, true);
+        audioData.noiseWaveform.clear();
+        if (noiseCopyLen > 0) {
+          juce::FloatVectorOperations::copy(
+              audioData.noiseWaveform.getWritePointer(0), svcNoise.data(),
+              noiseCopyLen);
+        }
+        audioData.hnsepBasesFromSVC = true;
+      } else if (clearStaleHNSepBases) {
+        audioData.harmonicWaveform.setSize(1, 0);
+        audioData.noiseWaveform.setSize(1, 0);
+        audioData.hnsepBasesFromSVC = false;
       }
 
       // Load into audio engine for playback
@@ -980,12 +1066,19 @@ bool EditorController::ensureHNSepModelLoadedForAnalysis() {
 }
 
 bool EditorController::ensureHNSepBases(Project &targetProject) {
+  std::lock_guard<std::mutex> lock(hnsepBasesMutex);
+
   auto &audioData = targetProject.getAudioData();
   const int numSamples = audioData.waveform.getNumSamples();
   if (numSamples <= 0)
     return false;
+  if (audioData.hnsepCurvesTargetSVC && !audioData.waveformFromSVC) {
+    LOG("HNSep bases deferred until SVC waveform is restored");
+    return false;
+  }
   if (audioData.harmonicWaveform.getNumSamples() > 0 &&
-      audioData.noiseWaveform.getNumSamples() > 0)
+      audioData.noiseWaveform.getNumSamples() > 0 &&
+      (!audioData.waveformFromSVC || audioData.hnsepBasesFromSVC))
     return true;
   notifyBackgroundStatus("Preparing HNSep harmonic/noise bases...", true);
   if (!ensureHNSepModelLoadedForAnalysis()) {
@@ -1022,6 +1115,7 @@ bool EditorController::ensureHNSepBases(Project &targetProject) {
   LOG("HNSep on-demand separation complete: " + juce::String(numSamples) +
       " samples separated into harmonic + noise");
   hnsepModel->unload();
+  audioData.hnsepBasesFromSVC = audioData.waveformFromSVC;
   notifyBackgroundStatus({}, false);
   return true;
 }
@@ -1033,6 +1127,9 @@ void EditorController::prewarmHNSepBasesAsync(Project &targetProject) {
       std::max(audioData.breathCurve.size(), audioData.tensionCurve.size()));
   const int frameCount = static_cast<int>(curveFrameCount);
   if (frameCount <= 0)
+    return;
+
+  if (audioData.hnsepCurvesTargetSVC && !audioData.waveformFromSVC)
     return;
 
   if (!HNSepCurveProcessor::hasActiveEdits(targetProject, 0, frameCount))
@@ -1504,10 +1601,7 @@ void EditorController::resynthesizeIncrementalAsync(
           LOG("[STRETCH-DBG] resynthIncrAsync: HNSep edits present but bases unavailable");
         }
         const auto &audioData = projectPtr->getAudioData();
-        const bool shouldRestoreSVC =
-            projectPtr->hasSvcConditioningDirtyRange() ||
-            (hasHNSepEdits &&
-             (audioData.melFromSVC || lastSVCModelPath.exists()));
+        const bool shouldRestoreSVC = projectPtr->hasSvcConditioningDirtyRange();
         if (shouldRestoreSVC)
           ensureSVCModelReady();
         if (isSVCModelActive()) {

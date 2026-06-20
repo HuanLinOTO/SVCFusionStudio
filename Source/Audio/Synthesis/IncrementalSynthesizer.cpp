@@ -267,7 +267,6 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
   }
   const bool hasHNSepActiveEdits =
       HNSepCurveProcessor::hasActiveEdits(*project, startFrame, endFrame);
-  hasSvcConditioningDirty = hasSvcConditioningDirty || hasHNSepActiveEdits;
   bool useSvcMelDirect = svcModelLoaded && !isDirectAudioSVC && audioData.melFromSVC &&
                           !hasSvcConditioningDirty;
 
@@ -276,7 +275,7 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
   // contains SVC audio) to avoid timbral/pitch seams at region boundaries.
   // For non-SVC paths, use the pristine originalWaveform.
   const auto &origWaveform =
-      (svcModelLoaded && audioData.melFromSVC)
+      (audioData.waveformFromSVC || (svcModelLoaded && audioData.melFromSVC))
           ? audioData.waveform
           : (audioData.originalWaveform.getNumSamples() > 0
                  ? audioData.originalWaveform
@@ -413,7 +412,7 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
       int origAvail = origWF.getNumSamples();
 
       std::vector<float> audioSegment(origNumSamples, 0.f);
-      if (!hnsepRebuiltSegment.empty()) {
+      if (!hnsepRebuiltSegment.empty() && !audioData.hnsepCurvesTargetSVC) {
         const int copyLen = std::min(origNumSamples,
                                      static_cast<int>(hnsepRebuiltSegment.size()));
         std::copy(hnsepRebuiltSegment.begin(),
@@ -459,7 +458,7 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
       }
 
       if (melRange.empty()) {
-        if (!hnsepMelRange.empty()) {
+        if (!hasSvcConditioningDirty && !hnsepMelRange.empty()) {
           melRange = hnsepMelRange;
         } else {
           melRange.assign(
@@ -497,7 +496,7 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
     // Get the audio segment for SVC. When HNSep edits are active, infer on the
     // rebuilt source segment instead of the untouched original waveform.
     std::vector<float> audioSegment(origNumSamples, 0.f);
-    if (!hnsepRebuiltSegment.empty()) {
+    if (!hnsepRebuiltSegment.empty() && !audioData.hnsepCurvesTargetSVC) {
       const int copyLen = std::min(origNumSamples,
                                    static_cast<int>(hnsepRebuiltSegment.size()));
       std::copy(hnsepRebuiltSegment.begin(),
@@ -523,7 +522,7 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
     if (melRange.empty())
     {
       DBG("IncrementalSynthesizer: SVC mel inference failed, falling back to original mel");
-      if (!hnsepMelRange.empty()) {
+      if (!hasSvcConditioningDirty && !hnsepMelRange.empty()) {
         melRange = hnsepMelRange;
       } else {
         melRange.assign(
@@ -565,6 +564,10 @@ void IncrementalSynthesizer::synthesizeRegion(ProgressCallback onProgress,
           melRange[static_cast<size_t>(i)];
     if (copyLen > 0)
       audioData.melFromSVC = !isDirectAudioSVC;
+    audioData.waveformFromSVC = true;
+    audioData.svcRendered = true;
+    audioData.hnsepCurvesTargetSVC = true;
+    audioData.hnsepBasesFromSVC = false;
   }
 
   if (onProgress)

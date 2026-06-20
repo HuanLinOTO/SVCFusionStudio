@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <thread>
 
 class EditorController {
@@ -215,6 +216,7 @@ private:
 
   std::thread hnsepPrewarmThread;
   std::atomic<std::uint64_t> hnsepPrewarmGeneration{0};
+  std::mutex hnsepBasesMutex;
 
   // Async SVC conversion state
   std::thread svcConversionThread;

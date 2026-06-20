@@ -33,7 +33,21 @@ juce::var ProjectSerializer::toJson(const Project& project) {
     obj->setProperty("audioSha256", project.getAudioSha256());
 
     // Audio settings
-    obj->setProperty("sampleRate", project.getAudioData().sampleRate);
+    const auto& audioData = project.getAudioData();
+    obj->setProperty("sampleRate", audioData.sampleRate);
+
+    auto* svcObj = new juce::DynamicObject();
+    svcObj->setProperty("enabled", audioData.svcEnabled);
+    svcObj->setProperty("voicebankWasDirectory", audioData.svcVoicebankWasDirectory);
+    svcObj->setProperty("voicebankName", audioData.svcVoicebankName);
+    svcObj->setProperty("voicebankPath", audioData.svcVoicebankPath);
+    svcObj->setProperty("rendered", audioData.svcRendered || audioData.waveformFromSVC);
+    obj->setProperty("svc", juce::var(svcObj));
+
+    auto* hnsepObj = new juce::DynamicObject();
+    hnsepObj->setProperty("curvesTargetSVC", audioData.hnsepCurvesTargetSVC ||
+                                                audioData.waveformFromSVC);
+    obj->setProperty("hnsep", juce::var(hnsepObj));
 
     // Global parameters
     obj->setProperty("globalPitchOffset", project.getGlobalPitchOffset());
@@ -57,7 +71,7 @@ juce::var ProjectSerializer::toJson(const Project& project) {
     obj->setProperty("notes", notesArray);
 
     // Pitch data
-    obj->setProperty("pitchData", pitchDataToJson(project.getAudioData()));
+    obj->setProperty("pitchData", pitchDataToJson(audioData));
 
     return juce::var(obj);
 }
@@ -74,6 +88,21 @@ bool ProjectSerializer::fromJson(Project& project, const juce::var& json) {
     // Audio settings
     auto& audioData = project.getAudioData();
     audioData.sampleRate = json.getProperty("sampleRate", 44100);
+
+    auto svcVar = json.getProperty("svc", juce::var());
+    if (svcVar.isObject()) {
+        audioData.svcEnabled = static_cast<bool>(svcVar.getProperty("enabled", false));
+        audioData.svcVoicebankWasDirectory = static_cast<bool>(svcVar.getProperty("voicebankWasDirectory", true));
+        audioData.svcVoicebankName = svcVar.getProperty("voicebankName", "").toString();
+        audioData.svcVoicebankPath = svcVar.getProperty("voicebankPath", "").toString();
+        audioData.svcRendered = static_cast<bool>(svcVar.getProperty("rendered", false));
+    }
+
+    auto hnsepVar = json.getProperty("hnsep", juce::var());
+    if (hnsepVar.isObject()) {
+        audioData.hnsepCurvesTargetSVC =
+            static_cast<bool>(hnsepVar.getProperty("curvesTargetSVC", false));
+    }
 
     // Global parameters
     project.setGlobalPitchOffset(static_cast<float>(json.getProperty("globalPitchOffset", 0.0)));

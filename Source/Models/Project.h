@@ -55,6 +55,14 @@ struct AudioData
      *  rather than re-running SVC inference — this allows stretch/pitch edits
      *  to operate on SVC mel without costly re-inference. */
     bool melFromSVC = false;
+    bool waveformFromSVC = false;
+    bool hnsepBasesFromSVC = false;
+    bool svcEnabled = false;
+    bool svcVoicebankWasDirectory = true;
+    bool svcRendered = false;
+    bool hnsepCurvesTargetSVC = false;
+    juce::String svcVoicebankName;
+    juce::String svcVoicebankPath;
     
     float getDuration() const
     {

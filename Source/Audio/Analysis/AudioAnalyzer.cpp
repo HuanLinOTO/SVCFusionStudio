@@ -82,7 +82,11 @@ void AudioAnalyzer::analyze(Project &project, ProgressCallback onProgress,
   MelSpectrogram melComputer(audioData.sampleRate, N_FFT, HOP_SIZE, NUM_MELS,
                              FMIN, FMAX);
   audioData.melSpectrogram = melComputer.compute(samples, numSamples);
-  audioData.melFromSVC = false;  // analysis mel — not SVC mel
+  audioData.melFromSVC = false;  // analysis mel, not SVC mel
+  audioData.waveformFromSVC = false;
+  audioData.hnsepBasesFromSVC = false;
+  audioData.svcRendered = false;
+  audioData.hnsepCurvesTargetSVC = false;
 
   int targetFrames = static_cast<int>(audioData.melSpectrogram.size());
 
