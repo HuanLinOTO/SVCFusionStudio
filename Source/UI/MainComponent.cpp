@@ -2751,6 +2751,7 @@ void MainComponent::getAllCommands(juce::Array<juce::CommandID>& commands) {
         CommandIDs::showDeltaPitch,
         CommandIDs::showBasePitch,
         CommandIDs::toggleModelDebugPanel,
+        CommandIDs::openLogFile,
         
         // Transport commands
         CommandIDs::playPause,
@@ -2863,6 +2864,10 @@ void MainComponent::getCommandInfo(juce::CommandID commandID,
         case CommandIDs::toggleModelDebugPanel:
             result.setInfo("Model Debug Panel", "Show loaded model and inference device status", "View", 0);
             result.setTicked(modelDebugPanelVisible);
+            break;
+
+        case CommandIDs::openLogFile:
+            result.setInfo("Open Log File", "Open the current session log file", "View", 0);
             break;
             
         // Transport commands
@@ -3032,6 +3037,15 @@ bool MainComponent::perform(const ApplicationCommandTarget::InvocationInfo& info
         case CommandIDs::toggleModelDebugPanel:
             setModelDebugPanelVisible(!modelDebugPanelVisible);
             return true;
+
+        case CommandIDs::openLogFile:
+        {
+            auto logFile = AppLogger::getLogFile();
+            if (!logFile.existsAsFile())
+                AppLogger::log("Opening log file");
+            logFile.revealToUser();
+            return true;
+        }
         
         // Transport commands
         case CommandIDs::playPause:

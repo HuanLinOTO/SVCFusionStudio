@@ -103,6 +103,7 @@ juce::PopupMenu MenuHandler::buildMenuForIndex(int menuIndex) const {
             addCommandMenuItem(menu, CommandIDs::showBasePitch);
             menu.addSeparator();
             addCommandMenuItem(menu, CommandIDs::toggleModelDebugPanel);
+            addCommandMenuItem(menu, CommandIDs::openLogFile);
         } else if (menuIndex == 2) {
             addCommandMenuItem(menu, CommandIDs::showSettings);
         }
@@ -143,6 +144,7 @@ juce::PopupMenu MenuHandler::buildMenuForIndex(int menuIndex) const {
         addCommandMenuItem(menu, CommandIDs::showBasePitch);
         menu.addSeparator();
         addCommandMenuItem(menu, CommandIDs::toggleModelDebugPanel);
+        addCommandMenuItem(menu, CommandIDs::openLogFile);
     } else if (menuIndex == 3) {
         addCommandMenuItem(menu, CommandIDs::showSettings);
     }

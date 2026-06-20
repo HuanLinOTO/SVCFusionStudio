@@ -29,6 +29,7 @@ namespace CommandIDs
         showBasePitch       = 0x2021,
         showSettings        = 0x2022,
         toggleModelDebugPanel = 0x2023,
+        openLogFile         = 0x2024,
         
         // Transport Commands (0x2030-0x203F)
         playPause           = 0x2030,
