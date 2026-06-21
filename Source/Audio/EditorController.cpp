@@ -18,7 +18,7 @@
 namespace {
 bool shouldUnloadHNSepAfterUse() {
   return juce::SystemStats::getEnvironmentVariable(
-             "SVCFUSION_HNSEP_UNLOAD_AFTER_USE", "0") == "1";
+             "SVCFUSION_HNSEP_UNLOAD_AFTER_USE", "1") == "1";
 }
 
 void maybeUnloadHNSepAfterUse(HNSepModel *model) {
