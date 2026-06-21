@@ -4,10 +4,13 @@
 #include "JuceHeader.h"
 #include "UI/MainComponent.h"
 #include "UI/StyledComponents.h"
+#include "Audio/HNSepModel.h"
+#include "Audio/FCPEPitchDetector.h"
 #include "Utils/AppLogger.h"
 #include "Utils/Constants.h"
 #include "Utils/Localization.h"
 #include "Utils/OnnxRuntimeLoader.h"
+#include "Utils/PlatformPaths.h"
 #include "Utils/PlatformUtils.h"
 #include "Utils/UI/WindowSizing.h"
 #include "Utils/UI/TimecodeFont.h"
@@ -16,6 +19,9 @@
 #include <dwmapi.h>
 #pragma comment(lib, "dwmapi.lib")
 #endif
+
+#include <chrono>
+#include <cmath>
 
 #if JUCE_WINDOWS
 namespace {
@@ -154,10 +160,16 @@ public:
   bool moreThanOneInstanceAllowed() override { return true; }
 
   void initialise(const juce::String &commandLine) override {
-    juce::ignoreUnused(commandLine);
     AppLogger::init();
     LOG("========== APP STARTING ==========");
     OnnxRuntimeLoader::ensureLoaded();
+
+    if (commandLine.contains("--benchmark-hnsep")) {
+      runHNSepBenchmark();
+      quit();
+      return;
+    }
+
     LOG("Initializing fonts...");
     AppFont::initialize();
     TimecodeFont::initialize();
@@ -282,6 +294,74 @@ private:
 #if JUCE_STANDALONE_APPLICATION
   std::unique_ptr<SplashWindow> splashWindow;
 #endif
+
+  void runHNSepBenchmark() {
+    LOG("===== HNSEP BENCHMARK START =====");
+
+    const auto hnsepDir = PlatformPaths::getModelSubDir("hnsep", "hnsep_VR.onnx");
+    const auto dmlFile = hnsepDir.getChildFile("hnsep_VR_convstft.onnx");
+    const auto cpuFile = hnsepDir.getChildFile("hnsep_VR.onnx");
+
+    if (!dmlFile.existsAsFile()) {
+      LOG("BENCHMARK: DML model not found: " + dmlFile.getFullPathName());
+      return;
+    }
+
+    const int sampleRate = 44100;
+    const int numSamples = sampleRate * 30;
+    std::vector<float> audio(static_cast<size_t>(numSamples), 0.0f);
+    for (int i = 0; i < numSamples; ++i)
+      audio[static_cast<size_t>(i)] =
+          0.1f * std::sin(2.0 * juce::MathConstants<double>::pi * 440.0 *
+                          static_cast<double>(i) / static_cast<double>(sampleRate));
+
+    HNSepModel model;
+    const auto provider = GPUProvider::DirectML;
+    const int devId = 0;
+
+    LOG("BENCHMARK: loading model...");
+    if (!model.loadModel(dmlFile, provider, devId)) {
+      LOG("BENCHMARK: model load failed, trying CPU fallback: " +
+          cpuFile.getFullPathName());
+      if (!model.loadModel(cpuFile, GPUProvider::CPU, 0)) {
+        LOG("BENCHMARK: CPU fallback also failed");
+        return;
+      }
+    }
+    LOG("BENCHMARK: model loaded, externalStft=" +
+        juce::String(model.isLoaded() ? "yes" : "no"));
+
+    std::vector<float> harmonic, noise;
+    constexpr int warmup = 1;
+    constexpr int runs = 3;
+
+    for (int i = 0; i < warmup + runs; ++i) {
+      const auto isWarmup = i < warmup;
+      const auto start = std::chrono::high_resolution_clock::now();
+      const bool ok = model.separate(audio.data(), numSamples, harmonic, noise);
+      const auto end = std::chrono::high_resolution_clock::now();
+      const double totalMs =
+          std::chrono::duration<double, std::milli>(end - start).count();
+
+      if (!ok) {
+        LOG("BENCHMARK run " + juce::String(i) + ": FAILED");
+        continue;
+      }
+
+      const auto &t = model.lastChunkTiming;
+      LOG("BENCHMARK run " + juce::String(i) +
+          (isWarmup ? " (warmup)" : "") +
+          ": total=" + juce::String(totalMs, 1) + " ms" +
+          ", stft=" + juce::String(t.stftMs, 1) +
+          ", pre=" + juce::String(t.preMs, 1) +
+          ", core=" + juce::String(t.coreMs, 1) +
+          ", post=" + juce::String(t.postMs, 1) +
+          ", chunkTotal=" + juce::String(t.totalMs, 1));
+    }
+
+    model.unload();
+    LOG("===== HNSEP BENCHMARK END =====");
+  }
 };
 
 START_JUCE_APPLICATION(SVCFusionStudioApplication)

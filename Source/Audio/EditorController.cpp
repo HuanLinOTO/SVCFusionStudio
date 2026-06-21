@@ -15,6 +15,18 @@
 #include <cmath>
 #include <future>
 
+namespace {
+bool shouldUnloadHNSepAfterUse() {
+  return juce::SystemStats::getEnvironmentVariable(
+             "SVCFUSION_HNSEP_UNLOAD_AFTER_USE", "0") == "1";
+}
+
+void maybeUnloadHNSepAfterUse(HNSepModel *model) {
+  if (model != nullptr && shouldUnloadHNSepAfterUse())
+    model->unload();
+}
+} // namespace
+
 EditorController::EditorController(bool enableAudioDevice) {
   project = std::make_unique<Project>();
   LOG("EditorController: project created");
@@ -718,7 +730,7 @@ void EditorController::runFullSVCConversionAsync(SVCProgressCallback onProgress,
           clearStaleHNSepBases = true;
           LOG("EditorController: failed to refresh HNSep bases from SVC result");
         }
-        hnsepModel->unload();
+        maybeUnloadHNSepAfterUse(hnsepModel.get());
       } else {
         clearStaleHNSepBases = true;
       }
@@ -1091,7 +1103,7 @@ bool EditorController::ensureHNSepBases(Project &targetProject) {
   const float *samples = audioData.waveform.getReadPointer(0);
   if (!hnsepModel->separate(samples, numSamples, harmonic, noise)) {
     LOG("HNSep on-demand separation failed");
-    hnsepModel->unload();
+    maybeUnloadHNSepAfterUse(hnsepModel.get());
     notifyBackgroundStatus({}, false);
     return false;
   }
@@ -1114,7 +1126,7 @@ bool EditorController::ensureHNSepBases(Project &targetProject) {
 
   LOG("HNSep on-demand separation complete: " + juce::String(numSamples) +
       " samples separated into harmonic + noise");
-  hnsepModel->unload();
+  maybeUnloadHNSepAfterUse(hnsepModel.get());
   audioData.hnsepBasesFromSVC = audioData.waveformFromSVC;
   notifyBackgroundStatus({}, false);
   return true;
@@ -1963,7 +1975,7 @@ void EditorController::analyzeAudio(
   HNSepCurveProcessor::initializeCurves(targetProject);
 
   if (hnsepModel && hnsepModel->isLoaded())
-    hnsepModel->unload();
+    maybeUnloadHNSepAfterUse(hnsepModel.get());
   if (gameDetector && gameDetector->isLoaded())
     gameDetector->unload();
 

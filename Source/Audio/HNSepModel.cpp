@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <thread>
 
 #ifdef _WIN32
@@ -62,6 +63,66 @@ int HNSepModel::getRuntimeMaxChunkSamples() const {
 
 int HNSepModel::getRuntimeOverlapSamples(int maxChunkSamples) const {
   return std::min(OVERLAP_SAMPLES, std::max(0, maxChunkSamples / 3));
+}
+
+int HNSepModel::computeExternalStftFrameCount(int numSamples) const {
+  const int coarseFrames = numSamples / STFT_HOP_SIZE + 1;
+  return (coarseFrames / 32 + 1) * 32;
+}
+
+bool HNSepModel::computeExternalConvStft(const float *audio, int numSamples,
+                                         std::vector<float> &stftConv) {
+  if (audio == nullptr || numSamples <= 0)
+    return false;
+
+  const int numFrames = computeExternalStftFrameCount(numSamples);
+  if (numFrames <= 0)
+    return false;
+
+  if (!stftFft)
+    stftFft = std::make_unique<juce::dsp::FFT>(11);
+
+  if (stftWindow.size() != static_cast<size_t>(STFT_FFT_SIZE)) {
+    stftWindow.resize(STFT_FFT_SIZE);
+    constexpr double twoPi = juce::MathConstants<double>::twoPi;
+    for (int index = 0; index < STFT_FFT_SIZE; ++index) {
+      stftWindow[static_cast<size_t>(index)] = static_cast<float>(
+          0.5 * (1.0 - std::cos(twoPi * static_cast<double>(index) /
+                                static_cast<double>(STFT_FFT_SIZE))));
+    }
+  }
+
+  stftFrameScratch.assign(static_cast<size_t>(STFT_FFT_SIZE * 2), 0.0f);
+  stftConv.assign(static_cast<size_t>(STFT_NUM_CHANNELS * numFrames), 0.0f);
+
+  const int targetLengthBeforeCenterPad = (numFrames - 1) * STFT_HOP_SIZE;
+  const int totalOuterPad = std::max(0, targetLengthBeforeCenterPad - numSamples);
+  const int leftOuterPad = (totalOuterPad / 2 / STFT_HOP_SIZE) * STFT_HOP_SIZE;
+  const int totalLeftPad = leftOuterPad + STFT_FFT_SIZE / 2;
+
+  for (int frameIndex = 0; frameIndex < numFrames; ++frameIndex) {
+    std::fill(stftFrameScratch.begin(), stftFrameScratch.end(), 0.0f);
+
+    const int sourceStart = frameIndex * STFT_HOP_SIZE - totalLeftPad;
+    for (int sampleIndex = 0; sampleIndex < STFT_FFT_SIZE; ++sampleIndex) {
+      const int sourceIndex = sourceStart + sampleIndex;
+      if (sourceIndex >= 0 && sourceIndex < numSamples) {
+        stftFrameScratch[static_cast<size_t>(sampleIndex)] =
+            audio[sourceIndex] * stftWindow[static_cast<size_t>(sampleIndex)];
+      }
+    }
+
+    stftFft->performRealOnlyForwardTransform(stftFrameScratch.data());
+
+    for (int bin = 0; bin < STFT_NUM_BINS; ++bin) {
+      stftConv[static_cast<size_t>(bin * numFrames + frameIndex)] =
+          stftFrameScratch[static_cast<size_t>(bin * 2)];
+      stftConv[static_cast<size_t>((STFT_NUM_BINS + bin) * numFrames + frameIndex)] =
+          stftFrameScratch[static_cast<size_t>(bin * 2 + 1)];
+    }
+  }
+
+  return true;
 }
 
 bool HNSepModel::initializeSessionMetadata(
@@ -268,7 +329,13 @@ bool HNSepModel::loadSplitPipelineModels(const juce::File &modelPath,
 #ifdef HAVE_ONNXRUNTIME
   try {
     const auto splitDir = modelPath.getSiblingFile("split");
-    const auto prePath = splitDir.getChildFile("hnsep_pre.onnx");
+    const auto preNoStftPath = splitDir.getChildFile("hnsep_pre_no_stft.onnx");
+    const bool externalStftDisabled =
+        juce::SystemStats::getEnvironmentVariable(
+            "SVCFUSION_HNSEP_DISABLE_EXTERNAL_STFT", "0") == "1";
+    const auto prePath = preNoStftPath.existsAsFile() && !externalStftDisabled
+                             ? preNoStftPath
+                             : splitDir.getChildFile("hnsep_pre.onnx");
     const auto corePath = splitDir.getChildFile("hnsep_core.onnx");
     const auto postPath = splitDir.getChildFile("hnsep_post.onnx");
     if (!prePath.existsAsFile() || !corePath.existsAsFile() ||
@@ -338,12 +405,27 @@ bool HNSepModel::loadSplitPipelineModels(const juce::File &modelPath,
 
     activeProvider = effectiveProvider;
     splitPipelineEnabled = true;
+    splitPreUsesExternalStft = prePath == preNoStftPath;
+    if (externalStftDisabled)
+      LOG("HNSep split: SVCFUSION_HNSEP_DISABLE_EXTERNAL_STFT=1, using original pre model");
 
 #ifdef _WIN32
     const auto prePathW = prePath.getFullPathName().toWideCharPointer();
     const auto corePathW = corePath.getFullPathName().toWideCharPointer();
     const auto postPathW = postPath.getFullPathName().toWideCharPointer();
-    preSession->session = std::make_unique<Ort::Session>(*onnxEnv, prePathW, cpuOptions);
+    if (splitPreUsesExternalStft && effectiveProvider != GPUProvider::CPU) {
+      try {
+        preSession->session =
+            std::make_unique<Ort::Session>(*onnxEnv, prePathW, gpuOptions);
+        LOG("HNSep split: external-STFT pre session using GPU provider");
+      } catch (const Ort::Exception &e) {
+        LOG("HNSep split: external-STFT pre GPU session failed, using CPU: " +
+            juce::String(e.what()));
+      }
+    }
+    if (!preSession->session)
+      preSession->session =
+          std::make_unique<Ort::Session>(*onnxEnv, prePathW, cpuOptions);
     coreSession->session = std::make_unique<Ort::Session>(*onnxEnv, corePathW,
                                                           effectiveProvider == GPUProvider::CPU
                                                               ? cpuOptions
@@ -353,7 +435,19 @@ bool HNSepModel::loadSplitPipelineModels(const juce::File &modelPath,
     const auto prePathStr = prePath.getFullPathName().toStdString();
     const auto corePathStr = corePath.getFullPathName().toStdString();
     const auto postPathStr = postPath.getFullPathName().toStdString();
-    preSession->session = std::make_unique<Ort::Session>(*onnxEnv, prePathStr.c_str(), cpuOptions);
+    if (splitPreUsesExternalStft && effectiveProvider != GPUProvider::CPU) {
+      try {
+        preSession->session =
+            std::make_unique<Ort::Session>(*onnxEnv, prePathStr.c_str(), gpuOptions);
+        LOG("HNSep split: external-STFT pre session using GPU provider");
+      } catch (const Ort::Exception &e) {
+        LOG("HNSep split: external-STFT pre GPU session failed, using CPU: " +
+            juce::String(e.what()));
+      }
+    }
+    if (!preSession->session)
+      preSession->session =
+          std::make_unique<Ort::Session>(*onnxEnv, prePathStr.c_str(), cpuOptions);
     coreSession->session = std::make_unique<Ort::Session>(*onnxEnv, corePathStr.c_str(),
                                                           effectiveProvider == GPUProvider::CPU
                                                               ? cpuOptions
@@ -375,7 +469,8 @@ bool HNSepModel::loadSplitPipelineModels(const juce::File &modelPath,
     LOG("HNSep split pipeline loaded successfully (pre=" +
         juce::String(preSession->outputNames.size()) + " outputs, core=" +
         juce::String(coreSession->outputNames.size()) + " outputs, post=" +
-        juce::String(postSession->outputNames.size()) + " outputs)");
+        juce::String(postSession->outputNames.size()) + " outputs, externalStft=" +
+        juce::String(splitPreUsesExternalStft ? "yes" : "no") + ")");
     return true;
   } catch (const Ort::Exception &e) {
     LOG("HNSep split pipeline load failed (Ort): " + juce::String(e.what()));
@@ -426,6 +521,7 @@ bool HNSepModel::loadModel(const juce::File &modelPath,
 void HNSepModel::unload() {
 #ifdef HAVE_ONNXRUNTIME
   splitPipelineEnabled = false;
+  splitPreUsesExternalStft = false;
   preSession.reset();
   coreSession.reset();
   postSession.reset();
@@ -464,10 +560,45 @@ bool HNSepModel::separateChunk(const float *audio, int numSamples,
 
   if (splitPipelineEnabled && preSession && coreSession && postSession) {
     const auto preStart = std::chrono::high_resolution_clock::now();
-    auto preOutputs = preSession->session->Run(runOptions, preSession->inputNames.data(),
-                                               inputTensors.data(), inputTensors.size(),
-                                               preSession->outputNames.data(),
-                                               preSession->outputNames.size());
+    std::vector<Ort::Value> preInputs;
+    double externalStftMs = 0.0;
+    if (splitPreUsesExternalStft) {
+      const auto stftStart = std::chrono::high_resolution_clock::now();
+      if (!computeExternalConvStft(audio, numSamples, stftConvScratch)) {
+        LOG("HNSep: failed to compute external ConvSTFT input");
+        return false;
+      }
+      const auto stftEnd = std::chrono::high_resolution_clock::now();
+      externalStftMs =
+          std::chrono::duration<double, std::milli>(stftEnd - stftStart)
+              .count();
+
+      const int stftFrames = computeExternalStftFrameCount(numSamples);
+      stftConvShapeScratch[2] = static_cast<int64_t>(stftFrames);
+      preInputs.reserve(preSession->inputNameStrings.size());
+
+      for (const auto &preInputName : preSession->inputNameStrings) {
+        if (preInputName == "waveform") {
+          preInputs.emplace_back(Ort::Value::CreateTensor<float>(
+              memoryInfo, const_cast<float *>(audio), static_cast<size_t>(numSamples),
+              waveformShapeScratch.data(), waveformShapeScratch.size()));
+        } else if (preInputName == "/HNSepConvSTFT/Conv_output_0") {
+          preInputs.emplace_back(Ort::Value::CreateTensor<float>(
+              memoryInfo, stftConvScratch.data(), stftConvScratch.size(),
+              stftConvShapeScratch.data(), stftConvShapeScratch.size()));
+        } else {
+          LOG("HNSep: unexpected pre input for external STFT model: " +
+              juce::String(preInputName));
+          return false;
+        }
+      }
+    }
+
+    auto preOutputs = preSession->session->Run(
+        runOptions, preSession->inputNames.data(),
+        splitPreUsesExternalStft ? preInputs.data() : inputTensors.data(),
+        splitPreUsesExternalStft ? preInputs.size() : inputTensors.size(),
+        preSession->outputNames.data(), preSession->outputNames.size());
     const auto preEnd = std::chrono::high_resolution_clock::now();
 
     std::vector<Ort::Value> coreInputs;
@@ -525,12 +656,30 @@ bool HNSepModel::separateChunk(const float *audio, int numSamples,
                                         postSession->outputNames.size());
     const auto postEnd = std::chrono::high_resolution_clock::now();
 
+    const double preTotalMs =
+        std::chrono::duration<double, std::milli>(preEnd - preStart).count();
+    const double coreMs =
+        std::chrono::duration<double, std::milli>(coreEnd - coreStart).count();
+    const double postMs =
+        std::chrono::duration<double, std::milli>(postEnd - postStart).count();
+
+    lastChunkTiming.stftMs = externalStftMs;
+    lastChunkTiming.preMs = preTotalMs - externalStftMs;
+    lastChunkTiming.coreMs = coreMs;
+    lastChunkTiming.postMs = postMs;
+    lastChunkTiming.totalMs = preTotalMs + coreMs + postMs;
+    lastChunkTiming.numSamples = numSamples;
+
     LOG("HNSep chunk inference: pre=" +
-        juce::String(std::chrono::duration<double, std::milli>(preEnd - preStart).count(), 1) +
-        " ms, core=" +
-        juce::String(std::chrono::duration<double, std::milli>(coreEnd - coreStart).count(), 1) +
+        juce::String(preTotalMs, 1) +
+        " ms" +
+        (splitPreUsesExternalStft
+             ? ", stft=" + juce::String(externalStftMs, 1) + " ms"
+             : juce::String()) +
+        ", core=" +
+        juce::String(coreMs, 1) +
         " ms, post=" +
-        juce::String(std::chrono::duration<double, std::milli>(postEnd - postStart).count(), 1) +
+        juce::String(postMs, 1) +
         " ms (" + juce::String(numSamples) + " samples)");
   } else {
     if (!onnxSession)
@@ -541,11 +690,10 @@ bool HNSepModel::separateChunk(const float *audio, int numSamples,
                                inputTensors.data(), inputTensors.size(),
                                outputNames.data(), outputNames.size());
     auto endTime = std::chrono::high_resolution_clock::now();
-    LOG("HNSep chunk inference: " +
-        juce::String(
-            std::chrono::duration<double, std::milli>(endTime - startTime)
-                .count(),
-            1) +
+    const double totalMs =
+        std::chrono::duration<double, std::milli>(endTime - startTime).count();
+    lastChunkTiming = {0.0, totalMs, 0.0, 0.0, totalMs, numSamples};
+    LOG("HNSep chunk inference: " + juce::String(totalMs, 1) +
         " ms (" + juce::String(numSamples) + " samples)");
   }
 
