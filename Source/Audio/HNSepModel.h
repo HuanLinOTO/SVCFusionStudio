@@ -24,6 +24,7 @@ class HNSepModel {
 public:
   static constexpr int SAMPLE_RATE = 44100;
   static constexpr int MAX_CHUNK_SAMPLES = SAMPLE_RATE * 30;
+  static constexpr int DML_PADDED_CHUNK_SAMPLES = SAMPLE_RATE * 10;
   static constexpr int OVERLAP_SAMPLES = SAMPLE_RATE * 1;
 
   HNSepModel();
@@ -89,6 +90,7 @@ private:
   std::vector<float> stftWindow;
   std::vector<float> stftFrameScratch;
   std::vector<float> stftConvScratch;
+  std::vector<float> paddedAudioScratch;
   bool splitPreUsesExternalStft = false;
   static constexpr int STFT_FFT_SIZE = 2048;
   static constexpr int STFT_HOP_SIZE = 512;

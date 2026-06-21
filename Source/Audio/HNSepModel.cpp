@@ -55,6 +55,8 @@ HNSepModel::HNSepModel() = default;
 HNSepModel::~HNSepModel() = default;
 
 int HNSepModel::getRuntimeMaxChunkSamples() const {
+  if (activeProvider == GPUProvider::DirectML)
+    return DML_PADDED_CHUNK_SAMPLES;
   return MAX_CHUNK_SAMPLES;
 }
 
@@ -542,7 +544,22 @@ bool HNSepModel::separateChunk(const float *audio, int numSamples,
   if (numSamples <= 0)
     return false;
 
-  waveformShapeScratch[1] = static_cast<int64_t>(numSamples);
+  const int paddedSize = (activeProvider == GPUProvider::DirectML)
+                             ? DML_PADDED_CHUNK_SAMPLES
+                             : numSamples;
+  const bool needsPadding = (paddedSize > numSamples);
+
+  const float *effectiveAudio = audio;
+  int effectiveNumSamples = numSamples;
+
+  if (needsPadding) {
+    paddedAudioScratch.assign(static_cast<size_t>(paddedSize), 0.0f);
+    std::copy(audio, audio + numSamples, paddedAudioScratch.begin());
+    effectiveAudio = paddedAudioScratch.data();
+    effectiveNumSamples = paddedSize;
+  }
+
+  waveformShapeScratch[1] = static_cast<int64_t>(effectiveNumSamples);
 
   static const auto memoryInfo = Ort::MemoryInfo::CreateCpu(
       OrtAllocatorType::OrtArenaAllocator, OrtMemType::OrtMemTypeDefault);
@@ -550,10 +567,11 @@ bool HNSepModel::separateChunk(const float *audio, int numSamples,
 
   std::vector<Ort::Value> inputTensors;
   inputTensors.emplace_back(Ort::Value::CreateTensor<float>(
-      memoryInfo, const_cast<float *>(audio), static_cast<size_t>(numSamples),
+      memoryInfo, const_cast<float *>(effectiveAudio), static_cast<size_t>(effectiveNumSamples),
       waveformShapeScratch.data(), waveformShapeScratch.size()));
 
-  LOG("HNSep chunk start: " + juce::String(numSamples) + " samples");
+  LOG("HNSep chunk start: " + juce::String(numSamples) + " samples" +
+      (needsPadding ? " (padded to " + juce::String(effectiveNumSamples) + ")" : ""));
   std::vector<Ort::Value> outputs;
 
   if (splitPipelineEnabled && preSession && coreSession && postSession) {
@@ -562,7 +580,7 @@ bool HNSepModel::separateChunk(const float *audio, int numSamples,
     double externalStftMs = 0.0;
     if (splitPreUsesExternalStft) {
       const auto stftStart = std::chrono::high_resolution_clock::now();
-      if (!computeExternalConvStft(audio, numSamples, stftConvScratch)) {
+      if (!computeExternalConvStft(effectiveAudio, effectiveNumSamples, stftConvScratch)) {
         LOG("HNSep: failed to compute external ConvSTFT input");
         return false;
       }
@@ -571,14 +589,14 @@ bool HNSepModel::separateChunk(const float *audio, int numSamples,
           std::chrono::duration<double, std::milli>(stftEnd - stftStart)
               .count();
 
-      const int stftFrames = computeExternalStftFrameCount(numSamples);
+      const int stftFrames = computeExternalStftFrameCount(effectiveNumSamples);
       stftConvShapeScratch[2] = static_cast<int64_t>(stftFrames);
       preInputs.reserve(preSession->inputNameStrings.size());
 
       for (const auto &preInputName : preSession->inputNameStrings) {
         if (preInputName == "waveform") {
           preInputs.emplace_back(Ort::Value::CreateTensor<float>(
-              memoryInfo, const_cast<float *>(audio), static_cast<size_t>(numSamples),
+              memoryInfo, const_cast<float *>(effectiveAudio), static_cast<size_t>(effectiveNumSamples),
               waveformShapeScratch.data(), waveformShapeScratch.size()));
         } else if (preInputName == "/HNSepConvSTFT/Conv_output_0") {
           preInputs.emplace_back(Ort::Value::CreateTensor<float>(
@@ -622,7 +640,7 @@ bool HNSepModel::separateChunk(const float *audio, int numSamples,
     for (const auto &postInputName : postSession->inputNameStrings) {
       if (postInputName == "waveform") {
         postInputs.emplace_back(Ort::Value::CreateTensor<float>(
-            memoryInfo, const_cast<float *>(audio), static_cast<size_t>(numSamples),
+            memoryInfo, const_cast<float *>(effectiveAudio), static_cast<size_t>(effectiveNumSamples),
             waveformShapeScratch.data(), waveformShapeScratch.size()));
         continue;
       }
@@ -678,7 +696,8 @@ bool HNSepModel::separateChunk(const float *audio, int numSamples,
         juce::String(coreMs, 1) +
         " ms, post=" +
         juce::String(postMs, 1) +
-        " ms (" + juce::String(numSamples) + " samples)");
+        " ms (" + juce::String(numSamples) + " samples" +
+        (needsPadding ? ", padded=" + juce::String(effectiveNumSamples) : "") + ")");
   } else {
     if (!onnxSession)
       return false;
@@ -692,7 +711,8 @@ bool HNSepModel::separateChunk(const float *audio, int numSamples,
         std::chrono::duration<double, std::milli>(endTime - startTime).count();
     lastChunkTiming = {0.0, totalMs, 0.0, 0.0, totalMs, numSamples};
     LOG("HNSep chunk inference: " + juce::String(totalMs, 1) +
-        " ms (" + juce::String(numSamples) + " samples)");
+        " ms (" + juce::String(numSamples) + " samples" +
+        (needsPadding ? ", padded=" + juce::String(effectiveNumSamples) : "") + ")");
   }
 
   if (outputs.size() < 2) {

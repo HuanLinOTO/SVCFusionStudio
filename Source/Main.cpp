@@ -22,7 +22,32 @@
 
 #if JUCE_WINDOWS
 #include <dwmapi.h>
+#include <dxgi1_4.h>
 #pragma comment(lib, "dwmapi.lib")
+#pragma comment(lib, "dxgi.lib")
+#endif
+
+#if JUCE_WINDOWS
+static void logGpuMemory(const juce::String &label) {
+  IDXGIFactory4 *factory = nullptr;
+  if (SUCCEEDED(CreateDXGIFactory1(__uuidof(IDXGIFactory4),
+                                   reinterpret_cast<void **>(&factory)))) {
+    IDXGIAdapter3 *adapter = nullptr;
+    if (SUCCEEDED(factory->EnumAdapters(0, reinterpret_cast<IDXGIAdapter **>(&adapter)))) {
+      DXGI_QUERY_VIDEO_MEMORY_INFO info = {};
+      if (SUCCEEDED(adapter->QueryVideoMemoryInfo(
+              0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &info))) {
+        LOG("GPUVRAM [" + label + "]: usage=" +
+            juce::String(static_cast<int>(info.CurrentUsage / (1024 * 1024))) +
+            " MB, budget=" +
+            juce::String(static_cast<int>(info.Budget / (1024 * 1024))) +
+            " MB");
+      }
+      adapter->Release();
+    }
+    factory->Release();
+  }
+}
 #endif
 
 #include <chrono>
@@ -336,6 +361,7 @@ private:
     ec->setDeviceConfig(deviceName, 0);
 
     LOG("TEST: reloading inference models (RMVPE/HNSep/GAME)...");
+    logGpuMemory("before model load");
     auto tModelStart = std::chrono::steady_clock::now();
     ec->reloadInferenceModels(false);
     auto tModelEnd = std::chrono::steady_clock::now();
@@ -344,6 +370,7 @@ private:
                          tModelEnd - tModelStart)
                          .count()) +
         " ms");
+    logGpuMemory("after RMVPE load");
 
     LOG("TEST: loading audio...");
     juce::File wavFile(wavPath);
@@ -429,6 +456,7 @@ private:
     auto *proj = ec->getProject();
 
     LOG("TEST: analyzing audio (HNSep + pitch + GAME)...");
+    logGpuMemory("before analyze");
     auto tAnalyzeStart = std::chrono::steady_clock::now();
     std::atomic<bool> analyzeDone(false);
     ec->analyzeAudio(
@@ -446,6 +474,7 @@ private:
                          tAnalyzeEnd - tAnalyzeStart)
                          .count()) +
         " ms");
+    logGpuMemory("after analyze (HNSep+RMVPE+Vocoder resident)");
 
     if (!analyzeDone.load()) {
       LOG("TEST: analyze did not complete (model error?)");
@@ -512,6 +541,7 @@ private:
                                  tSvcEnd - tSvcStart)
                                  .count()) +
                 " ms");
+            logGpuMemory("after SVC conversion");
           }
         }
       }
@@ -574,6 +604,7 @@ private:
     std::vector<float> harmonic, noise;
     constexpr int warmup = 1;
     constexpr int runs = 3;
+    double warmupPreMs = 0.0;
 
     for (int i = 0; i < warmup + runs; ++i) {
       const auto isWarmup = i < warmup;
@@ -589,6 +620,8 @@ private:
       }
 
       const auto &t = model.lastChunkTiming;
+      if (isWarmup)
+        warmupPreMs = t.preMs;
       LOG("BENCHMARK run " + juce::String(i) +
           (isWarmup ? " (warmup)" : "") +
           ": total=" + juce::String(totalMs, 1) + " ms" +
@@ -600,6 +633,43 @@ private:
     }
 
     model.unload();
+
+    // ── Test: does DML shader cache survive unload/reload? ──
+    LOG("BENCHMARK: === SHADER CACHE TEST ===");
+    LOG("BENCHMARK: reloading model after unload (same shape)...");
+
+    auto tReloadStart = std::chrono::high_resolution_clock::now();
+    if (!model.loadModel(dmlFile, provider, devId)) {
+      LOG("BENCHMARK: reload failed");
+    } else {
+      auto tReloadEnd = std::chrono::high_resolution_clock::now();
+      LOG("BENCHMARK: reload took " +
+          juce::String(std::chrono::duration<double, std::milli>(
+                           tReloadEnd - tReloadStart)
+                           .count(), 1) + " ms");
+
+      const auto start = std::chrono::high_resolution_clock::now();
+      std::vector<float> h2, n2;
+      const bool ok2 = model.separate(audio.data(), numSamples, h2, n2);
+      const auto end = std::chrono::high_resolution_clock::now();
+      const double totalMs2 =
+          std::chrono::duration<double, std::milli>(end - start).count();
+
+      if (ok2) {
+        const auto &t2 = model.lastChunkTiming;
+        LOG("BENCHMARK reload+infer: total=" + juce::String(totalMs2, 1) +
+            " ms, pre=" + juce::String(t2.preMs, 1) +
+            ", core=" + juce::String(t2.coreMs, 1) +
+            " (warmup was pre=" + juce::String(warmupPreMs, 1) + ")");
+        if (t2.preMs < 1000.0) {
+          LOG("BENCHMARK: *** DML SHADER CACHE SURVIVES UNLOAD *** -- pre-warm at startup is viable");
+        } else {
+          LOG("BENCHMARK: *** DML SHADER CACHE DOES NOT SURVIVE UNLOAD *** -- must keep session resident");
+        }
+      }
+      model.unload();
+    }
+
     LOG("===== HNSEP BENCHMARK END =====");
   }
 };
