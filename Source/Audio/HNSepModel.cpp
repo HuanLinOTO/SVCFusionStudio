@@ -55,9 +55,6 @@ HNSepModel::HNSepModel() = default;
 HNSepModel::~HNSepModel() = default;
 
 int HNSepModel::getRuntimeMaxChunkSamples() const {
-  // if (activeProvider == GPUProvider::DirectML)
-  //   return SAMPLE_RATE * 3;
-
   return MAX_CHUNK_SAMPLES;
 }
 
@@ -187,14 +184,15 @@ bool HNSepModel::loadSingleSessionModel(const juce::File &modelPath,
     Ort::SessionOptions sessionOptions;
     sessionOptions.SetGraphOptimizationLevel(
         GraphOptimizationLevel::ORT_ENABLE_ALL);
-    sessionOptions.EnableCpuMemArena();
 
     if (effectiveProvider == GPUProvider::CPU) {
+      sessionOptions.EnableCpuMemArena();
       const int numThreads =
           std::max(1u, std::thread::hardware_concurrency()) / 2;
       sessionOptions.SetIntraOpNumThreads(std::max(numThreads, 2));
       sessionOptions.EnableMemPattern();
     } else {
+      sessionOptions.DisableCpuMemArena();
       sessionOptions.SetIntraOpNumThreads(1);
       sessionOptions.SetInterOpNumThreads(1);
     }
@@ -363,7 +361,7 @@ bool HNSepModel::loadSplitPipelineModels(const juce::File &modelPath,
 
     Ort::SessionOptions gpuOptions;
     gpuOptions.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
-    gpuOptions.EnableCpuMemArena();
+    gpuOptions.DisableCpuMemArena();
 
     GPUProvider effectiveProvider = provider;
     if (juce::SystemStats::getEnvironmentVariable("SVCFUSION_HNSEP_FORCE_CPU", "0") == "1")

@@ -915,6 +915,8 @@ void EditorController::reloadInferenceModels(bool async) {
       self->gameDetector->unload();
     if (self->hnsepModel && self->hnsepModel->isLoaded())
       self->hnsepModel->unload();
+    if (self->vocoder && self->vocoder->isLoaded())
+      self->vocoder->unload();
 
     if (selectedPitchDetector == PitchDetectorType::FCPE &&
         self->rmvpePitchDetector && self->rmvpePitchDetector->isLoaded()) {
@@ -1722,7 +1724,8 @@ void EditorController::analyzeAudio(
   };
 
   ensureHNSepModelLoadedForAnalysis();
-  loadGameForAnalysis();
+  if (allowConcurrentModelInference)
+    loadGameForAnalysis();
 
   struct HNSepResult {
     bool attempted = false;
@@ -1919,6 +1922,12 @@ void EditorController::analyzeAudio(
     }
   } else if (hnsepModel && !hnsepModel->isLoaded()) {
     LOG("hnsep model not loaded - skipping harmonic-noise separation");
+  }
+
+  if (!allowConcurrentModelInference) {
+    if (hnsepModel && hnsepModel->isLoaded())
+      maybeUnloadHNSepAfterUse(hnsepModel.get());
+    loadGameForAnalysis();
   }
 
   onProgress(0.75, TR("progress.loading_vocoder"));

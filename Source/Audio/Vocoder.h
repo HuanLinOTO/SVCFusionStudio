@@ -34,9 +34,8 @@ public:
    */
   bool loadModel(const juce::File &modelPath);
 
-  /**
-   * Check if model is loaded.
-   */
+  void unload();
+
   bool isLoaded() const { return loaded; }
 
   /**

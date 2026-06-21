@@ -4,16 +4,21 @@
 #include "JuceHeader.h"
 #include "UI/MainComponent.h"
 #include "UI/StyledComponents.h"
+#include "Audio/EditorController.h"
 #include "Audio/HNSepModel.h"
 #include "Audio/FCPEPitchDetector.h"
 #include "Utils/AppLogger.h"
 #include "Utils/Constants.h"
 #include "Utils/Localization.h"
+#include "Utils/MelSpectrogram.h"
 #include "Utils/OnnxRuntimeLoader.h"
 #include "Utils/PlatformPaths.h"
 #include "Utils/PlatformUtils.h"
 #include "Utils/UI/WindowSizing.h"
 #include "Utils/UI/TimecodeFont.h"
+
+#include <atomic>
+#include <future>
 
 #if JUCE_WINDOWS
 #include <dwmapi.h>
@@ -170,6 +175,12 @@ public:
       return;
     }
 
+    if (commandLine.contains("--test-inference")) {
+      runTestInference(commandLine);
+      quit();
+      return;
+    }
+
     LOG("Initializing fonts...");
     AppFont::initialize();
     TimecodeFont::initialize();
@@ -294,6 +305,235 @@ private:
 #if JUCE_STANDALONE_APPLICATION
   std::unique_ptr<SplashWindow> splashWindow;
 #endif
+
+  void runTestInference(const juce::String &commandLine) {
+    LOG("===== TEST INFERENCE START =====");
+
+    auto args = juce::StringArray::fromTokens(commandLine, true);
+    juce::String wavPath;
+    juce::String voicebankPath;
+    juce::String deviceName = "DirectML";
+
+    for (int i = 0; i < args.size(); ++i) {
+      if (args[i] == "--test-inference" && i + 1 < args.size())
+        wavPath = args[++i];
+      else if (args[i] == "--voicebank" && i + 1 < args.size())
+        voicebankPath = args[++i];
+      else if (args[i] == "--device" && i + 1 < args.size())
+        deviceName = args[++i];
+    }
+
+    if (wavPath.isEmpty()) {
+      LOG("TEST: usage --test-inference <wav> [--voicebank <dir>] [--device DirectML|CPU]");
+      return;
+    }
+
+    LOG("TEST: wav=" + wavPath + " voicebank=" + voicebankPath +
+        " device=" + deviceName);
+
+    auto ec = std::make_unique<EditorController>(false);
+    ec->setPitchDetectorType(PitchDetectorType::RMVPE);
+    ec->setDeviceConfig(deviceName, 0);
+
+    LOG("TEST: reloading inference models (RMVPE/HNSep/GAME)...");
+    auto tModelStart = std::chrono::steady_clock::now();
+    ec->reloadInferenceModels(false);
+    auto tModelEnd = std::chrono::steady_clock::now();
+    LOG("TEST: models loaded in " +
+        juce::String(std::chrono::duration_cast<std::chrono::milliseconds>(
+                         tModelEnd - tModelStart)
+                         .count()) +
+        " ms");
+
+    LOG("TEST: loading audio...");
+    juce::File wavFile(wavPath);
+    if (!wavFile.existsAsFile()) {
+      LOG("TEST: wav file not found: " + wavPath);
+      return;
+    }
+
+    juce::AudioFormatManager formatManager;
+    formatManager.registerBasicFormats();
+    std::unique_ptr<juce::AudioFormatReader> reader(
+        formatManager.createReaderFor(wavFile));
+    if (!reader) {
+      LOG("TEST: failed to create reader");
+      return;
+    }
+
+    const int numSamples = static_cast<int>(reader->lengthInSamples);
+    const int srcSampleRate = static_cast<int>(reader->sampleRate);
+    LOG("TEST: audio file: " + juce::String(reader->numChannels) + "ch, " +
+        juce::String(numSamples) + " samples, " +
+        juce::String(srcSampleRate) + " Hz");
+
+    juce::AudioBuffer<float> buffer;
+    if (reader->numChannels == 1) {
+      buffer.setSize(1, numSamples);
+      reader->read(&buffer, 0, numSamples, 0, true, false);
+    } else {
+      juce::AudioBuffer<float> stereoBuffer(
+          static_cast<int>(reader->numChannels), numSamples);
+      reader->read(&stereoBuffer, 0, numSamples, 0, true, true);
+      buffer.setSize(1, numSamples);
+      for (int ch = 0; ch < stereoBuffer.getNumChannels(); ++ch) {
+        const float *src = stereoBuffer.getReadPointer(ch);
+        float *dst = buffer.getWritePointer(0);
+        for (int i = 0; i < numSamples; ++i)
+          dst[i] += src[i] / stereoBuffer.getNumChannels();
+      }
+    }
+
+    if (srcSampleRate != SAMPLE_RATE) {
+      LOG("TEST: resampling from " + juce::String(srcSampleRate) + " to " +
+          juce::String(SAMPLE_RATE));
+      const double ratio =
+          static_cast<double>(srcSampleRate) / SAMPLE_RATE;
+      const int newNumSamples = static_cast<int>(numSamples / ratio);
+      juce::AudioBuffer<float> resampled(1, newNumSamples);
+      const float *src = buffer.getReadPointer(0);
+      float *dst = resampled.getWritePointer(0);
+      for (int i = 0; i < newNumSamples; ++i) {
+        const double srcPos = i * ratio;
+        const int srcIndex = static_cast<int>(srcPos);
+        const double frac = srcPos - srcIndex;
+        if (srcIndex + 1 < numSamples)
+          dst[i] = static_cast<float>(src[srcIndex] * (1.0 - frac) +
+                                      src[srcIndex + 1] * frac);
+        else
+          dst[i] = src[srcIndex];
+      }
+      buffer = std::move(resampled);
+    }
+
+    LOG("TEST: audio loaded: " + juce::String(buffer.getNumSamples()) +
+        " samples (" + juce::String(static_cast<double>(buffer.getNumSamples()) / SAMPLE_RATE, 1) + "s)");
+
+    auto project = std::make_unique<Project>();
+    auto &audioData = project->getAudioData();
+    audioData.waveform = std::move(buffer);
+    audioData.sampleRate = SAMPLE_RATE;
+    audioData.originalWaveform.makeCopyOf(audioData.waveform);
+
+    LOG("TEST: computing mel spectrogram...");
+    {
+      const float *samples = audioData.waveform.getReadPointer(0);
+      const int n = audioData.waveform.getNumSamples();
+      MelSpectrogram melComputer(SAMPLE_RATE, N_FFT, HOP_SIZE, NUM_MELS, FMIN,
+                                 FMAX);
+      audioData.melSpectrogram = melComputer.compute(samples, n);
+    }
+    LOG("TEST: mel frames=" + juce::String(audioData.melSpectrogram.size()));
+
+    ec->setProject(std::move(project));
+    auto *proj = ec->getProject();
+
+    LOG("TEST: analyzing audio (HNSep + pitch + GAME)...");
+    auto tAnalyzeStart = std::chrono::steady_clock::now();
+    std::atomic<bool> analyzeDone(false);
+    ec->analyzeAudio(
+        *proj,
+        [](double progress, const juce::String &msg) {
+          LOG("TEST: analyze progress=" + juce::String(progress, 2) + " " + msg);
+        },
+        [&analyzeDone]() {
+          analyzeDone.store(true);
+          LOG("TEST: analyze complete callback fired");
+        });
+    auto tAnalyzeEnd = std::chrono::steady_clock::now();
+    LOG("TEST: analysis took " +
+        juce::String(std::chrono::duration_cast<std::chrono::milliseconds>(
+                         tAnalyzeEnd - tAnalyzeStart)
+                         .count()) +
+        " ms");
+
+    if (!analyzeDone.load()) {
+      LOG("TEST: analyze did not complete (model error?)");
+    }
+
+    auto &ad = proj->getAudioData();
+    LOG("TEST: analysis result -- f0=" + juce::String(ad.f0.size()) +
+        " frames, voiced=" +
+        juce::String(std::count(ad.voicedMask.begin(), ad.voicedMask.end(),
+                                true)) +
+        " harmonic=" + juce::String(ad.harmonicWaveform.getNumSamples()) +
+        " noise=" + juce::String(ad.noiseWaveform.getNumSamples()));
+
+    if (voicebankPath.isNotEmpty()) {
+      juce::File vbDir(voicebankPath);
+      if (!vbDir.isDirectory()) {
+        LOG("TEST: voicebank dir not found: " + voicebankPath);
+      } else {
+        LOG("TEST: loading voicebank: " + voicebankPath);
+        auto tVbStart = std::chrono::steady_clock::now();
+        bool vbOk = ec->loadSVCModelFromDirectory(vbDir);
+        auto tVbEnd = std::chrono::steady_clock::now();
+        LOG("TEST: voicebank load " + juce::String(vbOk ? "OK" : "FAILED") +
+            " in " +
+            juce::String(std::chrono::duration_cast<std::chrono::milliseconds>(
+                             tVbEnd - tVbStart)
+                             .count()) +
+            " ms");
+
+        if (vbOk) {
+          LOG("TEST: running full SVC conversion...");
+          auto tSvcStart = std::chrono::steady_clock::now();
+
+          std::atomic<bool> svcDone(false);
+          std::atomic<bool> svcSuccess(false);
+
+          ec->runFullSVCConversionAsync(
+              [](const juce::String &msg) {
+                LOG("TEST: svc progress: " + msg);
+              },
+              [&svcDone, &svcSuccess](bool success) {
+                LOG("TEST: svc complete callback: success=" +
+                    juce::String(success ? "true" : "false"));
+                svcSuccess.store(success);
+                svcDone.store(true);
+              });
+
+          auto *mm = juce::MessageManager::getInstance();
+          auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::seconds(600);
+          while (!svcDone.load() &&
+                 std::chrono::steady_clock::now() < deadline) {
+            mm->runDispatchLoopUntil(50);
+          }
+
+          auto tSvcEnd = std::chrono::steady_clock::now();
+          if (!svcDone.load()) {
+            LOG("TEST: SVC conversion TIMED OUT after 600s");
+          } else {
+            LOG("TEST: SVC conversion " +
+                juce::String(svcSuccess.load() ? "SUCCESS" : "FAILED") +
+                " in " +
+                juce::String(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                 tSvcEnd - tSvcStart)
+                                 .count()) +
+                " ms");
+          }
+        }
+      }
+    }
+
+    auto &finalAudio = proj->getAudioData().waveform;
+    juce::File outFile = wavFile.getSiblingFile(
+        wavFile.getFileNameWithoutExtension() + "_output.wav");
+    juce::WavAudioFormat wavFormat;
+    std::unique_ptr<juce::AudioFormatWriter> writer(wavFormat.createWriterFor(
+        new juce::FileOutputStream(outFile), SAMPLE_RATE,
+        finalAudio.getNumChannels(), 16, {}, 0));
+    if (writer) {
+      writer->writeFromAudioSampleBuffer(finalAudio, 0,
+                                         finalAudio.getNumSamples());
+      LOG("TEST: output saved to " + outFile.getFullPathName());
+    } else {
+      LOG("TEST: failed to create output writer");
+    }
+
+    LOG("===== TEST INFERENCE END =====");
+  }
 
   void runHNSepBenchmark() {
     LOG("===== HNSEP BENCHMARK START =====");

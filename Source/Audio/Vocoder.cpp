@@ -291,6 +291,21 @@ bool Vocoder::loadModel(const juce::File &modelPath) {
 #endif
 }
 
+void Vocoder::unload() {
+#ifdef HAVE_ONNXRUNTIME
+  std::lock_guard<std::mutex> lock(inferenceMutex);
+  onnxSession.reset();
+  allocator.reset();
+  inputNames.clear();
+  outputNames.clear();
+  inputNameStrings.clear();
+  outputNameStrings.clear();
+  onnxEnv.reset();
+#endif
+  loaded = false;
+  LOG("Vocoder model unloaded");
+}
+
 std::vector<float> Vocoder::infer(const std::vector<std::vector<float>> &mel,
                                   const std::vector<float> &f0) {
   if (!loaded || mel.empty() || f0.empty())
@@ -621,10 +636,8 @@ Ort::SessionOptions Vocoder::createSessionOptions() {
   sessionOptions.SetGraphOptimizationLevel(
       GraphOptimizationLevel::ORT_ENABLE_ALL);
 
-  // Enable memory pattern optimization
+  // CPU-only settings (applied when no GPU EP is added below)
   sessionOptions.EnableMemPattern();
-
-  // Enable CPU memory arena
   sessionOptions.EnableCpuMemArena();
 
   log("Creating session with device: " + executionDevice.toStdString());
@@ -653,6 +666,7 @@ Ort::SessionOptions Vocoder::createSessionOptions() {
           "DML", ORT_API_VERSION, reinterpret_cast<const void **>(&ortDmlApi)));
 
       sessionOptions.DisableMemPattern();
+      sessionOptions.DisableCpuMemArena();
       sessionOptions.SetExecutionMode(ORT_SEQUENTIAL);
 
       Ort::ThrowOnError(ortDmlApi->SessionOptionsAppendExecutionProvider_DML(

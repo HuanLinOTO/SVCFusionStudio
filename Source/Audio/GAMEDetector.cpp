@@ -125,14 +125,15 @@ Ort::SessionOptions GAMEDetector::createSessionOptions(GPUProvider provider,
   Ort::SessionOptions options;
 
   options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
-  options.EnableCpuMemArena();
 
   if (provider == GPUProvider::CPU) {
+    options.EnableCpuMemArena();
     const int numThreads =
         std::max(1u, std::thread::hardware_concurrency()) / 2;
     options.SetIntraOpNumThreads(std::max(numThreads, 2));
     options.EnableMemPattern();
   } else {
+    options.DisableCpuMemArena();
     options.SetIntraOpNumThreads(1);
     options.SetInterOpNumThreads(1);
   }
