@@ -9,6 +9,7 @@ RMVPEPitchDetector::~RMVPEPitchDetector() = default;
 bool RMVPEPitchDetector::loadModel(const juce::File &modelPath,
                                    GPUProvider provider, int deviceId) {
 #ifdef HAVE_ONNXRUNTIME
+  unload();
   try {
     // Initialize ONNX Runtime
     onnxEnv = std::make_unique<Ort::Env>(ORT_LOGGING_LEVEL_WARNING,

@@ -93,6 +93,7 @@ bool FCPEPitchDetector::loadModel(const juce::File &modelPath,
                                   const juce::File &centTablePath,
                                   GPUProvider provider, int deviceId) {
 #ifdef HAVE_ONNXRUNTIME
+  unload();
   try {
     LOG("FCPE: loadModel start");
     // Load mel filterbank from file if provided

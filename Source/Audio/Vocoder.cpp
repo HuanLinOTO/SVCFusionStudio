@@ -164,8 +164,8 @@ bool Vocoder::isOnnxRuntimeAvailable() {
 bool Vocoder::loadModel(const juce::File &modelPath) {
 #ifdef HAVE_ONNXRUNTIME
   if (!onnxEnv) {
-    log("ONNX Runtime not initialized");
-    return false;
+    onnxEnv = std::make_unique<Ort::Env>(ORT_LOGGING_LEVEL_WARNING,
+                                         "SVCFusion Studio");
   }
 
   if (!modelPath.existsAsFile()) {
@@ -300,7 +300,6 @@ void Vocoder::unload() {
   outputNames.clear();
   inputNameStrings.clear();
   outputNameStrings.clear();
-  onnxEnv.reset();
 #endif
   loaded = false;
   LOG("Vocoder model unloaded");

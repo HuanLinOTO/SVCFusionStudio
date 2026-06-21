@@ -1801,6 +1801,16 @@ void EditorController::analyzeAudio(
     vocoderLoadFuture = std::async(std::launch::async, [voc, modelPath]() {
       return voc->loadModel(modelPath);
     });
+  } else if (shouldLoadVocoder && !allowConcurrentModelInference) {
+    if (!voc->loadModel(modelPath)) {
+      juce::MessageManager::callAsync([modelPath]() {
+        juce::AlertWindow::showMessageBoxAsync(
+            juce::AlertWindow::WarningIcon, "Inference failed",
+            "Failed to load vocoder model at:\n" + modelPath.getFullPathName() +
+                "\n\nPlease check your model installation and try again.");
+      });
+      return;
+    }
   }
 
   std::future<HNSepResult> hnsepFuture;
