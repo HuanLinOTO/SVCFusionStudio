@@ -464,8 +464,8 @@ SettingsComponent::~SettingsComponent() {
 
 void SettingsComponent::changeListenerCallback(
     juce::ChangeBroadcaster *source) {
-  if (source == deviceManager && activeTab == SettingsTab::Audio)
-    updateAudioOutputDevices(false);
+  if (source == deviceManager)
+    updateAudioOutputDevices(true);
 }
 
 void SettingsComponent::timerCallback() {
