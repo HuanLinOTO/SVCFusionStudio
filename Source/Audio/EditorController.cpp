@@ -3,6 +3,20 @@
 #include "../Utils/SHA256Utils.h"
 #include "../Utils/Constants.h"
 #include "../Utils/F0Smoother.h"
+
+#ifdef _WIN32
+#include <eh.h>
+static void logSehException(unsigned int code, EXCEPTION_POINTERS *ep) {
+  LOG("SEH EXCEPTION code=0x" + juce::String::toHexString(static_cast<int>(code)) +
+      " addr=0x" + juce::String::toHexString(
+                       reinterpret_cast<intptr_t>(ep->ExceptionRecord->ExceptionAddress)));
+}
+struct SehTranslatorGuard {
+  _se_translator_function oldFn;
+  SehTranslatorGuard() { oldFn = _set_se_translator(logSehException); }
+  ~SehTranslatorGuard() { _set_se_translator(oldFn); }
+};
+#endif
 #include "../Utils/HNSepCurveProcessor.h"
 #include "../Utils/Localization.h"
 #include "../Utils/MelSpectrogram.h"
@@ -25,6 +39,16 @@ void maybeUnloadHNSepAfterUse(HNSepModel *model) {
   if (model != nullptr && shouldUnloadHNSepAfterUse())
     model->unload();
 }
+
+struct AtomicFlagGuard {
+  explicit AtomicFlagGuard(std::atomic<bool> &target) : flag(target) {
+    flag = true;
+  }
+
+  ~AtomicFlagGuard() { flag = false; }
+
+  std::atomic<bool> &flag;
+};
 } // namespace
 
 EditorController::EditorController(bool enableAudioDevice) {
@@ -915,8 +939,6 @@ void EditorController::reloadInferenceModels(bool async) {
       self->gameDetector->unload();
     if (self->hnsepModel && self->hnsepModel->isLoaded())
       self->hnsepModel->unload();
-    if (self->vocoder && self->vocoder->isLoaded())
-      self->vocoder->unload();
 
     if (selectedPitchDetector == PitchDetectorType::FCPE &&
         self->rmvpePitchDetector && self->rmvpePitchDetector->isLoaded()) {
@@ -959,10 +981,14 @@ void EditorController::reloadInferenceModels(bool async) {
   };
 
   if (!async) {
+    if (modelReloadThread.joinable())
+      modelReloadThread.join();
+    isReloadingModels = true;
     std::thread syncReloadThread([this, reloadTask]() mutable {
       reloadTask(this);
     });
     syncReloadThread.join();
+    isReloadingModels = false;
     return;
   }
 
@@ -979,6 +1005,8 @@ void EditorController::reloadInferenceModels(bool async) {
 }
 
 bool EditorController::isInferenceBusy() const {
+  if (isAnalyzingAudio.load())
+    return true;
   if (audioAnalyzer && audioAnalyzer->isAnalyzing())
     return true;
   if (incrementalSynth && incrementalSynth->isSynthesizing())
@@ -1636,9 +1664,20 @@ void EditorController::analyzeAudio(
     Project &targetProject,
     const std::function<void(double, const juce::String &)> &onProgress,
     std::function<void()> onComplete) {
+  if (modelReloadThread.joinable()) {
+    modelReloadThread.join();
+    isReloadingModels = false;
+  }
+
   auto &audioData = targetProject.getAudioData();
   if (audioData.waveform.getNumSamples() == 0)
     return;
+
+  if (isAnalyzingAudio.exchange(true)) {
+    LOG("EditorController::analyzeAudio skipped: analysis already running");
+    return;
+  }
+  AtomicFlagGuard analyzingGuard(isAnalyzingAudio);
 
   auto showMissingModelAndAbort = [](const juce::String &modelName,
                                      const juce::File &path) {
@@ -1782,18 +1821,36 @@ void EditorController::analyzeAudio(
   };
 
   onProgress(0.35, "Computing mel spectrogram...");
+  LOG("analyzeAudio: starting mel spectrogram");
   auto melFuture = std::async(std::launch::async, [samples, numSamples, sampleRate]() {
     MelSpectrogram melComputer(sampleRate, N_FFT, HOP_SIZE, NUM_MELS, FMIN, FMAX);
     return melComputer.compute(samples, numSamples);
   });
 
   onProgress(0.55, "Extracting pitch (F0)...");
-  auto f0Future = std::async(std::launch::async, runF0Extraction);
+  LOG("analyzeAudio: starting F0 extraction");
+  std::future<std::vector<float>> f0Future;
+  std::vector<float> extractedF0;
+  if (allowConcurrentModelInference) {
+    f0Future = std::async(std::launch::async, runF0Extraction);
+  } else {
+    try {
+#ifdef _WIN32
+      SehTranslatorGuard sehGuard;
+#endif
+      extractedF0 = runF0Extraction();
+    } catch (...) {
+      LOG("analyzeAudio: EXCEPTION during F0 extraction");
+      throw;
+    }
+  }
+  LOG("analyzeAudio: F0 extraction done, frames=" + juce::String(extractedF0.size()));
   auto vadFuture = std::async(std::launch::async, computeVadMaskForFrames,
                               predictedFrames);
 
   auto modelPath = PlatformPaths::getModelFile("pc_nsf_hifigan.onnx");
   auto *voc = ensureVocoder();
+  LOG("analyzeAudio: vocoder ready, loaded=" + juce::String(voc && voc->isLoaded() ? "yes" : "no"));
   const bool vocoderMissing = !voc || (!modelPath.existsAsFile() && !voc->isLoaded());
   const bool shouldLoadVocoder = voc && modelPath.existsAsFile() && !voc->isLoaded();
   std::future<bool> vocoderLoadFuture;
@@ -1802,6 +1859,7 @@ void EditorController::analyzeAudio(
       return voc->loadModel(modelPath);
     });
   } else if (shouldLoadVocoder && !allowConcurrentModelInference) {
+    LOG("analyzeAudio: loading vocoder synchronously");
     if (!voc->loadModel(modelPath)) {
       juce::MessageManager::callAsync([modelPath]() {
         juce::AlertWindow::showMessageBoxAsync(
@@ -1825,7 +1883,8 @@ void EditorController::analyzeAudio(
   audioData.melSpectrogram = melFuture.get();
   int targetFrames = static_cast<int>(audioData.melSpectrogram.size());
 
-  std::vector<float> extractedF0 = f0Future.get();
+  if (f0Future.valid())
+    extractedF0 = f0Future.get();
 
   if (extractedF0.empty() || targetFrames <= 0) {
     juce::MessageManager::callAsync([]() {

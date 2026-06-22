@@ -784,6 +784,18 @@ void SettingsComponent::comboBoxChanged(juce::ComboBox *comboBox) {
       onSettingsChanged();
     lastConfirmedGpuDeviceId = gpuDeviceId;
   } else if (comboBox == &pitchDetectorComboBox) {
+    if (canChangeDevice && !canChangeDevice()) {
+      pitchDetectorComboBox.setSelectedId(
+          lastConfirmedPitchDetectorType == PitchDetectorType::RMVPE ? 1 : 2,
+          juce::dontSendNotification);
+      infoLabel.setText(TR("settings.inference_in_progress"),
+                        juce::dontSendNotification);
+      juce::AlertWindow::showMessageBoxAsync(
+          juce::AlertWindow::InfoIcon, TR("settings.title"),
+          TR("settings.inference_in_progress"));
+      return;
+    }
+
     int selectedId = pitchDetectorComboBox.getSelectedId();
     if (selectedId == 1)
       pitchDetectorType = PitchDetectorType::RMVPE;
@@ -794,6 +806,7 @@ void SettingsComponent::comboBoxChanged(juce::ComboBox *comboBox) {
 
     if (onPitchDetectorChanged)
       onPitchDetectorChanged(pitchDetectorType);
+    lastConfirmedPitchDetectorType = pitchDetectorType;
   } else if (comboBox == &audioDeviceTypeComboBox) {
     int idx = audioDeviceTypeComboBox.getSelectedId() - 1;
     if (idx >= 0 && idx < audioDeviceTypeOrder.size()) {
@@ -1333,6 +1346,7 @@ void SettingsComponent::loadSettings() {
     pitchDetectorComboBox.setSelectedId(1, juce::dontSendNotification);
   else if (pitchDetectorType == PitchDetectorType::FCPE)
     pitchDetectorComboBox.setSelectedId(2, juce::dontSendNotification);
+  lastConfirmedPitchDetectorType = pitchDetectorType;
 
   someSegmentsDebugToggle.setToggleState(showSomeSegmentsDebug,
                                          juce::dontSendNotification);

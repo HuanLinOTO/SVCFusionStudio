@@ -338,6 +338,8 @@ private:
     juce::String wavPath;
     juce::String voicebankPath;
     juce::String deviceName = "DirectML";
+    juce::String pitchName = "RMVPE";
+    int testDeviceId = 0;
 
     for (int i = 0; i < args.size(); ++i) {
       if (args[i] == "--test-inference" && i + 1 < args.size())
@@ -346,19 +348,26 @@ private:
         voicebankPath = args[++i];
       else if (args[i] == "--device" && i + 1 < args.size())
         deviceName = args[++i];
+      else if (args[i] == "--pitch" && i + 1 < args.size())
+        pitchName = args[++i];
+      else if (args[i] == "--device-id" && i + 1 < args.size())
+        testDeviceId = args[++i].getIntValue();
     }
 
     if (wavPath.isEmpty()) {
-      LOG("TEST: usage --test-inference <wav> [--voicebank <dir>] [--device DirectML|CPU]");
+      LOG("TEST: usage --test-inference <wav> [--voicebank <dir>] [--device DirectML|CPU] [--device-id N] [--pitch RMVPE|FCPE]");
       return;
     }
 
     LOG("TEST: wav=" + wavPath + " voicebank=" + voicebankPath +
-        " device=" + deviceName);
+        " device=" + deviceName + " id=" + juce::String(testDeviceId) +
+        " pitch=" + pitchName);
 
     auto ec = std::make_unique<EditorController>(false);
-    ec->setPitchDetectorType(PitchDetectorType::RMVPE);
-    ec->setDeviceConfig(deviceName, 0);
+    ec->setPitchDetectorType(pitchName.equalsIgnoreCase("FCPE")
+                                 ? PitchDetectorType::FCPE
+                                 : PitchDetectorType::RMVPE);
+    ec->setDeviceConfig(deviceName, testDeviceId);
 
     LOG("TEST: reloading inference models (RMVPE/HNSep/GAME)...");
     logGpuMemory("before model load");

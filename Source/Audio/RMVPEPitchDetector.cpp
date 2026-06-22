@@ -1,4 +1,5 @@
 #include "RMVPEPitchDetector.h"
+#include "../Utils/AppLogger.h"
 #include <algorithm>
 #include <cmath>
 
@@ -106,11 +107,11 @@ bool RMVPEPitchDetector::loadModel(const juce::File &modelPath,
     DBG("RMVPE model loaded successfully");
     return true;
   } catch (const Ort::Exception &e) {
-    DBG("ONNX Runtime error: " << e.what());
+    LOG("RMVPE: ONNX Runtime error loading model: " + juce::String(e.what()));
     loaded = false;
     return false;
   } catch (const std::exception &e) {
-    DBG("Error loading RMVPE model: " << e.what());
+    LOG("RMVPE: Error loading model: " + juce::String(e.what()));
     loaded = false;
     return false;
   }

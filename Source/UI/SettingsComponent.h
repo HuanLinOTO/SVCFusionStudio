@@ -174,6 +174,7 @@ private:
   juce::String lastConfirmedDevice = "CPU";
   int lastConfirmedGpuDeviceId = 0;
   PitchDetectorType pitchDetectorType = PitchDetectorType::RMVPE;
+  PitchDetectorType lastConfirmedPitchDetectorType = PitchDetectorType::RMVPE;
   float uiFontScale = 1.0f;
   bool showSomeSegmentsDebug = false;
   bool showSomeValuesDebug = false;

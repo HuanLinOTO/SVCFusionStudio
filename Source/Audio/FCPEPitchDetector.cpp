@@ -229,11 +229,11 @@ bool FCPEPitchDetector::loadModel(const juce::File &modelPath,
     DBG("FCPE model loaded successfully");
     return true;
   } catch (const Ort::Exception &e) {
-    DBG("ONNX Runtime error: " << e.what());
+    LOG("FCPE: ONNX Runtime error loading model: " + juce::String(e.what()));
     loaded = false;
     return false;
   } catch (const std::exception &e) {
-    DBG("Error loading FCPE model: " << e.what());
+    LOG("FCPE: Error loading model: " + juce::String(e.what()));
     loaded = false;
     return false;
   }

@@ -202,6 +202,7 @@ private:
   std::thread loaderThread;
   std::thread loaderJoinerThread;
   std::atomic<bool> isLoadingAudio{false};
+  std::atomic<bool> isAnalyzingAudio{false};
   std::atomic<bool> cancelLoadingFlag{false};
   std::atomic<std::uint64_t> hostAnalysisJobId{0};
 

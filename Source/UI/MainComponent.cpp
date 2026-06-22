@@ -2473,8 +2473,10 @@ void MainComponent::showSettings() {
     };
     settingsOverlay->getSettingsComponent()->onPitchDetectorChanged =
         [this](PitchDetectorType type) {
-          if (editorController)
+          if (editorController) {
             editorController->setPitchDetectorType(type);
+            reloadInferenceModels(false);
+          }
         };
     settingsOverlay->getSettingsComponent()->onShowSomeSegmentsDebugChanged =
         [this](bool show) {
