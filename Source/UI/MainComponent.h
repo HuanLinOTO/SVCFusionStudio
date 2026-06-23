@@ -161,8 +161,8 @@ private:
   void segmentIntoNotes(Project &targetProject);
 
   // Multi-track
-  void onTrackDoubleClicked(int trackIndex);
-  void onTrackTypeChangeRequested(int trackIndex);
+  void onTrackTypeChanged(int trackIndex, TrackType newType);
+  void onTrackSelected(int trackIndex);
   void setActiveTrack(int trackIndex);
   void refreshTrackList();
   void rebuildAudioEngine();
@@ -183,6 +183,11 @@ private:
   std::unique_ptr<SettingsManager> settingsManager;
 
   const bool enableAudioDeviceFlag;
+
+  // Vertical split layout
+  int trackListHeight = 200;
+  class SplitterBar;
+  std::unique_ptr<SplitterBar> splitterBar;
 
   CustomMenuBarLookAndFeel menuBarLookAndFeel;
   AppMenuBarComponent menuBar;

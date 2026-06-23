@@ -2,27 +2,37 @@
 #include "../Audio/EditorController.h"
 #include "StyledComponents.h"
 
+static juce::Colour getTypeColor(TrackType t) {
+    return (t == TrackType::Vocal) ? juce::Colour(0xff6ab0ff) : juce::Colour(0xff88cc88);
+}
+
+// ── TrackItem ──
+
 TrackListComponent::TrackItem::TrackItem(TrackListComponent& o, int idx)
     : owner(o), trackIndex(idx),
-      muteButton("M", juce::Colour(0xffe05848), juce::Colour(0xffc04030), juce::Colour(0xffe05848)),
-      soloButton("S", juce::Colour(0xffe8b33d), juce::Colour(0xffc89830), juce::Colour(0xffe8b33d))
+      muteButton(TR("track.mute")), soloButton(TR("track.solo"))
 {
-    auto makeButtonShape = []() {
-        juce::Path p;
-        p.addRoundedRectangle(0, 0, 20, 16, 3);
-        return p;
-    };
+    muteButton.setClickingTogglesState(true);
+    muteButton.setColour(juce::TextButton::buttonColourId, juce::Colour(0xffe05848));
+    muteButton.setColour(juce::TextButton::buttonOnColourId, juce::Colour(0xffc04030));
+    muteButton.setColour(juce::TextButton::textColourOnId, juce::Colours::white);
+    muteButton.setColour(juce::TextButton::textColourOffId, juce::Colours::white);
+    muteButton.setTooltip(TR("track.mute"));
 
-    auto onShape = makeButtonShape();
+    soloButton.setClickingTogglesState(true);
+    soloButton.setColour(juce::TextButton::buttonColourId, juce::Colour(0xffe8b33d));
+    soloButton.setColour(juce::TextButton::buttonOnColourId, juce::Colour(0xffc89830));
+    soloButton.setColour(juce::TextButton::textColourOnId, juce::Colours::white);
+    soloButton.setColour(juce::TextButton::textColourOffId, juce::Colours::white);
+    soloButton.setTooltip(TR("track.solo"));
 
-    muteButton.setShape(onShape, false, true, false);
-    muteButton.setOutline(juce::Colour(0xff666666), 1.0f);
-    muteButton.setButtonText("M");
-
-    soloButton.setShape(onShape, false, true, false);
+    typeCombo.addItem(TR("track.accompaniment"), 1);
+    typeCombo.addItem(TR("track.vocal"), 2);
+    typeCombo.setSelectedId(1, juce::dontSendNotification);
 
     addAndMakeVisible(muteButton);
     addAndMakeVisible(soloButton);
+    addAndMakeVisible(typeCombo);
 
     muteButton.onClick = [this]() {
         if (!owner.editorController) return;
@@ -43,6 +53,12 @@ TrackListComponent::TrackItem::TrackItem(TrackListComponent& o, int idx)
         updateFromTrack();
         if (owner.onTracksChanged) owner.onTracksChanged();
     };
+
+    typeCombo.onChange = [this]() {
+        TrackType newType = (typeCombo.getSelectedId() == 2) ? TrackType::Vocal : TrackType::Accompaniment;
+        if (newType != trackType && owner.onTrackTypeChanged)
+            owner.onTrackTypeChanged(trackIndex, newType);
+    };
 }
 
 TrackListComponent::TrackItem::~TrackItem() = default;
@@ -60,10 +76,14 @@ void TrackListComponent::TrackItem::updateFromTrack()
     isSoloed = track->solo;
     volume = track->getVolume();
 
+    typeCombo.setSelectedId((trackType == TrackType::Vocal) ? 2 : 1, juce::dontSendNotification);
+
     auto* proj = track->getProject();
     if (proj) {
         auto& audio = proj->getAudioData();
         waveformPreview.makeCopyOf(audio.waveform);
+    } else {
+        waveformPreview = {};
     }
 
     muteButton.setToggleState(isMuted, juce::dontSendNotification);
@@ -75,7 +95,6 @@ void TrackListComponent::TrackItem::updateFromTrack()
 void TrackListComponent::TrackItem::paint(juce::Graphics& g)
 {
     auto bounds = getLocalBounds().toFloat();
-
     auto bg = isActive ? APP_COLOR_SURFACE_RAISED : APP_COLOR_SURFACE;
     if (trackIndex % 2 == 0)
         bg = bg.darker(0.03f);
@@ -90,72 +109,77 @@ void TrackListComponent::TrackItem::paint(juce::Graphics& g)
         g.fillRect(bounds.getX(), bounds.getY(), 3.0f, bounds.getHeight());
     }
 
-    float left = 12.0f;
+    // ── Left: Header area (name + type + mute/solo) ──
+    int hw = owner.headerWidth;
+    int leftPad = 12;
 
-    auto typeColor = (trackType == TrackType::Vocal)
-        ? juce::Colour(0xff6ab0ff)
-        : juce::Colour(0xff88cc88);
+    // Type dot
+    g.setColour(getTypeColor(trackType));
+    g.fillEllipse(static_cast<float>(leftPad), bounds.getY() + 10, 10.0f, 10.0f);
 
-    g.setColour(typeColor);
-    g.fillEllipse(left, bounds.getY() + 10, 10, 10);
-
+    // Track name
     g.setColour(APP_COLOR_TEXT_PRIMARY);
-    g.setFont(AppFont::getFont(13.0f));
-    g.drawText(trackName, left + 20, bounds.getY() + 6, getWidth() - 120, 20,
+    g.setFont(AppFont::getFont(12.0f));
+    g.drawText(trackName,
+               leftPad + 16, bounds.getY() + 6, hw - leftPad - 16, 18,
                juce::Justification::left);
 
-    juce::String typeStr = (trackType == TrackType::Vocal) ? "Vocal" : "Accompaniment";
-    g.setColour(APP_COLOR_TEXT_MUTED);
-    g.setFont(AppFont::getFont(11.0f));
-    g.drawText(typeStr, left + 20, bounds.getY() + 26, getWidth() - 120, 16,
-               juce::Justification::left);
+    // ── Right: Waveform area ──
+    int wfLeft = hw;
+    int wfWidth = getWidth() - hw;
+    int wfHeight = 40;
+    int wfY = 12;
 
-    int waveformY = bounds.getY() + 46;
-    int waveformH = 18;
-    int waveformW = getWidth() - 80;
-    if (waveformPreview.getNumSamples() > 0 && waveformW > 10) {
-        g.setColour(APP_COLOR_WAVEFORM.withAlpha(0.5f));
+    if (waveformPreview.getNumSamples() > 0 && wfWidth > 10) {
+        g.setColour(APP_COLOR_WAVEFORM.withAlpha(0.45f));
         const float* data = waveformPreview.getReadPointer(0);
         int numSamples = waveformPreview.getNumSamples();
-        float mid = waveformY + waveformH * 0.5f;
-        for (int x = 0; x < waveformW; ++x) {
-            int startIdx = (int)((float)x / waveformW * numSamples);
-            int endIdx = (int)((float)(x + 1) / waveformW * numSamples);
+        float mid = wfY + wfHeight * 0.5f;
+        for (int x = 0; x < wfWidth; ++x) {
+            int startIdx = static_cast<int>((static_cast<float>(x) / wfWidth) * numSamples);
+            int endIdx = static_cast<int>((static_cast<float>(x + 1) / wfWidth) * numSamples);
             if (endIdx <= startIdx) endIdx = startIdx + 1;
             float maxVal = 0.0f;
             for (int i = startIdx; i < endIdx && i < numSamples; ++i) {
                 float v = std::abs(data[i]);
                 if (v > maxVal) maxVal = v;
             }
-            float h = maxVal * waveformH * 0.5f;
-            g.drawVerticalLine(left + x, mid - h, mid + h);
+            float h = maxVal * wfHeight * 0.5f;
+            g.drawVerticalLine(wfLeft + x, mid - h, mid + h);
+        }
+
+        // Playhead line in waveform area
+        double ratio = (owner.totalDuration > 0.0)
+            ? (owner.playheadPosition / owner.totalDuration)
+            : 0.0;
+        if (ratio > 0.0 && ratio < 1.0) {
+            int phX = wfLeft + static_cast<int>(ratio * wfWidth);
+            g.setColour(juce::Colours::white.withAlpha(0.8f));
+            g.drawVerticalLine(phX, bounds.getY(), bounds.getBottom());
         }
     }
 
     if (isMuted) {
-        g.setColour(juce::Colour(0xffe05848).withAlpha(0.15f));
+        g.setColour(juce::Colour(0xffe05848).withAlpha(0.12f));
         g.fillAll();
     }
 }
 
 void TrackListComponent::TrackItem::resized()
 {
-    int btnSize = 20;
-    int y = getHeight() - 28;
-    muteButton.setBounds(getWidth() - 60, y, btnSize, 16);
-    soloButton.setBounds(getWidth() - 36, y, btnSize, 16);
-}
-
-void TrackListComponent::TrackItem::mouseDoubleClick(const juce::MouseEvent& e)
-{
-    if (owner.onTrackDoubleClicked)
-        owner.onTrackDoubleClicked(trackIndex);
+    int hw = owner.headerWidth;
+    typeCombo.setBounds(12, 28, hw - 80, 18);
+    int btnW = 22;
+    int btnH = 16;
+    int btnY = 28;
+    muteButton.setBounds(hw - btnW - 8, btnY, btnW, btnH);
+    soloButton.setBounds(hw - btnW * 2 - 14, btnY, btnW, btnH);
 }
 
 void TrackListComponent::TrackItem::mouseDown(const juce::MouseEvent& e)
 {
-    if (e.mods.isRightButtonDown() && owner.onTrackTypeChangeRequested)
-        owner.onTrackTypeChangeRequested(trackIndex);
+    if (owner.onTrackSelected)
+        owner.onTrackSelected(trackIndex);
 }
 
 // ── TrackListComponent ──
@@ -185,6 +209,13 @@ void TrackListComponent::refresh()
     repaint();
 }
 
+void TrackListComponent::setPlayheadPosition(double timeSeconds, double totalDurationSeconds)
+{
+    playheadPosition = timeSeconds;
+    totalDuration = totalDurationSeconds;
+    repaint();
+}
+
 void TrackListComponent::paint(juce::Graphics& g)
 {
     g.setColour(APP_COLOR_BACKGROUND);
@@ -192,8 +223,8 @@ void TrackListComponent::paint(juce::Graphics& g)
 
     if (items.empty()) {
         g.setColour(APP_COLOR_TEXT_MUTED);
-        g.setFont(AppFont::getFont(14.0f));
-        g.drawText("No tracks. Import audio to create a track.",
+        g.setFont(AppFont::getFont(13.0f));
+        g.drawText(TR("tracks.empty"),
                    getLocalBounds(), juce::Justification::centred);
     }
 }
@@ -201,8 +232,15 @@ void TrackListComponent::paint(juce::Graphics& g)
 void TrackListComponent::resized()
 {
     int y = 0;
+    int w = getWidth();
     for (auto& item : items) {
-        item->setBounds(0, y, getWidth(), itemHeight);
-        y += itemHeight;
+        item->setBounds(0, y, w, laneHeight);
+        y += laneHeight;
     }
+}
+
+int TrackListComponent::getTotalHeight() const
+{
+    int count = static_cast<int>(items.size());
+    return count * laneHeight;
 }

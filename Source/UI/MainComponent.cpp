@@ -320,6 +320,33 @@ static void showExportSettingsDialogAsync(
 }
 } // namespace
 
+// ── Draggable splitter bar between track overview and editor ──
+
+class MainComponent::SplitterBar : public juce::Component {
+public:
+    SplitterBar() {
+        setMouseCursor(juce::MouseCursor::UpDownResizeCursor);
+    }
+
+    void paint(juce::Graphics& g) override {
+        g.fillAll(APP_COLOR_BORDER);
+    }
+
+    void mouseDown(const juce::MouseEvent& e) override {
+        dragStartY = e.y;
+    }
+
+    void mouseDrag(const juce::MouseEvent& e) override {
+        if (onResize)
+            onResize(e.y - dragStartY);
+    }
+
+    std::function<void(int deltaY)> onResize;
+
+private:
+    int dragStartY = 0;
+};
+
 MainComponent::MainComponent(bool enableAudioDevice)
     : enableAudioDeviceFlag(enableAudioDevice), pianoRollView(pianoRoll) {
   LOG("MainComponent: constructor start");
@@ -418,8 +445,10 @@ MainComponent::MainComponent(bool enableAudioDevice)
   addAndMakeVisible(menuBar);
 #endif
   addAndMakeVisible(toolbar);
-  addAndMakeVisible(workspace);
   addAndMakeVisible(trackList);
+  splitterBar = std::make_unique<SplitterBar>();
+  addAndMakeVisible(*splitterBar);
+  addAndMakeVisible(workspace);
   addChildComponent(modelDebugPanel);
   modelDebugPanel.setMultiLine(true);
   modelDebugPanel.setReadOnly(true);
@@ -446,9 +475,20 @@ MainComponent::MainComponent(bool enableAudioDevice)
 
   // Setup track list
   trackList.setEditorController(editorController.get());
-  trackList.onTrackDoubleClicked = [this](int trackIndex) { onTrackDoubleClicked(trackIndex); };
-  trackList.onTrackTypeChangeRequested = [this](int trackIndex) { onTrackTypeChangeRequested(trackIndex); };
+  trackList.onTrackSelected = [this](int trackIndex) { onTrackSelected(trackIndex); };
+  trackList.onTrackTypeChanged = [this](int trackIndex, TrackType newType) { onTrackTypeChanged(trackIndex, newType); };
   trackList.onTracksChanged = [this]() { rebuildAudioEngine(); };
+
+  // Setup splitter bar resize
+  splitterBar->onResize = [this](int deltaY) {
+    int newHeight = trackListHeight + deltaY;
+    int availableHeight = getHeight() - 24 - 52 - 4; // menu + toolbar + splitter
+    newHeight = juce::jlimit(48, availableHeight - 100, newHeight);
+    if (newHeight != trackListHeight) {
+      trackListHeight = newHeight;
+      resized();
+    }
+  };
 
   // Add parameter panel to workspace (visible by default)
   workspace.addPanel("parameters", TR("panel.parameters"), &parameterPanel,
@@ -772,7 +812,7 @@ MainComponent::MainComponent(bool enableAudioDevice)
     pianoRollView.setProject(initialProject);
   }
   pianoRollView.setHNSepVisible(false);
-  trackList.setVisible(false);
+  trackList.setVisible(true);
 
   // Register commands with the command manager
   commandManager->registerAllCommandsForTarget(this);
@@ -861,10 +901,15 @@ void MainComponent::resized() {
   // Toolbar
   toolbar.setBounds(bounds.removeFromTop(52));
 
-  // Track list strip on the left
-  int trackListWidth = editorController && editorController->getTrackCount() > 0 ? 220 : 0;
-  if (trackListWidth > 0)
-    trackList.setBounds(bounds.removeFromLeft(trackListWidth));
+  // Track list (top section)
+  int availableHeight = bounds.getHeight();
+  int trackH = juce::jlimit(48, juce::jmax(48, availableHeight - 100), trackListHeight);
+  trackListHeight = trackH;
+  trackList.setBounds(bounds.removeFromTop(trackH));
+
+  // Splitter bar between track list and editor
+  if (splitterBar)
+    splitterBar->setBounds(bounds.removeFromTop(4));
 
   // Workspace takes remaining space (includes piano roll, panels, and sidebar)
   workspace.setBounds(bounds);
@@ -913,6 +958,18 @@ void MainComponent::timerCallback() {
 
     pianoRoll.setCursorTime(position);
     toolbar.setCurrentTime(position);
+
+    // Update playhead in track overview
+    if (editorController) {
+      double dur = 0.0;
+      int count = editorController->getTrackCount();
+      for (int i = 0; i < count; ++i) {
+        auto* t = editorController->getTrack(i);
+        if (t && t->project)
+          dur = std::max(dur, static_cast<double>(t->project->getAudioData().getDuration()));
+      }
+      trackList.setPlayheadPosition(position, dur);
+    }
 
     // Follow playback: scroll to keep cursor visible
     if (isPlaying && toolbar.isFollowPlayback()) {
@@ -1611,7 +1668,6 @@ void MainComponent::analyzeAudio(
 
 void MainComponent::refreshTrackList() {
   trackList.refresh();
-  trackList.setVisible(editorController && editorController->getTrackCount() > 0);
   resized();
 }
 
@@ -1642,6 +1698,7 @@ void MainComponent::setActiveTrack(int trackIndex) {
 
   // Center pitch range if vocal track
   if (track->isVocal()) {
+    pianoRoll.setEnabled(true);
     const auto& f0 = project->getAudioData().f0;
     if (!f0.empty()) {
       float minF0 = 10000.0f, maxF0 = 0.0f;
@@ -1657,6 +1714,9 @@ void MainComponent::setActiveTrack(int trackIndex) {
         pianoRoll.centerOnPitchRange(minMidi, maxMidi);
       }
     }
+  } else {
+    // Accompaniment track: show waveform but disable editing
+    pianoRoll.setEnabled(false);
   }
 
   // Update audio engine volume to active track's volume
@@ -1668,106 +1728,55 @@ void MainComponent::setActiveTrack(int trackIndex) {
   pianoRoll.repaint();
 }
 
-void MainComponent::onTrackDoubleClicked(int trackIndex) {
+void MainComponent::onTrackSelected(int trackIndex) {
   if (!editorController) return;
-
-  auto* track = editorController->getTrack(trackIndex);
-  if (!track) return;
-
-  if (track->isVocal()) {
-    // Open in piano roll editor
-    setActiveTrack(trackIndex);
-  } else {
-    // Accompaniment track: offer to convert to vocal
-    onTrackTypeChangeRequested(trackIndex);
-  }
+  if (trackIndex < 0 || trackIndex >= editorController->getTrackCount()) return;
+  setActiveTrack(trackIndex);
 }
 
-void MainComponent::onTrackTypeChangeRequested(int trackIndex) {
+void MainComponent::onTrackTypeChanged(int trackIndex, TrackType newType) {
   if (!editorController) return;
 
   auto* track = editorController->getTrack(trackIndex);
   if (!track) return;
 
-  if (track->isVocal()) {
-    // Already vocal, no conversion needed
-    return;
+  if (newType == TrackType::Vocal && track->isAccompaniment()) {
+    // Accompaniment -> Vocal: run analysis (no confirmation dialog needed,
+    // user explicitly chose this from the dropdown)
+    juce::Component::SafePointer<MainComponent> safeThis(this);
+    toolbar.showProgress(TR("progress.analyzing_audio"));
+    toolbar.setProgress(-1.0f);
+
+    editorController->convertTrackToVocal(
+        trackIndex,
+        [safeThis](double p, const juce::String& msg) {
+          if (safeThis == nullptr) return;
+          safeThis->toolbar.setProgress(static_cast<float>(p));
+          safeThis->toolbar.showProgress(msg);
+        },
+        [safeThis, trackIndex](int completedTrackIndex, bool success) {
+          if (safeThis == nullptr) return;
+          safeThis->toolbar.hideProgress();
+
+          if (success) {
+            safeThis->setActiveTrack(trackIndex);
+            safeThis->refreshTrackList();
+          } else {
+            safeThis->refreshTrackList();
+            StyledMessageBox::show(safeThis.getComponent(),
+                TR("error.inference_failed"),
+                "Failed to convert track to vocal. Check model availability.",
+                StyledMessageBox::WarningIcon);
+          }
+        });
+  } else if (newType == TrackType::Accompaniment && track->isVocal()) {
+    // Vocal -> Accompaniment: just change type, keep analysis data
+    track->type = TrackType::Accompaniment;
+    refreshTrackList();
+
+    if (editorController->getActiveTrackIndex() == trackIndex)
+      pianoRoll.setEnabled(false);
   }
-
-#if JUCE_MODAL_LOOPS_PERMITTED
-  bool convert = juce::NativeMessageBox::showOkCancelBox(
-      juce::AlertWindow::QuestionIcon,
-      "Convert to Vocal Track",
-      "Convert \"" + track->name + "\" to a vocal track?\n\n"
-      "This will run audio analysis (pitch detection, note segmentation) "
-      "which may take a few moments.",
-      this);
-
-  if (!convert) return;
-
-  juce::Component::SafePointer<MainComponent> safeThis(this);
-  toolbar.showProgress("Analyzing audio...");
-  toolbar.setProgress(-1.0f);
-
-  editorController->convertTrackToVocal(
-      trackIndex,
-      [safeThis](double p, const juce::String& msg) {
-        if (safeThis == nullptr) return;
-        safeThis->toolbar.setProgress(static_cast<float>(p));
-        safeThis->toolbar.showProgress(msg);
-      },
-      [safeThis, trackIndex](int completedTrackIndex, bool success) {
-        if (safeThis == nullptr) return;
-        safeThis->toolbar.hideProgress();
-
-        if (success) {
-          safeThis->setActiveTrack(trackIndex);
-          safeThis->refreshTrackList();
-        } else {
-          StyledMessageBox::show(safeThis.getComponent(), "Conversion Failed",
-              "Failed to convert track to vocal. Check model availability.",
-              StyledMessageBox::WarningIcon);
-        }
-      });
-#else
-  juce::Component::SafePointer<MainComponent> safeThis(this);
-  juce::NativeMessageBox::showAsync(juce::MessageBoxOptions()
-      .withIconType(juce::MessageBoxIconType::QuestionIcon)
-      .withTitle("Convert to Vocal Track")
-      .withMessage("Convert \"" + track->name + "\" to a vocal track?\n\n"
-                   "This will run audio analysis which may take a few moments.")
-      .withButton("Convert")
-      .withButton("Cancel")
-      .withAssociatedComponent(this),
-      [safeThis, trackIndex](int result) {
-        if (safeThis == nullptr || result != 1) return;
-        if (!safeThis->editorController) return;
-
-        safeThis->toolbar.showProgress("Analyzing audio...");
-        safeThis->toolbar.setProgress(-1.0f);
-
-        safeThis->editorController->convertTrackToVocal(
-            trackIndex,
-            [safeThis](double p, const juce::String& msg) {
-              if (safeThis == nullptr) return;
-              safeThis->toolbar.setProgress(static_cast<float>(p));
-              safeThis->toolbar.showProgress(msg);
-            },
-            [safeThis, trackIndex](int completedTrackIndex, bool success) {
-              if (safeThis == nullptr) return;
-              safeThis->toolbar.hideProgress();
-
-              if (success) {
-                safeThis->setActiveTrack(trackIndex);
-                safeThis->refreshTrackList();
-              } else {
-                StyledMessageBox::show(safeThis.getComponent(), "Conversion Failed",
-                    "Failed to convert track to vocal. Check model availability.",
-                    StyledMessageBox::WarningIcon);
-              }
-            });
-      });
-#endif
 }
 
 void MainComponent::exportFile() {

@@ -182,5 +182,14 @@
   "voicebank.encoder_label": "Encoder",
   "voicebank.sample_rate": "Sample Rate",
   "voicebank.n_hidden": "Hidden Size",
-  "voicebank.unknown": "Unknown"
+  "voicebank.unknown": "Unknown",
+
+  "track.vocal": "Vocal",
+  "track.accompaniment": "Accompaniment",
+  "track.mute": "Mute",
+  "track.solo": "Solo",
+  "track.type": "Type",
+  "tracks.empty": "No tracks. Import audio to create a track.",
+  "tracks.title": "Tracks",
+  "track.readonly": "Read-only — convert to vocal to edit"
 }

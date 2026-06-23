@@ -182,5 +182,14 @@
   "voicebank.encoder_label": "編碼器",
   "voicebank.sample_rate": "取樣率",
   "voicebank.n_hidden": "隱藏層大小",
-  "voicebank.unknown": "未知"
+  "voicebank.unknown": "未知",
+
+  "track.vocal": "人聲",
+  "track.accompaniment": "伴奏",
+  "track.mute": "靜音",
+  "track.solo": "獨奏",
+  "track.type": "類型",
+  "tracks.empty": "暫無軌道，導入音訊以建立",
+  "tracks.title": "軌道",
+  "track.readonly": "唯讀 — 轉換為人聲軌道以編輯"
 }

@@ -182,5 +182,14 @@
   "voicebank.encoder_label": "エンコーダー",
   "voicebank.sample_rate": "サンプルレート",
   "voicebank.n_hidden": "隠れ層サイズ",
-  "voicebank.unknown": "不明"
+  "voicebank.unknown": "不明",
+
+  "track.vocal": "ボーカル",
+  "track.accompaniment": "伴奏",
+  "track.mute": "ミュート",
+  "track.solo": "ソロ",
+  "track.type": "種類",
+  "tracks.empty": "トラックがありません。音声を読み込んで作成してください",
+  "tracks.title": "トラック",
+  "track.readonly": "読み取り専用 — 編集するにはボーカルトラックに変換してください"
 }
