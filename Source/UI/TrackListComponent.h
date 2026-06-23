@@ -25,6 +25,7 @@ public:
     std::function<void(int trackIndex, TrackType newType)> onTrackTypeChanged;
     std::function<void(int trackIndex)> onTrackDeleted;
     std::function<void()> onTracksChanged;
+    std::function<void(double timeSeconds)> onSeek;
 
     int getHeaderWidth() const { return headerWidth; }
     int getLaneHeight() const { return laneHeight; }
@@ -40,6 +41,7 @@ private:
         void paint(juce::Graphics& g) override;
         void resized() override;
         void mouseDown(const juce::MouseEvent& e) override;
+        void mouseDrag(const juce::MouseEvent& e) override;
 
         void updateFromTrack();
 
@@ -50,18 +52,18 @@ private:
         bool isActive = false;
         bool isMuted = false;
         bool isSoloed = false;
-        float volume = 0.0f;
         juce::AudioBuffer<float> waveformPreview;
 
         juce::TextButton muteButton;
         juce::TextButton soloButton;
         juce::TextButton deleteButton;
         juce::ComboBox typeCombo;
+        juce::Slider volumeSlider;
     };
 
     std::vector<std::unique_ptr<TrackItem>> items;
-    int headerWidth = 180;
-    int laneHeight = 64;
+    int headerWidth = 200;
+    int laneHeight = 72;
     double playheadPosition = 0.0;
     double totalDuration = 0.0;
 };

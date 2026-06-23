@@ -524,6 +524,7 @@ MainComponent::MainComponent(bool enableAudioDevice)
   trackList.onTrackTypeChanged = [this](int trackIndex, TrackType newType) { onTrackTypeChanged(trackIndex, newType); };
   trackList.onTrackDeleted = [this](int trackIndex) { onTrackDeleted(trackIndex); };
   trackList.onTracksChanged = [this]() { rebuildAudioEngine(); };
+  trackList.onSeek = [this](double time) { seek(time); };
 
   // Setup splitter bar resize
   splitterBar->onResize = [this](int deltaY) {
@@ -1780,6 +1781,10 @@ void MainComponent::onTrackSelected(int trackIndex) {
   if (!editorController) return;
   if (trackIndex < 0 || trackIndex >= editorController->getTrackCount()) return;
   setActiveTrack(trackIndex);
+}
+
+void MainComponent::onTrackSeek(double timeSeconds) {
+  seek(timeSeconds);
 }
 
 void MainComponent::onTrackTypeChanged(int trackIndex, TrackType newType) {

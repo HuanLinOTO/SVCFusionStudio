@@ -10,21 +10,21 @@ static juce::Colour getTypeColor(TrackType t) {
 
 TrackListComponent::TrackItem::TrackItem(TrackListComponent& o, int idx)
     : owner(o), trackIndex(idx),
-      muteButton(TR("track.mute")), soloButton(TR("track.solo")),
+      muteButton("M"), soloButton("S"),
       deleteButton("x")
 {
     muteButton.setClickingTogglesState(true);
-    muteButton.setColour(juce::TextButton::buttonColourId, juce::Colour(0xffe05848));
-    muteButton.setColour(juce::TextButton::buttonOnColourId, juce::Colour(0xffc04030));
+    muteButton.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff3a3a3a));
+    muteButton.setColour(juce::TextButton::buttonOnColourId, juce::Colour(0xffe05848));
     muteButton.setColour(juce::TextButton::textColourOnId, juce::Colours::white);
-    muteButton.setColour(juce::TextButton::textColourOffId, juce::Colours::white);
+    muteButton.setColour(juce::TextButton::textColourOffId, APP_COLOR_TEXT_MUTED);
     muteButton.setTooltip(TR("track.mute"));
 
     soloButton.setClickingTogglesState(true);
-    soloButton.setColour(juce::TextButton::buttonColourId, juce::Colour(0xffe8b33d));
-    soloButton.setColour(juce::TextButton::buttonOnColourId, juce::Colour(0xffc89830));
+    soloButton.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff3a3a3a));
+    soloButton.setColour(juce::TextButton::buttonOnColourId, juce::Colour(0xffe8b33d));
     soloButton.setColour(juce::TextButton::textColourOnId, juce::Colours::white);
-    soloButton.setColour(juce::TextButton::textColourOffId, juce::Colours::white);
+    soloButton.setColour(juce::TextButton::textColourOffId, APP_COLOR_TEXT_MUTED);
     soloButton.setTooltip(TR("track.solo"));
 
     deleteButton.setColour(juce::TextButton::buttonColourId, APP_COLOR_SURFACE);
@@ -37,10 +37,16 @@ TrackListComponent::TrackItem::TrackItem(TrackListComponent& o, int idx)
     typeCombo.addItem(TR("track.vocal"), 2);
     typeCombo.setSelectedId(1, juce::dontSendNotification);
 
+    volumeSlider.setSliderStyle(juce::Slider::LinearHorizontal);
+    volumeSlider.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
+    volumeSlider.setRange(-24.0, 6.0, 0.1);
+    volumeSlider.setValue(0.0);
+
     addAndMakeVisible(muteButton);
     addAndMakeVisible(soloButton);
     addAndMakeVisible(deleteButton);
     addAndMakeVisible(typeCombo);
+    addAndMakeVisible(volumeSlider);
 
     muteButton.onClick = [this]() {
         if (!owner.editorController) return;
@@ -72,6 +78,14 @@ TrackListComponent::TrackItem::TrackItem(TrackListComponent& o, int idx)
         if (owner.onTrackDeleted)
             owner.onTrackDeleted(trackIndex);
     };
+
+    volumeSlider.onValueChange = [this]() {
+        if (!owner.editorController) return;
+        auto* track = owner.editorController->getTrack(trackIndex);
+        if (!track) return;
+        track->setVolume(static_cast<float>(volumeSlider.getValue()));
+        owner.editorController->refreshAudioEngine(true);
+    };
 }
 
 TrackListComponent::TrackItem::~TrackItem() = default;
@@ -87,7 +101,6 @@ void TrackListComponent::TrackItem::updateFromTrack()
     isActive = (owner.editorController->getActiveTrackIndex() == trackIndex);
     isMuted = track->mute;
     isSoloed = track->solo;
-    volume = track->getVolume();
 
     typeCombo.setSelectedId((trackType == TrackType::Vocal) ? 2 : 1, juce::dontSendNotification);
 
@@ -95,6 +108,7 @@ void TrackListComponent::TrackItem::updateFromTrack()
     if (proj) {
         auto& audio = proj->getAudioData();
         waveformPreview.makeCopyOf(audio.waveform);
+        volumeSlider.setValue(track->getVolume(), juce::dontSendNotification);
     } else {
         waveformPreview = {};
     }
@@ -134,18 +148,17 @@ void TrackListComponent::TrackItem::paint(juce::Graphics& g)
     g.setColour(APP_COLOR_TEXT_PRIMARY);
     g.setFont(AppFont::getFont(14.0f));
     g.drawText(trackName,
-               leftPad + 16, bounds.getY() + 4, hw - leftPad - 36, 20,
+               leftPad + 16, bounds.getY() + 4, hw - leftPad - 40, 20,
                juce::Justification::left);
 
-    // Type label (drawn by ComboBox, but add a colored label above)
     // ── Right: Waveform area ──
     int wfLeft = hw;
     int wfWidth = getWidth() - hw;
-    int wfHeight = 48;
+    int wfHeight = getHeight() - 16;
     int wfY = 8;
 
     if (waveformPreview.getNumSamples() > 0 && wfWidth > 10) {
-        g.setColour(APP_COLOR_WAVEFORM.withAlpha(0.8f));
+        g.setColour(juce::Colour(0xff8a9bbf));
         const float* data = waveformPreview.getReadPointer(0);
         int numSamples = waveformPreview.getNumSamples();
         float mid = wfY + wfHeight * 0.5f;
@@ -166,7 +179,7 @@ void TrackListComponent::TrackItem::paint(juce::Graphics& g)
         double ratio = (owner.totalDuration > 0.0)
             ? (owner.playheadPosition / owner.totalDuration)
             : 0.0;
-        if (ratio > 0.0 && ratio < 1.0) {
+        if (ratio >= 0.0 && ratio <= 1.0) {
             int phX = wfLeft + static_cast<int>(ratio * wfWidth);
             g.setColour(juce::Colours::white.withAlpha(0.9f));
             g.drawVerticalLine(phX, bounds.getY(), bounds.getBottom());
@@ -182,23 +195,45 @@ void TrackListComponent::TrackItem::paint(juce::Graphics& g)
 void TrackListComponent::TrackItem::resized()
 {
     int hw = owner.headerWidth;
-    // Row 1: name + delete button (y=4, h=20)
+    // Row 1: name (y=4, h=20)
     deleteButton.setBounds(hw - 28, 4, 20, 18);
 
-    // Row 2: type combo + M/S buttons (y=28, h=20)
-    int btnW = 24;
-    int btnH = 20;
+    // Row 2: type combo + M/S buttons (y=28, h=22)
+    int btnW = 26;
+    int btnH = 22;
     int btnY = 28;
-    typeCombo.setBounds(12, btnY, hw - 12 - btnW * 2 - 24, btnH);
-    muteButton.setBounds(hw - btnW * 2 - 24, btnY, btnW, btnH);
-    soloButton.setBounds(hw - btnW - 12, btnY, btnW, btnH);
+    typeCombo.setBounds(12, btnY, 70, btnH);
+    muteButton.setBounds(12 + 70 + 4, btnY, btnW, btnH);
+    soloButton.setBounds(12 + 70 + 4 + btnW + 4, btnY, btnW, btnH);
+
+    // Row 3: volume slider (y=54, h=14)
+    volumeSlider.setBounds(12, 54, hw - 24, 14);
 }
 
 void TrackListComponent::TrackItem::mouseDown(const juce::MouseEvent& e)
 {
-    // Only select on click if not clicking on a child component
-    if (e.eventComponent == this && owner.onTrackSelected)
-        owner.onTrackSelected(trackIndex);
+    if (e.eventComponent == this) {
+        if (owner.onTrackSelected)
+            owner.onTrackSelected(trackIndex);
+
+        // Click in waveform area = seek
+        int hw = owner.headerWidth;
+        if (e.x >= hw && owner.totalDuration > 0.0 && owner.onSeek) {
+            double ratio = static_cast<double>(e.x - hw) / (getWidth() - hw);
+            ratio = juce::jlimit(0.0, 1.0, ratio);
+            owner.onSeek(ratio * owner.totalDuration);
+        }
+    }
+}
+
+void TrackListComponent::TrackItem::mouseDrag(const juce::MouseEvent& e)
+{
+    int hw = owner.headerWidth;
+    if (e.x >= hw && owner.totalDuration > 0.0 && owner.onSeek) {
+        double ratio = static_cast<double>(e.x - hw) / (getWidth() - hw);
+        ratio = juce::jlimit(0.0, 1.0, ratio);
+        owner.onSeek(ratio * owner.totalDuration);
+    }
 }
 
 // ── TrackListComponent ──
