@@ -672,6 +672,45 @@ void IncrementalSynthesizer::applySynthesizedAudio(
       return;
     }
 
+    // Zero originalSegment for samples not covered by any note (freed regions
+    // from shortening a note). Without this, the blend path uses the pristine
+    // originalWaveform as the "keep original" source, leaving residual source
+    // audio in regions that should be silent after a note is shortened.
+    // By zeroing originalSegment for uncovered frames, the blend target
+    // becomes 0 there and the existing edge/blend ramps naturally fade to
+    // silence instead of to the original source audio.
+    //
+    // We also zero synthesizedAudio for uncovered samples: short inter-note
+    // gaps are bridged into the synthesis range by computeSynthesisRange
+    // (kGapBridgeFrames) but generateBlendMask defaults their blend to 1.0
+    // (synth) unless the unvoiced run is long. Without zeroing synth there,
+    // the vocoder would re-synth from the cleared mel and produce a burst.
+    // A noteCrossfade mask applies a smooth ramp at covered<->uncovered
+    // transitions so target fades to 0 (and back) without clicks.
+    std::vector<char> noteCovered(static_cast<size_t>(samplesToWrite), 0);
+    for (const auto &note : capturedProject->getNotes()) {
+      if (note.isRest())
+        continue;
+      const int noteStart = note.getStartFrame();
+      const int noteEnd = note.getEndFrame();
+      const int overlapStart = std::max(capturedStartFrame, noteStart);
+      const int overlapEnd = std::min(capturedEndFrame, noteEnd);
+      if (overlapEnd <= overlapStart)
+        continue;
+      const int localStart = (overlapStart - capturedStartFrame) * hopSize;
+      const int localEnd = (overlapEnd - capturedStartFrame) * hopSize;
+      const int cs = std::max(0, localStart);
+      const int ce = std::min(samplesToWrite, localEnd);
+      for (int i = cs; i < ce; ++i)
+        noteCovered[static_cast<size_t>(i)] = 1;
+    }
+    for (int i = 0; i < samplesToWrite; ++i) {
+      if (!noteCovered[static_cast<size_t>(i)]) {
+        originalSegment[static_cast<size_t>(i)] = 0.0f;
+        synthesizedAudio[static_cast<size_t>(i)] = 0.0f;
+      }
+    }
+
     constexpr int kMinBoundaryBlendSamples = 128;
     constexpr int kMaxBoundaryBlendSamples = 1024;
     const int preferredBlend =
@@ -689,6 +728,42 @@ void IncrementalSynthesizer::applySynthesizedAudio(
       const float orig = originalSegment[static_cast<size_t>(i)];
       targetSegment[static_cast<size_t>(i)] =
           b * synth + (1.0f - b) * orig;
+    }
+
+    // Apply a crossfade mask so that uncovered (inter-note gap) regions fade
+    // to silence smoothly at covered<->uncovered boundaries, independent of
+    // the voicedMask-based blendMask (which leaves short gaps at blend=1.0).
+    // Ramp length mirrors generateBlendMask Step 3 for consistent smoothing.
+    {
+      constexpr int kMinCfRampSamples = 512;
+      const int cfRamp =
+          std::max(kMinCfRampSamples, hopSize * 2);
+      std::vector<float> noteCrossfade(
+          static_cast<size_t>(samplesToWrite), 0.0f);
+      for (int i = 0; i < samplesToWrite; ++i)
+        noteCrossfade[static_cast<size_t>(i)] =
+            noteCovered[static_cast<size_t>(i)] ? 1.0f : 0.0f;
+      // Smooth each covered<->uncovered transition with a cosine ramp.
+      for (int i = 0; i < samplesToWrite - 1; ++i) {
+        const float cur = noteCrossfade[static_cast<size_t>(i)];
+        const float nxt = noteCrossfade[static_cast<size_t>(i + 1)];
+        if (cur == nxt)
+          continue;
+        const int center = i + 1;
+        const int rs = std::max(0, center - cfRamp / 2);
+        const int re = std::min(samplesToWrite, center + cfRamp / 2);
+        for (int s = rs; s < re; ++s) {
+          const float t = static_cast<float>(s - rs) /
+                          static_cast<float>(re - rs);
+          const float e = t * t * (3.0f - 2.0f * t);  // smoothstep
+          noteCrossfade[static_cast<size_t>(s)] =
+              cur + (nxt - cur) * e;
+        }
+      }
+      for (int i = 0; i < samplesToWrite; ++i) {
+        targetSegment[static_cast<size_t>(i)] *=
+            noteCrossfade[static_cast<size_t>(i)];
+      }
     }
 
     // Apply per-note gain on top of the blended target.

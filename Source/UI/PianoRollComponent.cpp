@@ -4764,6 +4764,64 @@ void PianoRollComponent::invalidateWaveformCache() {
   repaint();
 }
 
+void PianoRollComponent::clearUncoveredWaveformRegions(int rangeStart,
+                                                        int rangeEnd) {
+  if (!project || rangeEnd <= rangeStart)
+    return;
+
+  auto &audioData = project->getAudioData();
+  const int totalFrames =
+      static_cast<int>(audioData.deltaPitch.size());
+
+  rangeStart = std::max(0, std::min(rangeStart, totalFrames));
+  rangeEnd = std::max(0, std::min(rangeEnd, totalFrames));
+  if (rangeEnd <= rangeStart)
+    return;
+
+  // Build a coverage mask over [rangeStart, rangeEnd) from current note spans.
+  // A frame is "covered" if it lies within any note's [start, end).
+  std::vector<bool> covered(static_cast<size_t>(rangeEnd - rangeStart), false);
+  auto notesInRange = project->getNotesInRange(rangeStart, rangeEnd);
+  for (const Note *n : notesInRange) {
+    if (!n)
+      continue;
+    int s = std::max(rangeStart, n->getStartFrame());
+    int e = std::min(rangeEnd, n->getEndFrame());
+    for (int f = s; f < e; ++f)
+      covered[static_cast<size_t>(f - rangeStart)] = true;
+  }
+
+  // Waveform samples to zero.
+  const int numChannels = audioData.waveform.getNumChannels();
+  const int numSamples = audioData.waveform.getNumSamples();
+  const int channelCount = std::max(1, numChannels);
+  for (int f = rangeStart; f < rangeEnd; ++f) {
+    if (covered[static_cast<size_t>(f - rangeStart)])
+      continue;
+    int sampleStart = f * HOP_SIZE;
+    int sampleEnd = std::min((f + 1) * HOP_SIZE, numSamples);
+    for (int s = sampleStart; s < sampleEnd; ++s) {
+      if (s < 0 || s >= numSamples)
+        continue;
+      for (int ch = 0; ch < channelCount; ++ch)
+        audioData.waveform.setSample(ch, s, 0.0f);
+    }
+  }
+
+  // Per-frame curves.
+  for (int f = rangeStart; f < rangeEnd; ++f) {
+    if (covered[static_cast<size_t>(f - rangeStart)])
+      continue;
+    audioData.voicedMask[static_cast<size_t>(f)] = false;
+    audioData.deltaPitch[static_cast<size_t>(f)] = 0.0f;
+    if (f < static_cast<int>(audioData.melSpectrogram.size())) {
+      auto &mel = audioData.melSpectrogram[static_cast<size_t>(f)];
+      if (!mel.empty())
+        std::fill(mel.begin(), mel.end(), 0.0f);
+    }
+  }
+}
+
 void PianoRollComponent::finishStretchDrag() {
   if (!stretchDrag.active || !project) {
     stretchDrag = {};
@@ -4786,6 +4844,14 @@ void PianoRollComponent::finishStretchDrag() {
     cancelStretchDrag();
     return;
   }
+
+  // Before capturing undo snapshots, zero out any frames in [rangeStart,
+  // rangeEnd) that are no longer covered by a note (i.e. freed by shortening
+  // a note into silence). This must run BEFORE the snapshot capture below so
+  // that newVoiced/newMel/newDelta carry the cleared (silent) state into the
+  // redo action, and before resynthesis so the blend path sees voicedMask=
+  // false (=> keep zeroed waveform) in the freed region.
+  clearUncoveredWaveformRegions(rangeStart, rangeEnd);
 
   std::vector<float> newDelta(
       audioData.deltaPitch.begin() + rangeStart,
@@ -4986,71 +5052,20 @@ void PianoRollComponent::finishStretchDrag() {
           int smoothStart = std::max(0, startFrame - 60);
           int smoothEnd = std::min(f0Size, endFrame + 60);
           project->setF0DirtyRange(smoothStart, smoothEnd);
+          // On undo/redo the note frames have just been restored by applyState
+          // above, so clearing uncovered (freed) regions here keeps redo
+          // silent and lets undo re-synthesize the restored note span.
+          clearUncoveredWaveformRegions(startFrame, endFrame);
         });
     undoManager->addAction(std::move(action));
   }
 
-  // Restore waveform regions outside current note boundaries to original audio.
-  // Writing zeros here creates hard discontinuities and can cause spikes.
-  // When SVC is active, skip this restoration — the waveform already contains
-  // SVC-converted audio, and the full SVC re-conversion triggered by
-  // onPitchEditFinished will handle it.
-  bool svcActive = isSVCActive && isSVCActive();
-  if (!svcActive && audioData.waveform.getNumSamples() > 0) {
-    const int totalSamples = audioData.waveform.getNumSamples();
-    const int numChannels = audioData.waveform.getNumChannels();
-    const auto &origWave =
-        audioData.originalWaveform.getNumSamples() > 0
-            ? audioData.originalWaveform
-            : audioData.waveform;
-    const int origChannels = origWave.getNumChannels();
-    const int origSamples = origWave.getNumSamples();
-
-    // Calculate the sample range that should remain as note audio
-    int noteStartSample, noteEndSample;
-    if (stretchDrag.boundary.left && stretchDrag.boundary.right) {
-      // Both notes - entire range is covered, no silencing needed
-      noteStartSample = stretchDrag.rangeStartFull * HOP_SIZE;
-      noteEndSample = stretchDrag.rangeEndFull * HOP_SIZE;
-    } else if (stretchDrag.boundary.left) {
-      // Only left note - silence from currentBoundary to rangeEndFull
-      noteStartSample = stretchDrag.originalLeftStart * HOP_SIZE;
-      noteEndSample = currentBoundary * HOP_SIZE;
-    } else {
-      // Only right note - silence from rangeStartFull to currentBoundary
-      noteStartSample = currentBoundary * HOP_SIZE;
-      noteEndSample = stretchDrag.originalRightEnd * HOP_SIZE;
-    }
-
-    // Restore waveform outside the note boundaries
-    const int rangeStartSample = stretchDrag.rangeStartFull * HOP_SIZE;
-    const int rangeEndSample = stretchDrag.rangeEndFull * HOP_SIZE;
-
-    for (int ch = 0; ch < numChannels; ++ch) {
-      float* dst = audioData.waveform.getWritePointer(ch);
-      const float* srcOrig =
-          origWave.getReadPointer(std::min(ch, std::max(0, origChannels - 1)));
-
-      // Restore before note start (if within our range)
-      if (rangeStartSample < noteStartSample) {
-        const int silenceEnd = std::min(noteStartSample, totalSamples);
-        for (int i = std::max(0, rangeStartSample); i < silenceEnd; ++i) {
-          if (i < origSamples)
-            dst[i] = srcOrig[i];
-        }
-      }
-
-      // Restore after note end (if within our range)
-      if (rangeEndSample > noteEndSample) {
-        const int silenceStart = std::max(0, noteEndSample);
-        const int silenceEnd = std::min(rangeEndSample, totalSamples);
-        for (int i = silenceStart; i < silenceEnd; ++i) {
-          if (i < origSamples)
-            dst[i] = srcOrig[i];
-        }
-      }
-    }
-  }
+  // Note: freed-region cleanup (zeroing waveform/voicedMask/deltaPitch/mel in
+  // frames no longer covered by any note) is handled above by
+  // clearUncoveredWaveformRegions() before the undo snapshot is captured. The
+  // previous in-line restoration here was (a) skipped entirely when SVC was
+  // active and (b) wrote the *original* source audio into freed regions
+  // instead of silence, leaving residual audio after shortening a note.
 
   const int f0Size = static_cast<int>(audioData.f0.size());
   int smoothStart = std::max(0, rangeStart - 60);
@@ -5061,7 +5076,7 @@ void PianoRollComponent::finishStretchDrag() {
       + " svcActive=" + juce::String(isSVCActive ? (isSVCActive() ? 1 : 0) : -1));
 
   // Immediately invalidate the waveform cache so the background waveform
-  // reflects the new audio state (waveform regions were restored above).
+  // reflects the new audio state (waveform regions were zeroed above).
   // The full cache refresh will happen again after resynthesis completes.
   invalidateWaveformCache();
 

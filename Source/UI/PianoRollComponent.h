@@ -304,6 +304,11 @@ private:
   void finishStretchDrag();
   void cancelStretchDrag();
 
+  // Zero out audio/curves in [rangeStart, rangeEnd) frames not covered by any
+  // note, so that regions freed by shortening a note become silent instead of
+  // retaining stale synthesized audio. Safe to call during/after edits.
+  void clearUncoveredWaveformRegions(int rangeStart, int rangeEnd);
+
   // Pitch drawing helpers
   void applyPitchDrawing(float x, float y, PitchDrawingTarget target,
                          bool resetToReference);
