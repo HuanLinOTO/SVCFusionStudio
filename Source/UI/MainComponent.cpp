@@ -946,7 +946,7 @@ void MainComponent::resized() {
 
   // Right sidebar (global, spans track list + editor)
   int sidebarWidth = (parametersVisible || voicebankVisible) ? 320 : 0;
-  if (sidebarWidth > 0)
+  if (sidebarWidth > 0 && sidebar)
     sidebar->setBounds(bounds.removeFromRight(sidebarWidth));
 
   // Track list (top section)
