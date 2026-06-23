@@ -717,6 +717,8 @@ MainComponent::MainComponent(bool enableAudioDevice)
   pianoRoll.onScrollChanged = [this](double x) {
     pianoRollView.getHNSepLane().setViewTransform(pianoRoll.getPixelsPerSecond(), x);
     pianoRollView.refreshOverview();
+    trackList.setViewTransform(x / pianoRoll.getPixelsPerSecond(),
+                               pianoRoll.getPixelsPerSecond());
   };
   pianoRoll.onLoopRangeChanged = [this](const LoopRange &range) {
     toolbar.setLoopEnabled(range.enabled);
@@ -1018,6 +1020,8 @@ void MainComponent::timerCallback() {
           dur = std::max(dur, static_cast<double>(t->project->getAudioData().getDuration()));
       }
       trackList.setPlayheadPosition(position, dur);
+      trackList.setViewTransform(pianoRoll.getScrollX() / pianoRoll.getPixelsPerSecond(),
+                                  pianoRoll.getPixelsPerSecond());
     }
 
     // Follow playback: scroll to keep cursor visible
@@ -2258,6 +2262,20 @@ void MainComponent::seek(double time) {
   pianoRoll.setCursorTime(time);
   toolbar.setCurrentTime(time);
 
+  // Update track list playhead immediately
+  if (editorController) {
+    double dur = 0.0;
+    int count = editorController->getTrackCount();
+    for (int i = 0; i < count; ++i) {
+      auto* t = editorController->getTrack(i);
+      if (t && t->project)
+        dur = std::max(dur, static_cast<double>(t->project->getAudioData().getDuration()));
+    }
+    trackList.setPlayheadPosition(time, dur);
+    trackList.setViewTransform(pianoRoll.getScrollX() / pianoRoll.getPixelsPerSecond(),
+                                pianoRoll.getPixelsPerSecond());
+  }
+
   // Scroll view to make cursor visible
   float cursorX = static_cast<float>(time * pianoRoll.getPixelsPerSecond());
   float viewWidth = static_cast<float>(pianoRoll.getWidth() -
@@ -2346,6 +2364,10 @@ void MainComponent::onZoomChanged(float pixelsPerSecond) {
   pianoRoll.setPixelsPerSecond(pixelsPerSecond, true);
   toolbar.setZoom(pixelsPerSecond);
   pianoRollView.refreshOverview();
+
+  // Sync track list waveform zoom/scroll
+  trackList.setViewTransform(pianoRoll.getScrollX() / pianoRoll.getPixelsPerSecond(),
+                              pianoRoll.getPixelsPerSecond());
 
   isSyncingZoom = false;
 }

@@ -151,23 +151,31 @@ void TrackListComponent::TrackItem::paint(juce::Graphics& g)
                leftPad + 16, bounds.getY() + 4, hw - leftPad - 40, 20,
                juce::Justification::left);
 
-    // ── Right: Waveform area ──
+    // ── Right: Waveform area (synced with piano roll zoom/scroll) ──
     int wfLeft = hw;
     int wfWidth = getWidth() - hw;
     int wfHeight = getHeight() - 16;
     int wfY = 8;
 
     if (waveformPreview.getNumSamples() > 0 && wfWidth > 10) {
-        g.setColour(juce::Colour(0xff8a9bbf));
+        double pps = owner.viewPixelsPerSecond;
+        double scrollSec = owner.viewScrollXSeconds;
+        double visibleStartSample = scrollSec * 44100.0;
+        double samplesPerPixel = 44100.0 / pps;
+
         const float* data = waveformPreview.getReadPointer(0);
         int numSamples = waveformPreview.getNumSamples();
+
+        g.setColour(juce::Colour(0xff8a9bbf));
         float mid = wfY + wfHeight * 0.5f;
         for (int x = 0; x < wfWidth; ++x) {
-            int startIdx = static_cast<int>((static_cast<float>(x) / wfWidth) * numSamples);
-            int endIdx = static_cast<int>((static_cast<float>(x + 1) / wfWidth) * numSamples);
+            int startIdx = static_cast<int>(visibleStartSample + x * samplesPerPixel);
+            int endIdx = static_cast<int>(visibleStartSample + (x + 1) * samplesPerPixel);
+            if (startIdx >= numSamples) break;
             if (endIdx <= startIdx) endIdx = startIdx + 1;
+            if (endIdx > numSamples) endIdx = numSamples;
             float maxVal = 0.0f;
-            for (int i = startIdx; i < endIdx && i < numSamples; ++i) {
+            for (int i = startIdx; i < endIdx; ++i) {
                 float v = std::abs(data[i]);
                 if (v > maxVal) maxVal = v;
             }
@@ -176,11 +184,9 @@ void TrackListComponent::TrackItem::paint(juce::Graphics& g)
         }
 
         // Playhead line in waveform area
-        double ratio = (owner.totalDuration > 0.0)
-            ? (owner.playheadPosition / owner.totalDuration)
-            : 0.0;
-        if (ratio >= 0.0 && ratio <= 1.0) {
-            int phX = wfLeft + static_cast<int>(ratio * wfWidth);
+        double playheadX = (owner.playheadPosition - scrollSec) * pps;
+        if (playheadX >= 0.0 && playheadX <= wfWidth) {
+            int phX = wfLeft + static_cast<int>(playheadX);
             g.setColour(juce::Colours::white.withAlpha(0.9f));
             g.drawVerticalLine(phX, bounds.getY(), bounds.getBottom());
         }
@@ -216,12 +222,12 @@ void TrackListComponent::TrackItem::mouseDown(const juce::MouseEvent& e)
         if (owner.onTrackSelected)
             owner.onTrackSelected(trackIndex);
 
-        // Click in waveform area = seek
+        // Click in waveform area = seek (using view transform)
         int hw = owner.headerWidth;
-        if (e.x >= hw && owner.totalDuration > 0.0 && owner.onSeek) {
-            double ratio = static_cast<double>(e.x - hw) / (getWidth() - hw);
-            ratio = juce::jlimit(0.0, 1.0, ratio);
-            owner.onSeek(ratio * owner.totalDuration);
+        if (e.x >= hw && owner.onSeek) {
+            double time = owner.viewScrollXSeconds + (e.x - hw) / owner.viewPixelsPerSecond;
+            time = juce::jmax(0.0, time);
+            owner.onSeek(time);
         }
     }
 }
@@ -229,10 +235,10 @@ void TrackListComponent::TrackItem::mouseDown(const juce::MouseEvent& e)
 void TrackListComponent::TrackItem::mouseDrag(const juce::MouseEvent& e)
 {
     int hw = owner.headerWidth;
-    if (e.x >= hw && owner.totalDuration > 0.0 && owner.onSeek) {
-        double ratio = static_cast<double>(e.x - hw) / (getWidth() - hw);
-        ratio = juce::jlimit(0.0, 1.0, ratio);
-        owner.onSeek(ratio * owner.totalDuration);
+    if (e.x >= hw && owner.onSeek) {
+        double time = owner.viewScrollXSeconds + (e.x - hw) / owner.viewPixelsPerSecond;
+        time = juce::jmax(0.0, time);
+        owner.onSeek(time);
     }
 }
 
@@ -267,6 +273,13 @@ void TrackListComponent::setPlayheadPosition(double timeSeconds, double totalDur
 {
     playheadPosition = timeSeconds;
     totalDuration = totalDurationSeconds;
+    repaint();
+}
+
+void TrackListComponent::setViewTransform(double scrollXSeconds, double pixelsPerSecond)
+{
+    viewScrollXSeconds = scrollXSeconds;
+    viewPixelsPerSecond = juce::jmax(1.0, pixelsPerSecond);
     repaint();
 }
 
