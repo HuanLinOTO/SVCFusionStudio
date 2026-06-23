@@ -1772,7 +1772,14 @@ void MainComponent::setActiveTrack(int trackIndex) {
   if (auto* engine = editorController->getAudioEngine())
     engine->setVolumeDb(project->getVolume());
 
-  refreshTrackList();
+  // Defer track list refresh to avoid destroying the TrackItem that
+  // is currently handling the mouseDown event that triggered this call.
+  juce::Component::SafePointer<MainComponent> safeThis(this);
+  juce::MessageManager::callAsync([safeThis]() {
+    if (safeThis != nullptr)
+      safeThis->refreshTrackList();
+  });
+
   pianoRoll.invalidateWaveformCache();
   pianoRoll.repaint();
 }
