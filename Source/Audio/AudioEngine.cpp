@@ -245,6 +245,98 @@ void AudioEngine::loadWaveform(const juce::AudioBuffer<float> &buffer,
   }
 }
 
+void AudioEngine::rebuildMixedWaveform(bool preservePosition) {
+  bool wasPlaying = playing.load();
+
+  LOG("AudioEngine::rebuildMixedWaveform -- trackCount=" +
+      juce::String(static_cast<int>(tracks.size())) +
+      " preservePos=" + juce::String(preservePosition ? 1 : 0));
+
+  playing = false;
+
+  {
+    const juce::SpinLock::ScopedLockType lock(waveformLock);
+
+    int64_t maxSamples = 0;
+    int sr = 44100;
+
+    for (const auto* track : tracks) {
+      if (!track || !track->project)
+        continue;
+      const auto& audioData = track->project->getAudioData();
+      maxSamples = juce::jmax(maxSamples, static_cast<int64_t>(audioData.waveform.getNumSamples()));
+      sr = audioData.sampleRate;
+    }
+
+    if (maxSamples == 0 || tracks.empty()) {
+      currentWaveform.setSize(1, 0);
+      waveformSampleRate = sr;
+      if (!preservePosition) {
+        currentPosition.store(0);
+        fractionalPosition = 0.0;
+      }
+      if (currentSampleRate > 0)
+        playbackRatio = static_cast<double>(waveformSampleRate) / currentSampleRate;
+      else
+        playbackRatio = 1.0;
+      interpolator.reset();
+    } else {
+      currentWaveform.setSize(1, static_cast<int>(maxSamples));
+      currentWaveform.clear();
+      waveformSampleRate = sr;
+
+      for (const auto* track : tracks) {
+        if (!track || !track->project)
+          continue;
+        if (!track->isAudible(tracks))
+          continue;
+
+        const auto& audioData = track->project->getAudioData();
+        const auto& wave = audioData.waveform;
+        int trackSamples = wave.getNumSamples();
+        if (trackSamples == 0)
+          continue;
+
+        float gain = juce::Decibels::decibelsToGain(track->getVolume(), -60.0f);
+        const float* src = wave.getReadPointer(0);
+        float* dst = currentWaveform.getWritePointer(0);
+
+        int n = juce::jmin(trackSamples, static_cast<int>(maxSamples));
+        juce::FloatVectorOperations::addWithMultiply(dst, src, gain, n);
+      }
+
+      if (!preservePosition) {
+        currentPosition.store(0);
+        fractionalPosition = 0.0;
+      }
+      if (currentSampleRate > 0)
+        playbackRatio = static_cast<double>(waveformSampleRate) / currentSampleRate;
+      else
+        playbackRatio = 1.0;
+      interpolator.reset();
+    }
+  }
+
+  if (preservePosition && wasPlaying)
+    playing = true;
+
+  LOG("AudioEngine: mixed waveform rebuilt -- samples=" +
+      juce::String(currentWaveform.getNumSamples()) +
+      " playing=" + juce::String(playing.load() ? 1 : 0));
+
+  if (loopEnabled.load()) {
+    auto loopStart = loopStartSample.load();
+    auto loopEnd = loopEndSample.load();
+    const int64_t waveformLength = currentWaveform.getNumSamples();
+    loopStart = juce::jlimit<int64_t>(0, waveformLength, loopStart);
+    loopEnd = juce::jlimit<int64_t>(0, waveformLength, loopEnd);
+    loopStartSample.store(loopStart);
+    loopEndSample.store(loopEnd);
+    if (loopEnd <= loopStart)
+      loopEnabled.store(false);
+  }
+}
+
 bool AudioEngine::play() {
   int numSamples = currentWaveform.getNumSamples();
   if (numSamples == 0) {

@@ -2,9 +2,11 @@
 
 #include "../JuceHeader.h"
 #include "../Models/Project.h"
+#include "../Models/Track.h"
 #include <atomic>
 #include <functional>
 #include <memory>
+#include <vector>
 
 /**
  * Audio engine for playback and synthesis.
@@ -28,6 +30,11 @@ public:
   void loadWaveform(const juce::AudioBuffer<float> &buffer, int sampleRate,
                     bool preservePosition = false);
 
+  // Multi-track mixing
+  void setTracks(const std::vector<Track*> &newTracks) { tracks = newTracks; }
+  const std::vector<Track*>& getTracks() const { return tracks; }
+  void rebuildMixedWaveform(bool preservePosition = false);
+
   bool play();
   void pause();
   void stop();
@@ -42,6 +49,10 @@ public:
   bool isPlaying() const { return playing; }
   double getPosition() const; // Returns position in seconds
   double getDuration() const;
+
+  // Access to current (mixed) waveform for export
+  const juce::AudioBuffer<float>& getCurrentWaveform() const { return currentWaveform; }
+  int getWaveformSampleRate() const { return waveformSampleRate; }
 
   // Callbacks
   using PositionCallback = std::function<void(double)>;
@@ -79,6 +90,7 @@ private:
   juce::AudioSourcePlayer audioSourcePlayer;
 
   Project *project = nullptr;
+  std::vector<Track*> tracks;
   juce::AudioBuffer<float> currentWaveform;
   int waveformSampleRate = 44100;
 

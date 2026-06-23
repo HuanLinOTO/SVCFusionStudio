@@ -2,6 +2,9 @@
 
 #include "../JuceHeader.h"
 #include "Project.h"
+#include "Track.h"
+#include <vector>
+#include <memory>
 
 /**
  * Handles Project serialization to/from JSON format.
@@ -13,7 +16,7 @@
  */
 class ProjectSerializer {
 public:
-    static constexpr int FORMAT_VERSION = 2;
+    static constexpr int FORMAT_VERSION = 3;
 
     /**
      * Save project to JSON file.
@@ -35,6 +38,34 @@ public:
      */
     static bool fromJson(Project& project, const juce::var& json);
 
+    // ── Multi-track serialization (v3) ──
+
+    /**
+     * Save multiple tracks to JSON file.
+     */
+    static bool saveTracksToFile(const std::vector<std::unique_ptr<Track>>& tracks,
+                                 const juce::File& file,
+                                 const LoopRange& sessionLoopRange = {});
+
+    /**
+     * Load tracks from JSON file.
+     * Returns vector of tracks and session loop range.
+     */
+    static std::pair<std::vector<std::unique_ptr<Track>>, LoopRange>
+    loadTracksFromFile(const juce::File& file);
+
+    /**
+     * Convert tracks to JSON object.
+     */
+    static juce::var tracksToJson(const std::vector<std::unique_ptr<Track>>& tracks,
+                                  const LoopRange& sessionLoopRange = {});
+
+    /**
+     * Load tracks from JSON object.
+     */
+    static std::pair<std::vector<std::unique_ptr<Track>>, LoopRange>
+    tracksFromJson(const juce::var& json);
+
 private:
     // Note serialization
     static juce::var noteToJson(const Note& note);
@@ -43,6 +74,14 @@ private:
     // Pitch data serialization
     static juce::var pitchDataToJson(const AudioData& audioData);
     static bool pitchDataFromJson(AudioData& audioData, const juce::var& json);
+
+    // Single track serialization (used internally by multi-track)
+    static juce::var trackToJson(const Track& track);
+    static std::unique_ptr<Track> trackFromJson(const juce::var& json);
+
+    // Loop range serialization
+    static juce::var loopRangeToJson(const LoopRange& lr);
+    static LoopRange loopRangeFromJson(const juce::var& json);
 
     // Array helpers (compact string format)
     static juce::String floatArrayToString(const std::vector<float>& arr, int precision = 4);

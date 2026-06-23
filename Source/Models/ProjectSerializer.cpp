@@ -4,10 +4,13 @@
 
 #include <algorithm>
 
+// ═══════════════════════════════════════════════════════════════════════
+// Legacy single-Project serialization (v2 format, still used internally)
+// ═══════════════════════════════════════════════════════════════════════
+
 bool ProjectSerializer::saveToFile(const Project& project, const juce::File& file) {
     auto json = toJson(project);
-    auto jsonString = juce::JSON::toString(json, true); // Pretty print
-
+    auto jsonString = juce::JSON::toString(json, true);
     return file.replaceWithText(jsonString);
 }
 
@@ -355,4 +358,142 @@ std::vector<bool> ProjectSerializer::stringToBoolArray(const juce::String& str) 
     }
 
     return result;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Multi-track serialization (v3 format)
+// ═══════════════════════════════════════════════════════════════════════
+
+juce::var ProjectSerializer::loopRangeToJson(const LoopRange& lr) {
+    auto* obj = new juce::DynamicObject();
+    obj->setProperty("enabled", lr.enabled);
+    obj->setProperty("start", lr.startSeconds);
+    obj->setProperty("end", lr.endSeconds);
+    return juce::var(obj);
+}
+
+LoopRange ProjectSerializer::loopRangeFromJson(const juce::var& json) {
+    LoopRange lr;
+    if (json.isObject()) {
+        lr.enabled = json.getProperty("enabled", false);
+        lr.startSeconds = json.getProperty("start", 0.0);
+        lr.endSeconds = json.getProperty("end", 0.0);
+    }
+    return lr;
+}
+
+juce::var ProjectSerializer::trackToJson(const Track& track) {
+    auto* obj = new juce::DynamicObject();
+    obj->setProperty("id", track.id);
+    obj->setProperty("name", track.name);
+    obj->setProperty("type", Track::trackTypeToString(track.type));
+    obj->setProperty("mute", track.mute);
+    obj->setProperty("solo", track.solo);
+
+    if (track.project) {
+        auto projectJson = toJson(*track.project);
+        obj->setProperty("project", projectJson);
+    }
+    return juce::var(obj);
+}
+
+std::unique_ptr<Track> ProjectSerializer::trackFromJson(const juce::var& json) {
+    if (!json.isObject())
+        return nullptr;
+
+    auto track = std::make_unique<Track>();
+    track->id = json.getProperty("id", Track::generateId()).toString();
+    track->name = json.getProperty("name", "Track").toString();
+    track->type = Track::stringToTrackType(json.getProperty("type", "accompaniment").toString());
+    track->mute = json.getProperty("mute", false);
+    track->solo = json.getProperty("solo", false);
+
+    auto projectVar = json.getProperty("project", juce::var());
+    if (projectVar.isObject() && track->project) {
+        fromJson(*track->project, projectVar);
+    }
+
+    return track;
+}
+
+bool ProjectSerializer::saveTracksToFile(const std::vector<std::unique_ptr<Track>>& tracks,
+                                         const juce::File& file,
+                                         const LoopRange& sessionLoopRange) {
+    auto json = tracksToJson(tracks, sessionLoopRange);
+    auto jsonString = juce::JSON::toString(json, true);
+    return file.replaceWithText(jsonString);
+}
+
+std::pair<std::vector<std::unique_ptr<Track>>, LoopRange>
+ProjectSerializer::loadTracksFromFile(const juce::File& file) {
+    auto jsonString = file.loadFileAsString();
+
+    auto json = juce::JSON::parse(jsonString);
+    if (!json.isObject())
+        return std::make_pair(std::vector<std::unique_ptr<Track>>{}, LoopRange{});
+
+    int version = json.getProperty("formatVersion", 0);
+
+    if (version >= 3) {
+        return tracksFromJson(json);
+    }
+
+    // v2 format: migrate to single vocal track
+    auto track = std::make_unique<Track>();
+    track->type = TrackType::Vocal;
+    track->name = json.getProperty("name", "Untitled").toString();
+
+    if (track->project) {
+        fromJson(*track->project, json);
+    }
+
+    LoopRange lr;
+    auto loopVar = json.getProperty("loop", juce::var());
+    if (loopVar.isObject())
+        lr = loopRangeFromJson(loopVar);
+
+    std::vector<std::unique_ptr<Track>> tracks;
+    tracks.push_back(std::move(track));
+    return std::make_pair(std::move(tracks), lr);
+}
+
+juce::var ProjectSerializer::tracksToJson(const std::vector<std::unique_ptr<Track>>& tracks,
+                                           const LoopRange& sessionLoopRange) {
+    auto* obj = new juce::DynamicObject();
+    obj->setProperty("formatVersion", FORMAT_VERSION);
+
+    juce::Array<juce::var> tracksArray;
+    for (const auto& track : tracks) {
+        if (track)
+            tracksArray.add(trackToJson(*track));
+    }
+    obj->setProperty("tracks", tracksArray);
+
+    obj->setProperty("loop", loopRangeToJson(sessionLoopRange));
+
+    return juce::var(obj);
+}
+
+std::pair<std::vector<std::unique_ptr<Track>>, LoopRange>
+ProjectSerializer::tracksFromJson(const juce::var& json) {
+    std::vector<std::unique_ptr<Track>> tracks;
+    LoopRange sessionLoopRange;
+
+    if (!json.isObject())
+        return std::make_pair(std::vector<std::unique_ptr<Track>>{}, LoopRange{});
+
+    auto tracksVar = json.getProperty("tracks", juce::var());
+    if (tracksVar.isArray()) {
+        for (int i = 0; i < tracksVar.size(); ++i) {
+            auto track = trackFromJson(tracksVar[i]);
+            if (track)
+                tracks.push_back(std::move(track));
+        }
+    }
+
+    auto loopVar = json.getProperty("loop", juce::var());
+    if (loopVar.isObject())
+        sessionLoopRange = loopRangeFromJson(loopVar);
+
+    return std::make_pair(std::move(tracks), sessionLoopRange);
 }

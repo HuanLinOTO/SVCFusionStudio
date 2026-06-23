@@ -52,8 +52,7 @@ struct AtomicFlagGuard {
 } // namespace
 
 EditorController::EditorController(bool enableAudioDevice) {
-  project = std::make_unique<Project>();
-  LOG("EditorController: project created");
+  LOG("EditorController: constructor start (multi-track)");
   if (enableAudioDevice)
     audioEngine = std::make_unique<AudioEngine>();
   LOG("EditorController: audioEngine created=" +
@@ -126,13 +125,139 @@ EditorController::~EditorController() {
     if (t.joinable()) t.join();
 }
 
+Project* EditorController::getProject() const {
+  if (activeTrackIndex >= 0 && activeTrackIndex < static_cast<int>(tracks.size()))
+    return tracks[static_cast<size_t>(activeTrackIndex)]->project.get();
+  return nullptr;
+}
+
+Track* EditorController::getActiveTrack() const {
+  if (activeTrackIndex >= 0 && activeTrackIndex < static_cast<int>(tracks.size()))
+    return tracks[static_cast<size_t>(activeTrackIndex)].get();
+  return nullptr;
+}
+
+Track* EditorController::getTrack(int index) const {
+  if (index >= 0 && index < static_cast<int>(tracks.size()))
+    return tracks[static_cast<size_t>(index)].get();
+  return nullptr;
+}
+
+void EditorController::setActiveTrack(int index) {
+  if (index >= 0 && index < static_cast<int>(tracks.size())) {
+    activeTrackIndex = index;
+    auto* track = tracks[static_cast<size_t>(index)].get();
+    if (track && track->project) {
+      ++hnsepPrewarmGeneration;
+      if (hnsepPrewarmThread.joinable())
+        hnsepPrewarmThread.join();
+      prewarmHNSepBasesAsync(*track->project);
+    }
+  }
+}
+
 void EditorController::setProject(std::unique_ptr<Project> newProject) {
+  // Legacy: wrap in a single vocal track
+  auto track = std::make_unique<Track>();
+  track->type = TrackType::Vocal;
+  track->name = newProject ? newProject->getName() : "Untitled";
+  track->project = std::move(newProject);
+  if (!track->project)
+    track->project = std::make_unique<Project>();
+
   ++hnsepPrewarmGeneration;
   if (hnsepPrewarmThread.joinable())
     hnsepPrewarmThread.join();
-  project = std::move(newProject);
-  if (project)
-    prewarmHNSepBasesAsync(*project);
+
+  tracks.clear();
+  tracks.push_back(std::move(track));
+  activeTrackIndex = 0;
+
+  if (tracks.back()->project)
+    prewarmHNSepBasesAsync(*tracks.back()->project);
+
+  if (audioEngine) {
+    std::vector<Track*> trackPtrs;
+    for (auto& t : tracks)
+      trackPtrs.push_back(t.get());
+    audioEngine->setTracks(trackPtrs);
+    audioEngine->rebuildMixedWaveform();
+  }
+}
+
+void EditorController::setSessionLoopRange(double startSeconds, double endSeconds) {
+  if (startSeconds > endSeconds)
+    std::swap(startSeconds, endSeconds);
+
+  double duration = 0.0;
+  for (const auto& t : tracks) {
+    if (t && t->project)
+      duration = juce::jmax(duration, static_cast<double>(t->project->getAudioData().getDuration()));
+  }
+  if (duration > 0.0) {
+    startSeconds = juce::jlimit(0.0, duration, startSeconds);
+    endSeconds = juce::jlimit(0.0, duration, endSeconds);
+  }
+
+  sessionLoopRange.startSeconds = startSeconds;
+  sessionLoopRange.endSeconds = endSeconds;
+  sessionLoopRange.enabled = sessionLoopRange.endSeconds > sessionLoopRange.startSeconds;
+
+  for (auto& t : tracks) {
+    if (t && t->project)
+      t->project->setLoopRange(startSeconds, endSeconds);
+  }
+
+  if (audioEngine)
+    audioEngine->setLoopRange(startSeconds, endSeconds);
+}
+
+void EditorController::setSessionLoopEnabled(bool enabled) {
+  sessionLoopRange.enabled = enabled;
+  for (auto& t : tracks) {
+    if (t && t->project)
+      t->project->setLoopEnabled(enabled);
+  }
+  if (audioEngine)
+    audioEngine->setLoopEnabled(enabled);
+}
+
+void EditorController::clearSessionLoopRange() {
+  sessionLoopRange = {};
+  for (auto& t : tracks) {
+    if (t && t->project)
+      t->project->clearLoopRange();
+  }
+  if (audioEngine)
+    audioEngine->clearLoopRange();
+}
+
+void EditorController::refreshAudioEngine(bool preservePosition) {
+  if (audioEngine) {
+    std::vector<Track*> trackPtrs;
+    for (auto& t : tracks)
+      trackPtrs.push_back(t.get());
+    audioEngine->setTracks(trackPtrs);
+    audioEngine->rebuildMixedWaveform(preservePosition);
+  }
+}
+
+void EditorController::removeTrack(int trackIndex) {
+  if (trackIndex < 0 || trackIndex >= static_cast<int>(tracks.size()))
+    return;
+
+  tracks.erase(tracks.begin() + trackIndex);
+
+  if (activeTrackIndex >= static_cast<int>(tracks.size()))
+    activeTrackIndex = static_cast<int>(tracks.size()) - 1;
+
+  if (audioEngine) {
+    std::vector<Track*> trackPtrs;
+    for (auto& t : tracks)
+      trackPtrs.push_back(t.get());
+    audioEngine->setTracks(trackPtrs);
+    audioEngine->rebuildMixedWaveform();
+  }
 }
 
 Vocoder *EditorController::ensureVocoder() {
@@ -183,8 +308,8 @@ bool EditorController::loadSVCModel(const juce::File& sfsModelFile) {
       " spk=" + juce::String(cfg.nSpk));
   lastSVCModelPath = sfsModelFile;
   lastSVCModelWasDirectory = false;
-  if (project) {
-    auto &audioData = project->getAudioData();
+  if (auto* p = getProject()) {
+    auto &audioData = p->getAudioData();
     audioData.svcEnabled = true;
     audioData.svcVoicebankWasDirectory = false;
     audioData.svcVoicebankName = sfsModelFile.getFileNameWithoutExtension();
@@ -225,8 +350,8 @@ bool EditorController::loadSVCModelFromDirectory(const juce::File& voicebankDir)
       " spk=" + juce::String(cfg.nSpk));
   lastSVCModelPath = voicebankDir;
   lastSVCModelWasDirectory = true;
-  if (project) {
-    auto &audioData = project->getAudioData();
+  if (auto* p = getProject()) {
+    auto &audioData = p->getAudioData();
     audioData.svcEnabled = true;
     audioData.svcVoicebankWasDirectory = true;
     audioData.svcVoicebankName = voicebankDir.getFileName();
@@ -287,8 +412,8 @@ bool EditorController::ensureSVCModelReady() {
   auto &cfg = svcModel->getConfig();
   LOG("EditorController: SVC model restored -- " + cfg.modelTypeName +
       " (" + cfg.name + ")");
-  if (project) {
-    auto &audioData = project->getAudioData();
+  if (auto* p = getProject()) {
+    auto &audioData = p->getAudioData();
     audioData.svcEnabled = true;
     audioData.svcVoicebankWasDirectory = lastSVCModelWasDirectory;
     audioData.svcVoicebankName = lastSVCModelPath.getFileNameWithoutExtension();
@@ -312,7 +437,8 @@ void EditorController::cancelSVCConversion() {
 void EditorController::runFullSVCConversionAsync(SVCProgressCallback onProgress,
                                                   SVCCompleteCallback onComplete) {
   auto *voc = ensureVocoder();
-  if (!project || !svcEngine || !svcModel || !voc) {
+  auto* activeProject = getProject();
+  if (!activeProject || !svcEngine || !svcModel || !voc) {
     if (onComplete) onComplete(false);
     return;
   }
@@ -323,7 +449,7 @@ void EditorController::runFullSVCConversionAsync(SVCProgressCallback onProgress,
     return;
   }
 
-  auto& audioData = project->getAudioData();
+  auto& audioData = activeProject->getAudioData();
   if (audioData.waveform.getNumSamples() == 0 || audioData.f0.empty() || audioData.melSpectrogram.empty()) {
     LOG("EditorController::runFullSVCConversion: No audio data");
     if (onComplete) onComplete(false);
@@ -373,10 +499,10 @@ void EditorController::runFullSVCConversionAsync(SVCProgressCallback onProgress,
   int hopSize = voc->getHopSize();
   int totalSamples = localOrigWaveform.getNumSamples();
 
-  auto adjustedF0 = project->getAdjustedF0();
-  bool pitchOffsetPreSVC = project->isPitchOffsetBeforeSVC();
+  auto adjustedF0 = activeProject->getAdjustedF0();
+  bool pitchOffsetPreSVC = activeProject->isPitchOffsetBeforeSVC();
   auto f0ForSVC = pitchOffsetPreSVC ? adjustedF0
-                                    : project->getAdjustedF0NoGlobalOffset();
+                                    : activeProject->getAdjustedF0NoGlobalOffset();
   f0ForSVC = HNSepCurveProcessor::applyShfcToF0(f0ForSVC,
                                                 audioData.shfcCurve);
   auto& cfg = svcModel->getConfig();
@@ -789,7 +915,7 @@ void EditorController::runFullSVCConversionAsync(SVCProgressCallback onProgress,
         return;
       }
 
-      if (!project) {
+      if (!getProject()) {
         isSVCConverting = false;
         if (svcEngine && svcEngine->isContentVecLoaded())
           svcEngine->unloadContentVec();
@@ -797,7 +923,7 @@ void EditorController::runFullSVCConversionAsync(SVCProgressCallback onProgress,
         return;
       }
 
-      auto& audioData = project->getAudioData();
+      auto& audioData = getProject()->getAudioData();
       int numChannels = audioData.waveform.getNumChannels();
 
       for (int ch = 0; ch < numChannels; ++ch) {
@@ -1209,6 +1335,14 @@ void EditorController::loadAudioFileAsync(
     const ProgressCallback &onProgress,
     const LoadCompleteCallback &onComplete,
     const CancelCallback &onCancelled) {
+  loadAudioFileAsTrack(file, onProgress, onComplete, onCancelled);
+}
+
+void EditorController::loadAudioFileAsTrack(
+    const juce::File &file,
+    const ProgressCallback &onProgress,
+    const LoadCompleteCallback &onComplete,
+    const CancelCallback &onCancelled) {
   if (isLoadingAudio.load())
     return;
 
@@ -1293,23 +1427,14 @@ void EditorController::loadAudioFileAsync(
       buffer = std::move(resampledBuffer);
     }
 
-    updateProgress(0.22, "Preparing project...");
+    updateProgress(0.80, "Preparing track...");
     auto newProject = std::make_unique<Project>();
     newProject->setFilePath(file);
     newProject->setAudioSha256(shaFuture.get());
     auto &audioData = newProject->getAudioData();
     audioData.waveform = std::move(buffer);
     audioData.sampleRate = SAMPLE_RATE;
-
-    if (cancelLoadingFlag.load()) {
-      isLoadingAudio = false;
-      if (onCancelled)
-        juce::MessageManager::callAsync(onCancelled);
-      return;
-    }
-
-    updateProgress(0.25, TR("progress.analyzing_audio"));
-    analyzeAudio(*newProject, updateProgress);
+    audioData.originalWaveform.makeCopyOf(audioData.waveform);
 
     if (cancelLoadingFlag.load()) {
       isLoadingAudio = false;
@@ -1320,26 +1445,96 @@ void EditorController::loadAudioFileAsync(
 
     updateProgress(0.95, "Finalizing...");
 
-    // Store pristine original waveform in AudioData for blend-based synthesis
-    audioData.originalWaveform.makeCopyOf(audioData.waveform);
-
     juce::AudioBuffer<float> originalWaveform;
     originalWaveform.makeCopyOf(audioData.waveform);
 
     juce::MessageManager::callAsync(
         [this, project = std::move(newProject),
-         original = std::move(originalWaveform), onComplete]() mutable {
-          // Cancel any in-progress SVC conversion before replacing the project.
-          // The old thread uses local data copies, so it's safe for it to
-          // finish in the background — its stale result will be discarded
-          // by the generation counter.
+         original = std::move(originalWaveform), file, onComplete]() mutable {
           cancelSVCConversion();
-          setProject(std::move(project));
+
+          auto track = std::make_unique<Track>();
+          track->type = TrackType::Accompaniment;
+          track->name = file.getFileNameWithoutExtension();
+          track->project = std::move(project);
+
+          int newIndex = static_cast<int>(tracks.size());
+          tracks.push_back(std::move(track));
+
+          // If this is the first track or no active track, set as active
+          if (activeTrackIndex < 0)
+            activeTrackIndex = newIndex;
+
+          if (audioEngine) {
+            std::vector<Track*> trackPtrs;
+            for (auto& t : tracks)
+              trackPtrs.push_back(t.get());
+            audioEngine->setTracks(trackPtrs);
+            audioEngine->rebuildMixedWaveform();
+          }
+
           isLoadingAudio = false;
           if (onComplete)
             onComplete(original);
         });
   });
+}
+
+void EditorController::convertTrackToVocal(
+    int trackIndex,
+    const ProgressCallback &onProgress,
+    const TrackConvertedCallback &onComplete) {
+  if (trackIndex < 0 || trackIndex >= static_cast<int>(tracks.size())) {
+    if (onComplete)
+      onComplete(trackIndex, false);
+    return;
+  }
+
+  auto* track = tracks[static_cast<size_t>(trackIndex)].get();
+  if (!track || !track->project) {
+    if (onComplete)
+      onComplete(trackIndex, false);
+    return;
+  }
+
+  if (track->isVocal()) {
+    if (onComplete)
+      onComplete(trackIndex, true);
+    return;
+  }
+
+  auto* projectPtr = track->project.get();
+  auto updateProgress = [onProgress](double p, const juce::String &msg) {
+    if (onProgress)
+      onProgress(p, msg);
+  };
+
+  auto completeOnVocal = [this, trackIndex, onComplete](bool success) {
+    if (success && trackIndex >= 0 && trackIndex < static_cast<int>(tracks.size())) {
+      auto* t = tracks[static_cast<size_t>(trackIndex)].get();
+      if (t) {
+        t->type = TrackType::Vocal;
+        t->project->setName(t->name);
+        if (audioEngine) {
+          std::vector<Track*> trackPtrs;
+          for (auto& tr : tracks)
+            trackPtrs.push_back(tr.get());
+          audioEngine->setTracks(trackPtrs);
+          audioEngine->rebuildMixedWaveform(true);
+        }
+      }
+    }
+    if (onComplete)
+      juce::MessageManager::callAsync([onComplete, trackIndex, success]() {
+        onComplete(trackIndex, success);
+      });
+  };
+
+  std::thread([this, projectPtr, updateProgress, completeOnVocal]() {
+    analyzeAudio(*projectPtr, updateProgress, [completeOnVocal]() {
+      completeOnVocal(true);
+    });
+  }).detach();
 }
 
 void EditorController::setHostAudioAsync(
@@ -2068,44 +2263,46 @@ void EditorController::analyzeAudioAsync(
     loaderThread.join();
 
   loaderThread = std::thread([this, onProjectReady, onProjectChanged]() {
-    if (!project)
+    auto* activeProject = getProject();
+    if (!activeProject)
       return;
 
-    auto projectCopy = std::make_shared<Project>(*project);
+    auto projectCopy = std::make_shared<Project>(*activeProject);
 
     analyzeAudio(*projectCopy, [](double, const juce::String &) {});
 
     juce::MessageManager::callAsync([this, projectCopy, onProjectReady,
                                      onProjectChanged]() {
-      if (!project)
+      auto* proj = getProject();
+      if (!proj)
         return;
 
-      project->getAudioData().melSpectrogram =
+      proj->getAudioData().melSpectrogram =
           projectCopy->getAudioData().melSpectrogram;
-      project->getAudioData().f0 = projectCopy->getAudioData().f0;
-      project->getAudioData().voicedMask =
+      proj->getAudioData().f0 = projectCopy->getAudioData().f0;
+      proj->getAudioData().voicedMask =
           projectCopy->getAudioData().voicedMask;
-      project->getAudioData().vadMask =
+      proj->getAudioData().vadMask =
           projectCopy->getAudioData().vadMask;
-      project->getAudioData().originalWaveform.makeCopyOf(
+      proj->getAudioData().originalWaveform.makeCopyOf(
           projectCopy->getAudioData().originalWaveform);
-      project->getAudioData().basePitch =
+      proj->getAudioData().basePitch =
           projectCopy->getAudioData().basePitch;
-      project->getAudioData().deltaPitch =
+      proj->getAudioData().deltaPitch =
           projectCopy->getAudioData().deltaPitch;
-        project->getAudioData().voicingCurve =
+      proj->getAudioData().voicingCurve =
           projectCopy->getAudioData().voicingCurve;
-        project->getAudioData().breathCurve =
+      proj->getAudioData().breathCurve =
           projectCopy->getAudioData().breathCurve;
-        project->getAudioData().tensionCurve =
+      proj->getAudioData().tensionCurve =
           projectCopy->getAudioData().tensionCurve;
-        project->getAudioData().harmonicWaveform.makeCopyOf(
+      proj->getAudioData().harmonicWaveform.makeCopyOf(
           projectCopy->getAudioData().harmonicWaveform);
-        project->getAudioData().noiseWaveform.makeCopyOf(
+      proj->getAudioData().noiseWaveform.makeCopyOf(
           projectCopy->getAudioData().noiseWaveform);
 
       if (onProjectReady)
-        onProjectReady(*project);
+        onProjectReady(*proj);
       if (onProjectChanged)
         onProjectChanged();
     });
@@ -2119,27 +2316,29 @@ void EditorController::segmentIntoNotesAsync(
     loaderThread.join();
 
   loaderThread = std::thread([this, onProjectReady, onNotesChanged]() {
-    if (!project)
+    auto* activeProject = getProject();
+    if (!activeProject)
       return;
 
-    auto projectCopy = std::make_shared<Project>(*project);
+    auto projectCopy = std::make_shared<Project>(*activeProject);
     segmentIntoNotes(*projectCopy);
 
     juce::MessageManager::callAsync([this, projectCopy, onProjectReady,
                                      onNotesChanged]() {
-      if (!project)
+      auto* proj = getProject();
+      if (!proj)
         return;
 
-      project->getNotes() = projectCopy->getNotes();
-      project->getAudioData().voicingCurve =
+      proj->getNotes() = projectCopy->getNotes();
+      proj->getAudioData().voicingCurve =
           projectCopy->getAudioData().voicingCurve;
-      project->getAudioData().breathCurve =
+      proj->getAudioData().breathCurve =
           projectCopy->getAudioData().breathCurve;
-      project->getAudioData().tensionCurve =
+      proj->getAudioData().tensionCurve =
           projectCopy->getAudioData().tensionCurve;
 
       if (onProjectReady)
-        onProjectReady(*project);
+        onProjectReady(*proj);
       if (onNotesChanged)
         onNotesChanged();
     });

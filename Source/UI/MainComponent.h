@@ -17,6 +17,7 @@
 #include "PianoRollWorkspaceView.h"
 #include "SettingsComponent.h"
 #include "ToolbarComponent.h"
+#include "TrackListComponent.h"
 #include "VoicebankPanel.h"
 #include "Workspace/WorkspaceComponent.h"
 
@@ -159,6 +160,13 @@ private:
   void segmentIntoNotes();
   void segmentIntoNotes(Project &targetProject);
 
+  // Multi-track
+  void onTrackDoubleClicked(int trackIndex);
+  void onTrackTypeChangeRequested(int trackIndex);
+  void setActiveTrack(int trackIndex);
+  void refreshTrackList();
+  void rebuildAudioEngine();
+
   void saveProject();
 
   void undo();
@@ -180,6 +188,7 @@ private:
   AppMenuBarComponent menuBar;
   ToolbarComponent toolbar;
   WorkspaceComponent workspace;
+  TrackListComponent trackList;
   PianoRollComponent pianoRoll;
   PianoRollWorkspaceView pianoRollView;
   ParameterPanel parameterPanel;

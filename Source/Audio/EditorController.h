@@ -14,6 +14,7 @@
 #include "Synthesis/IncrementalSynthesizer.h"
 #include "Vocoder.h"
 #include "../Models/Project.h"
+#include "../Models/Track.h"
 #include "../Utils/AppLogger.h"
 
 #include <atomic>
@@ -28,7 +29,17 @@ public:
   explicit EditorController(bool enableAudioDevice);
   ~EditorController();
 
-  Project *getProject() const { return project.get(); }
+  // Multi-track session
+  std::vector<std::unique_ptr<Track>>& getTracks() { return tracks; }
+  const std::vector<std::unique_ptr<Track>>& getTracks() const { return tracks; }
+  Track* getActiveTrack() const;
+  int getActiveTrackIndex() const { return activeTrackIndex; }
+  void setActiveTrack(int index);
+  Track* getTrack(int index) const;
+  int getTrackCount() const { return static_cast<int>(tracks.size()); }
+
+  // Legacy project access (returns active track's project)
+  Project *getProject() const;
   void setProject(std::unique_ptr<Project> newProject);
 
   AudioEngine *getAudioEngine() const { return audioEngine.get(); }
@@ -40,6 +51,12 @@ public:
   PlaybackController *getPlaybackController() const {
     return playbackController.get();
   }
+
+  // Session-level loop range (shared across all tracks)
+  const LoopRange& getSessionLoopRange() const { return sessionLoopRange; }
+  void setSessionLoopRange(double startSeconds, double endSeconds);
+  void setSessionLoopEnabled(bool enabled);
+  void clearSessionLoopRange();
 
   void setPitchDetectorType(PitchDetectorType type) {
     pitchDetectorType = type;
@@ -110,6 +127,27 @@ public:
       const std::function<void(Project &)> &onProjectReady,
       const std::function<void()> &onNotesChanged);
 
+  // Multi-track management
+  using TrackAddedCallback = std::function<void(int trackIndex)>;
+  using TrackConvertedCallback = std::function<void(int trackIndex, bool success)>;
+
+  /** Load audio as a new accompaniment track (decode only, no analysis). */
+  void loadAudioFileAsTrack(const juce::File &file,
+                            const ProgressCallback &onProgress,
+                            const LoadCompleteCallback &onComplete,
+                            const CancelCallback &onCancelled);
+
+  /** Convert a track from accompaniment to vocal (runs full analysis). */
+  void convertTrackToVocal(int trackIndex,
+                          const ProgressCallback &onProgress,
+                          const TrackConvertedCallback &onComplete);
+
+  /** Remove a track from the session. */
+  void removeTrack(int trackIndex);
+
+  /** Notify audio engine that track waveforms/flags changed. */
+  void refreshAudioEngine(bool preservePosition = false);
+
   // --- SVC Model ---
   SVCInferenceEngine *getSVCEngine() const { return svcEngine.get(); }
   SVCModelSession *getSVCModel() const { return svcModel.get(); }
@@ -167,7 +205,9 @@ private:
                                 std::function<void()> onStreamingUpdate,
                                 const GameSegmentationResult *gameResult);
 
-  std::unique_ptr<Project> project;
+  std::vector<std::unique_ptr<Track>> tracks;
+  int activeTrackIndex = -1;
+  LoopRange sessionLoopRange;
   std::unique_ptr<AudioEngine> audioEngine;
   std::unique_ptr<FCPEPitchDetector> fcpePitchDetector;
   std::unique_ptr<RMVPEPitchDetector> rmvpePitchDetector;
