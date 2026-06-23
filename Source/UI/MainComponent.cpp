@@ -347,6 +347,49 @@ private:
     int dragStartY = 0;
 };
 
+// ── Global right sidebar for parameter/voicebank panels ──
+
+class MainComponent::SidebarComponent : public juce::Component {
+public:
+    SidebarComponent() {
+        addAndMakeVisible(titleLabel);
+        titleLabel.setColour(juce::Label::textColourId, APP_COLOR_TEXT_PRIMARY);
+        titleLabel.setFont(juce::Font(juce::FontOptions(14.0f, juce::Font::bold)));
+        titleLabel.setJustificationType(juce::Justification::centredLeft);
+    }
+
+    void setContent(juce::Component* content, const juce::String& title) {
+        if (currentContent != content) {
+            if (currentContent != nullptr)
+                removeChildComponent(currentContent);
+            currentContent = content;
+            if (content != nullptr)
+                addAndMakeVisible(content);
+        }
+        titleLabel.setText(title, juce::dontSendNotification);
+        resized();
+    }
+
+    void resized() override {
+        auto bounds = getLocalBounds().reduced(8);
+        titleLabel.setBounds(bounds.removeFromTop(24));
+        bounds.removeFromTop(4);
+        if (currentContent != nullptr)
+            currentContent->setBounds(bounds);
+    }
+
+    void paint(juce::Graphics& g) override {
+        g.setColour(APP_COLOR_SURFACE);
+        g.fillAll();
+        g.setColour(APP_COLOR_BORDER);
+        g.drawVerticalLine(0, 0.0f, static_cast<float>(getHeight()));
+    }
+
+private:
+    juce::Label titleLabel;
+    juce::Component* currentContent = nullptr;
+};
+
 MainComponent::MainComponent(bool enableAudioDevice)
     : enableAudioDeviceFlag(enableAudioDevice), pianoRollView(pianoRoll) {
   LOG("MainComponent: constructor start");
@@ -449,6 +492,8 @@ MainComponent::MainComponent(bool enableAudioDevice)
   splitterBar = std::make_unique<SplitterBar>();
   addAndMakeVisible(*splitterBar);
   addAndMakeVisible(workspace);
+  sidebar = std::make_unique<SidebarComponent>();
+  addAndMakeVisible(*sidebar);
   addChildComponent(modelDebugPanel);
   modelDebugPanel.setMultiLine(true);
   modelDebugPanel.setReadOnly(true);
@@ -477,6 +522,7 @@ MainComponent::MainComponent(bool enableAudioDevice)
   trackList.setEditorController(editorController.get());
   trackList.onTrackSelected = [this](int trackIndex) { onTrackSelected(trackIndex); };
   trackList.onTrackTypeChanged = [this](int trackIndex, TrackType newType) { onTrackTypeChanged(trackIndex, newType); };
+  trackList.onTrackDeleted = [this](int trackIndex) { onTrackDeleted(trackIndex); };
   trackList.onTracksChanged = [this]() { rebuildAudioEngine(); };
 
   // Setup splitter bar resize
@@ -490,13 +536,8 @@ MainComponent::MainComponent(bool enableAudioDevice)
     }
   };
 
-  // Add parameter panel to workspace (visible by default)
-  workspace.addPanel("parameters", TR("panel.parameters"), &parameterPanel,
-                     true);
-
-  // Add voicebank panel to workspace (hidden by default – only one panel active at a time)
-  workspace.addPanel("voicebank", TR("panel.voicebank"), &voicebankPanel,
-                     false);
+  // Setup global sidebar with parameter panel (visible by default)
+  sidebar->setContent(&parameterPanel, TR("panel.parameters"));
 
 
   // Configure toolbar for plugin mode
@@ -543,20 +584,22 @@ MainComponent::MainComponent(bool enableAudioDevice)
     pianoRoll.repaint();
   };
   toolbar.onToggleParameters = [this](bool visible) {
-    workspace.showPanel("parameters", visible);
-    if (visible)
-    {
-      workspace.showPanel("voicebank", false);
+    parametersVisible = visible;
+    if (visible) {
+      voicebankVisible = false;
       toolbar.setVoicebankVisible(false);
+      sidebar->setContent(&parameterPanel, TR("panel.parameters"));
     }
+    resized();
   };
   toolbar.onToggleVoicebank = [this](bool visible) {
-    workspace.showPanel("voicebank", visible);
-    if (visible)
-    {
-      workspace.showPanel("parameters", false);
+    voicebankVisible = visible;
+    if (visible) {
+      parametersVisible = false;
       toolbar.setParametersVisible(false);
+      sidebar->setContent(&voicebankPanel, TR("panel.voicebank"));
     }
+    resized();
   };
 
   // Setup voicebank activation callback - loads SVC model when user activates a voicebank
@@ -901,6 +944,11 @@ void MainComponent::resized() {
   // Toolbar
   toolbar.setBounds(bounds.removeFromTop(52));
 
+  // Right sidebar (global, spans track list + editor)
+  int sidebarWidth = (parametersVisible || voicebankVisible) ? 320 : 0;
+  if (sidebarWidth > 0)
+    sidebar->setBounds(bounds.removeFromRight(sidebarWidth));
+
   // Track list (top section)
   int availableHeight = bounds.getHeight();
   int trackH = juce::jlimit(48, juce::jmax(48, availableHeight - 100), trackListHeight);
@@ -911,7 +959,7 @@ void MainComponent::resized() {
   if (splitterBar)
     splitterBar->setBounds(bounds.removeFromTop(4));
 
-  // Workspace takes remaining space (includes piano roll, panels, and sidebar)
+  // Workspace takes remaining space (piano roll only)
   workspace.setBounds(bounds);
 
   if (modelDebugPanelVisible) {
@@ -1777,6 +1825,26 @@ void MainComponent::onTrackTypeChanged(int trackIndex, TrackType newType) {
     if (editorController->getActiveTrackIndex() == trackIndex)
       pianoRoll.setEnabled(false);
   }
+}
+
+void MainComponent::onTrackDeleted(int trackIndex) {
+  if (!editorController) return;
+  if (trackIndex < 0 || trackIndex >= editorController->getTrackCount()) return;
+
+  editorController->removeTrack(trackIndex);
+
+  // Update active track
+  int newActive = editorController->getActiveTrackIndex();
+  if (newActive >= 0) {
+    setActiveTrack(newActive);
+  } else {
+    pianoRoll.setProject(nullptr);
+    pianoRollView.setProject(nullptr);
+    parameterPanel.setProject(nullptr);
+  }
+
+  refreshTrackList();
+  rebuildAudioEngine();
 }
 
 void MainComponent::exportFile() {

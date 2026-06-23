@@ -10,7 +10,8 @@ static juce::Colour getTypeColor(TrackType t) {
 
 TrackListComponent::TrackItem::TrackItem(TrackListComponent& o, int idx)
     : owner(o), trackIndex(idx),
-      muteButton(TR("track.mute")), soloButton(TR("track.solo"))
+      muteButton(TR("track.mute")), soloButton(TR("track.solo")),
+      deleteButton("x")
 {
     muteButton.setClickingTogglesState(true);
     muteButton.setColour(juce::TextButton::buttonColourId, juce::Colour(0xffe05848));
@@ -26,12 +27,19 @@ TrackListComponent::TrackItem::TrackItem(TrackListComponent& o, int idx)
     soloButton.setColour(juce::TextButton::textColourOffId, juce::Colours::white);
     soloButton.setTooltip(TR("track.solo"));
 
+    deleteButton.setColour(juce::TextButton::buttonColourId, APP_COLOR_SURFACE);
+    deleteButton.setColour(juce::TextButton::buttonOnColourId, juce::Colour(0xffe05848));
+    deleteButton.setColour(juce::TextButton::textColourOnId, juce::Colours::white);
+    deleteButton.setColour(juce::TextButton::textColourOffId, APP_COLOR_TEXT_MUTED);
+    deleteButton.setTooltip("Delete track");
+
     typeCombo.addItem(TR("track.accompaniment"), 1);
     typeCombo.addItem(TR("track.vocal"), 2);
     typeCombo.setSelectedId(1, juce::dontSendNotification);
 
     addAndMakeVisible(muteButton);
     addAndMakeVisible(soloButton);
+    addAndMakeVisible(deleteButton);
     addAndMakeVisible(typeCombo);
 
     muteButton.onClick = [this]() {
@@ -58,6 +66,11 @@ TrackListComponent::TrackItem::TrackItem(TrackListComponent& o, int idx)
         TrackType newType = (typeCombo.getSelectedId() == 2) ? TrackType::Vocal : TrackType::Accompaniment;
         if (newType != trackType && owner.onTrackTypeChanged)
             owner.onTrackTypeChanged(trackIndex, newType);
+    };
+
+    deleteButton.onClick = [this]() {
+        if (owner.onTrackDeleted)
+            owner.onTrackDeleted(trackIndex);
     };
 }
 
@@ -109,29 +122,30 @@ void TrackListComponent::TrackItem::paint(juce::Graphics& g)
         g.fillRect(bounds.getX(), bounds.getY(), 3.0f, bounds.getHeight());
     }
 
-    // ── Left: Header area (name + type + mute/solo) ──
+    // ── Left: Header area ──
     int hw = owner.headerWidth;
     int leftPad = 12;
 
     // Type dot
     g.setColour(getTypeColor(trackType));
-    g.fillEllipse(static_cast<float>(leftPad), bounds.getY() + 10, 10.0f, 10.0f);
+    g.fillEllipse(static_cast<float>(leftPad), bounds.getY() + 8, 10.0f, 10.0f);
 
     // Track name
     g.setColour(APP_COLOR_TEXT_PRIMARY);
-    g.setFont(AppFont::getFont(12.0f));
+    g.setFont(AppFont::getFont(14.0f));
     g.drawText(trackName,
-               leftPad + 16, bounds.getY() + 6, hw - leftPad - 16, 18,
+               leftPad + 16, bounds.getY() + 4, hw - leftPad - 36, 20,
                juce::Justification::left);
 
+    // Type label (drawn by ComboBox, but add a colored label above)
     // ── Right: Waveform area ──
     int wfLeft = hw;
     int wfWidth = getWidth() - hw;
-    int wfHeight = 40;
-    int wfY = 12;
+    int wfHeight = 48;
+    int wfY = 8;
 
     if (waveformPreview.getNumSamples() > 0 && wfWidth > 10) {
-        g.setColour(APP_COLOR_WAVEFORM.withAlpha(0.45f));
+        g.setColour(APP_COLOR_WAVEFORM.withAlpha(0.8f));
         const float* data = waveformPreview.getReadPointer(0);
         int numSamples = waveformPreview.getNumSamples();
         float mid = wfY + wfHeight * 0.5f;
@@ -154,7 +168,7 @@ void TrackListComponent::TrackItem::paint(juce::Graphics& g)
             : 0.0;
         if (ratio > 0.0 && ratio < 1.0) {
             int phX = wfLeft + static_cast<int>(ratio * wfWidth);
-            g.setColour(juce::Colours::white.withAlpha(0.8f));
+            g.setColour(juce::Colours::white.withAlpha(0.9f));
             g.drawVerticalLine(phX, bounds.getY(), bounds.getBottom());
         }
     }
@@ -168,17 +182,22 @@ void TrackListComponent::TrackItem::paint(juce::Graphics& g)
 void TrackListComponent::TrackItem::resized()
 {
     int hw = owner.headerWidth;
-    typeCombo.setBounds(12, 28, hw - 80, 18);
-    int btnW = 22;
-    int btnH = 16;
+    // Row 1: name + delete button (y=4, h=20)
+    deleteButton.setBounds(hw - 28, 4, 20, 18);
+
+    // Row 2: type combo + M/S buttons (y=28, h=20)
+    int btnW = 24;
+    int btnH = 20;
     int btnY = 28;
-    muteButton.setBounds(hw - btnW - 8, btnY, btnW, btnH);
-    soloButton.setBounds(hw - btnW * 2 - 14, btnY, btnW, btnH);
+    typeCombo.setBounds(12, btnY, hw - 12 - btnW * 2 - 24, btnH);
+    muteButton.setBounds(hw - btnW * 2 - 24, btnY, btnW, btnH);
+    soloButton.setBounds(hw - btnW - 12, btnY, btnW, btnH);
 }
 
 void TrackListComponent::TrackItem::mouseDown(const juce::MouseEvent& e)
 {
-    if (owner.onTrackSelected)
+    // Only select on click if not clicking on a child component
+    if (e.eventComponent == this && owner.onTrackSelected)
         owner.onTrackSelected(trackIndex);
 }
 
@@ -223,7 +242,7 @@ void TrackListComponent::paint(juce::Graphics& g)
 
     if (items.empty()) {
         g.setColour(APP_COLOR_TEXT_MUTED);
-        g.setFont(AppFont::getFont(13.0f));
+        g.setFont(AppFont::getFont(14.0f));
         g.drawText(TR("tracks.empty"),
                    getLocalBounds(), juce::Justification::centred);
     }
@@ -237,10 +256,4 @@ void TrackListComponent::resized()
         item->setBounds(0, y, w, laneHeight);
         y += laneHeight;
     }
-}
-
-int TrackListComponent::getTotalHeight() const
-{
-    int count = static_cast<int>(items.size());
-    return count * laneHeight;
 }

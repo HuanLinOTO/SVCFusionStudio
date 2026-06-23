@@ -23,11 +23,11 @@ public:
 
     std::function<void(int trackIndex)> onTrackSelected;
     std::function<void(int trackIndex, TrackType newType)> onTrackTypeChanged;
+    std::function<void(int trackIndex)> onTrackDeleted;
     std::function<void()> onTracksChanged;
 
     int getHeaderWidth() const { return headerWidth; }
     int getLaneHeight() const { return laneHeight; }
-    int getTotalHeight() const;
 
 private:
     EditorController* editorController = nullptr;
@@ -55,11 +55,12 @@ private:
 
         juce::TextButton muteButton;
         juce::TextButton soloButton;
+        juce::TextButton deleteButton;
         juce::ComboBox typeCombo;
     };
 
     std::vector<std::unique_ptr<TrackItem>> items;
-    int headerWidth = 150;
+    int headerWidth = 180;
     int laneHeight = 64;
     double playheadPosition = 0.0;
     double totalDuration = 0.0;

@@ -163,6 +163,7 @@ private:
   // Multi-track
   void onTrackTypeChanged(int trackIndex, TrackType newType);
   void onTrackSelected(int trackIndex);
+  void onTrackDeleted(int trackIndex);
   void setActiveTrack(int trackIndex);
   void refreshTrackList();
   void rebuildAudioEngine();
@@ -188,6 +189,12 @@ private:
   int trackListHeight = 200;
   class SplitterBar;
   std::unique_ptr<SplitterBar> splitterBar;
+
+  // Global right sidebar
+  class SidebarComponent;
+  std::unique_ptr<SidebarComponent> sidebar;
+  bool parametersVisible = true;
+  bool voicebankVisible = false;
 
   CustomMenuBarLookAndFeel menuBarLookAndFeel;
   AppMenuBarComponent menuBar;
