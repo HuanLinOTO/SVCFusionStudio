@@ -477,6 +477,7 @@ MainComponent::MainComponent(bool enableAudioDevice)
   pianoRoll.setShowBackgroundWaveform(
       settingsManager->getShowBackgroundWaveform());
   trackList.setRainbowWaveform(settingsManager->getShowRainbowWaveform());
+  trackList.setColormapIndex(settingsManager->getColormapIndex());
   pianoRollView.setShowSomeSegmentsDebug(
       settingsManager->getShowSomeSegmentsDebug());
 
@@ -2585,6 +2586,14 @@ void MainComponent::showSettings() {
             settingsManager->saveConfig();
           }
           trackList.setRainbowWaveform(show);
+        };
+    settingsOverlay->getSettingsComponent()->onColormapChanged =
+        [this](int idx) {
+          if (settingsManager) {
+            settingsManager->setColormapIndex(idx);
+            settingsManager->saveConfig();
+          }
+          trackList.setColormapIndex(idx);
         };
   }
 

@@ -21,6 +21,7 @@ public:
 
     void setPlayheadPosition(double timeSeconds, double totalDurationSeconds);
     void setRainbowWaveform(bool enabled) { rainbowWaveform = enabled; repaint(); }
+    void setColormapIndex(int idx) { colormapIndex = idx; repaint(); }
 
     std::function<void(int trackIndex)> onTrackSelected;
     std::function<void(int trackIndex, TrackType newType)> onTrackTypeChanged;
@@ -71,4 +72,5 @@ private:
     double playheadPosition = 0.0;
     double totalDuration = 0.0;
     bool rainbowWaveform = false;
+    int colormapIndex = 0;
 };

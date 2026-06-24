@@ -61,6 +61,7 @@ public:
   void setShowFpsOverlay(bool show) { showFpsOverlay = show; }
   void setShowBackgroundWaveform(bool show) { showBackgroundWaveform = show; }
   void setShowRainbowWaveform(bool show) { showRainbowWaveform = show; }
+  void setColormapIndex(int idx) { colormapIndex = idx; }
   bool getShowDeltaPitch() const { return showDeltaPitch; }
   bool getShowBasePitch() const { return showBasePitch; }
   bool getShowSomeSegmentsDebug() const { return showSomeSegmentsDebug; }
@@ -70,6 +71,7 @@ public:
   bool getShowFpsOverlay() const { return showFpsOverlay; }
   bool getShowBackgroundWaveform() const { return showBackgroundWaveform; }
   bool getShowRainbowWaveform() const { return showRainbowWaveform; }
+  int getColormapIndex() const { return colormapIndex; }
 
   // Callbacks
   std::function<void()> onSettingsChanged;
@@ -102,6 +104,7 @@ private:
   bool showFpsOverlay = false;
   bool showBackgroundWaveform = false;
   bool showRainbowWaveform = false;
+  int colormapIndex = 0;
   bool followSystemAudioOutput = true;
 
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(SettingsManager)

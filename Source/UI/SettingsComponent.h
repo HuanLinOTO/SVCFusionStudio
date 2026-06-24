@@ -54,6 +54,7 @@ public:
   std::function<void(bool)> onShowFpsOverlayChanged;
   std::function<void(bool)> onShowBackgroundWaveformChanged;
   std::function<void(bool)> onShowRainbowWaveformChanged;
+  std::function<void(int)> onColormapChanged;
   std::function<bool()> canChangeDevice;
 
   // Load/save settings
@@ -150,6 +151,9 @@ private:
   juce::Label rainbowWaveformLabel;
   juce::Label rainbowWaveformDescriptionLabel;
   juce::ToggleButton rainbowWaveformToggle;
+  juce::Label colormapLabel;
+  juce::Label colormapDescriptionLabel;
+  juce::ComboBox colormapComboBox;
 
   juce::Label infoLabel;
 
@@ -187,6 +191,7 @@ private:
   bool showFpsOverlay = false;
   bool showBackgroundWaveform = false;
   bool showRainbowWaveform = false;
+  int colormapIndex = 0;
   SettingsTab activeTab = SettingsTab::General;
   SettingsTab previousTab = SettingsTab::General;
   juce::TextButton generalTabButton;

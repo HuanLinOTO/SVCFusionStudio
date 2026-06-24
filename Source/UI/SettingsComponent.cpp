@@ -372,13 +372,40 @@ SettingsComponent::SettingsComponent(
   rainbowWaveformToggle.onClick = [this]() {
     showRainbowWaveform = rainbowWaveformToggle.getToggleState();
     if (settingsManager) {
-      settingsManager->setShowRainbowWaveform(showRainbowWaveform);
+    settingsManager->setShowRainbowWaveform(showRainbowWaveform);
+    settingsManager->setColormapIndex(colormapIndex);
       settingsManager->saveConfig();
     }
     if (onShowRainbowWaveformChanged)
       onShowRainbowWaveformChanged(showRainbowWaveform);
   };
   addAndMakeVisible(rainbowWaveformToggle);
+
+  colormapLabel.setText(TR("settings.colormap"), juce::dontSendNotification);
+  configureRowLabel(colormapLabel);
+  addAndMakeVisible(colormapLabel);
+  colormapDescriptionLabel.setText(
+      TR("settings.colormap_desc"), juce::dontSendNotification);
+  configureDescriptionLabel(colormapDescriptionLabel);
+  addAndMakeVisible(colormapDescriptionLabel);
+
+  colormapComboBox.addItem(TR("colormap.rainbow"), 1);
+  colormapComboBox.addItem(TR("colormap.ocean"), 2);
+  colormapComboBox.addItem(TR("colormap.fire"), 3);
+  colormapComboBox.addItem(TR("colormap.pastel"), 4);
+  colormapComboBox.addItem(TR("colormap.magma"), 5);
+  colormapComboBox.addItem(TR("colormap.viridis"), 6);
+  colormapComboBox.setSelectedId(1, juce::dontSendNotification);
+  colormapComboBox.onChange = [this]() {
+    colormapIndex = colormapComboBox.getSelectedId() - 1;
+    if (settingsManager) {
+      settingsManager->setColormapIndex(colormapIndex);
+      settingsManager->saveConfig();
+    }
+    if (onColormapChanged)
+      onColormapChanged(colormapIndex);
+  };
+  addAndMakeVisible(colormapComboBox);
 
   // Info label
   infoLabel.setColour(juce::Label::textColourId, APP_COLOR_TEXT_MUTED);
@@ -484,6 +511,7 @@ SettingsComponent::~SettingsComponent() {
   fpsOverlayToggle.setLookAndFeel(nullptr);
   backgroundWaveformToggle.setLookAndFeel(nullptr);
   rainbowWaveformToggle.setLookAndFeel(nullptr);
+  colormapComboBox.setLookAndFeel(nullptr);
 }
 
 void SettingsComponent::changeListenerCallback(
@@ -639,6 +667,7 @@ void SettingsComponent::layoutGeneralTab(juce::Rectangle<int> content) {
             backgroundWaveformToggle);
   layoutRow(rainbowWaveformLabel, rainbowWaveformDescriptionLabel,
             rainbowWaveformToggle);
+  layoutRow(colormapLabel, colormapDescriptionLabel, colormapComboBox);
   layoutRow(fpsOverlayLabel, fpsOverlayDescriptionLabel, fpsOverlayToggle);
 
   content.removeFromTop(8);
@@ -692,6 +721,7 @@ void SettingsComponent::applyFontSizes() {
   for (auto *label : {&languageLabel, &uiFontSizeLabel, &deviceLabel,
                       &gpuDeviceLabel, &pitchDetectorLabel,
                       &backgroundWaveformLabel, &rainbowWaveformLabel,
+                      &colormapLabel,
                       &fpsOverlayLabel,
                       &someSegmentsDebugLabel, &someValuesDebugLabel,
                       &uvInterpolationDebugLabel, &actualF0DebugLabel,
@@ -706,6 +736,7 @@ void SettingsComponent::applyFontSizes() {
                       &pitchDetectorDescriptionLabel,
                       &backgroundWaveformDescriptionLabel,
                       &rainbowWaveformDescriptionLabel,
+                      &colormapDescriptionLabel,
                       &fpsOverlayDescriptionLabel,
                       &someSegmentsDebugDescriptionLabel,
                       &someValuesDebugDescriptionLabel,
@@ -986,7 +1017,8 @@ void SettingsComponent::applyTabAnimationState() {
               &pitchDetectorComboBox, &displaySectionLabel,
               &backgroundWaveformLabel, &backgroundWaveformDescriptionLabel,
               &backgroundWaveformToggle, &rainbowWaveformLabel,
-              &rainbowWaveformDescriptionLabel, &rainbowWaveformToggle,
+              &rainbowWaveformDescriptionLabel,               &rainbowWaveformToggle, &colormapLabel,
+              &colormapDescriptionLabel, &colormapComboBox,
               &fpsOverlayLabel,
               &fpsOverlayDescriptionLabel, &fpsOverlayToggle, &debugSectionLabel,
               &someSegmentsDebugLabel, &someSegmentsDebugDescriptionLabel,
@@ -1333,6 +1365,7 @@ void SettingsComponent::loadSettings() {
     showFpsOverlay = settingsManager->getShowFpsOverlay();
     showBackgroundWaveform = settingsManager->getShowBackgroundWaveform();
     showRainbowWaveform = settingsManager->getShowRainbowWaveform();
+    colormapIndex = settingsManager->getColormapIndex();
 
     auto langCode = settingsManager->getLanguage();
     if (langCode == "auto") {
@@ -1392,6 +1425,7 @@ void SettingsComponent::loadSettings() {
                                           juce::dontSendNotification);
   rainbowWaveformToggle.setToggleState(showRainbowWaveform,
                                        juce::dontSendNotification);
+  colormapComboBox.setSelectedId(colormapIndex + 1, juce::dontSendNotification);
 
   hasLoadedSettings = true;
   lastConfirmedDevice = currentDevice;

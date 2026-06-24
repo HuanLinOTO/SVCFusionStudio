@@ -6,6 +6,49 @@ static juce::Colour getTypeColor(TrackType t) {
     return (t == TrackType::Vocal) ? juce::Colour(0xff6ab0ff) : juce::Colour(0xff88cc88);
 }
 
+// Colormaps: map volume [0,1] to a color. All use soft saturation/brightness.
+static juce::Colour colormapRainbow(float v) {
+    float hue = 0.7f - v * 0.7f;
+    return juce::Colour::fromHSV(hue, 0.45f, 0.8f, 0.85f);
+}
+
+static juce::Colour colormapOcean(float v) {
+    float hue = 0.55f + v * 0.12f;
+    float sat = 0.5f + v * 0.2f;
+    return juce::Colour::fromHSV(hue, sat, 0.55f + v * 0.35f, 0.85f);
+}
+
+static juce::Colour colormapFire(float v) {
+    float hue = 0.02f + v * 0.08f;
+    return juce::Colour::fromHSV(hue, 0.6f + v * 0.2f, 0.7f + v * 0.3f, 0.85f);
+}
+
+static juce::Colour colormapPastel(float v) {
+    float hue = 0.75f - v * 0.75f;
+    return juce::Colour::fromHSV(hue, 0.3f, 0.9f, 0.7f);
+}
+
+static juce::Colour colormapMagma(float v) {
+    float hue = 0.85f - v * 0.85f;
+    return juce::Colour::fromHSV(hue, 0.5f + v * 0.3f, 0.5f + v * 0.45f, 0.85f);
+}
+
+static juce::Colour colormapViridis(float v) {
+    float hue = 0.75f - v * 0.55f;
+    return juce::Colour::fromHSV(hue, 0.45f + v * 0.25f, 0.55f + v * 0.4f, 0.85f);
+}
+
+static juce::Colour colormapFor(int idx, float v) {
+    switch (idx) {
+        case 1:  return colormapOcean(v);
+        case 2:  return colormapFire(v);
+        case 3:  return colormapPastel(v);
+        case 4:  return colormapMagma(v);
+        case 5:  return colormapViridis(v);
+        default: return colormapRainbow(v);
+    }
+}
+
 // ── TrackItem ──
 
 TrackListComponent::TrackItem::TrackItem(TrackListComponent& o, int idx)
@@ -192,12 +235,6 @@ void TrackListComponent::TrackItem::paint(juce::Graphics& g)
         float mid = wfY + wfHeight * 0.5f;
 
         // Rainbow mode: color each column based on its volume level
-        // Hue maps: 0.0=red, 0.33=green, 0.66=blue, 1.0=red
-        // Low volume -> blue/purple (hue ~0.7), high volume -> red (hue ~0.0)
-        auto hueForVolume = [](float vol) -> float {
-            return 0.7f - vol * 0.7f; // 0.7 (blue) -> 0.0 (red)
-        };
-
         for (int x = 0; x < wfWidth; ++x) {
             int startIdx = static_cast<int>((static_cast<float>(x) / wfWidth) * numSamples);
             int endIdx = static_cast<int>((static_cast<float>(x + 1) / wfWidth) * numSamples);
@@ -211,8 +248,8 @@ void TrackListComponent::TrackItem::paint(juce::Graphics& g)
             float h = maxVal * wfHeight * 0.5f;
 
             if (owner.rainbowWaveform) {
-                float hue = hueForVolume(juce::jlimit(0.0f, 1.0f, maxVal));
-                g.setColour(juce::Colour::fromHSV(hue, 0.45f, 0.8f, 0.85f));
+                g.setColour(colormapFor(owner.colormapIndex,
+                                        juce::jlimit(0.0f, 1.0f, maxVal)));
             } else {
                 g.setColour(juce::Colour(0xff8a9bbf));
             }
