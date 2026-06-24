@@ -18,7 +18,6 @@ public:
     void refresh();
     void paint(juce::Graphics& g) override;
     void resized() override;
-    void mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel) override;
 
     void setPlayheadPosition(double timeSeconds, double totalDurationSeconds);
 

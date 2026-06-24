@@ -44,15 +44,18 @@ TrackListComponent::TrackItem::TrackItem(TrackListComponent& o, int idx)
     volumeSlider.setColour(juce::Slider::textBoxTextColourId, APP_COLOR_TEXT_PRIMARY);
     volumeSlider.setColour(juce::Slider::textBoxBackgroundColourId, APP_COLOR_SURFACE);
     volumeSlider.setColour(juce::Slider::textBoxOutlineColourId, APP_COLOR_BORDER_SUBTLE);
-    volumeSlider.setColour(juce::Slider::thumbColourId, juce::Colour(0xff6ab0ff));
-    volumeSlider.setColour(juce::Slider::trackColourId, juce::Colour(0xff3a4a6a));
-    volumeSlider.setColour(juce::Slider::backgroundColourId, juce::Colour(0xff2a2a2a));
+    volumeSlider.setColour(juce::Slider::thumbColourId, juce::Colour(0xff4fc3f7));
+    volumeSlider.setColour(juce::Slider::trackColourId, juce::Colour(0xff5a8acc));
+    volumeSlider.setColour(juce::Slider::backgroundColourId, juce::Colour(0xff333344));
 
     addAndMakeVisible(muteButton);
     addAndMakeVisible(soloButton);
     addAndMakeVisible(deleteButton);
     addAndMakeVisible(typeCombo);
     addAndMakeVisible(volumeSlider);
+
+    // Let wheel events pass through to the viewport for scrolling
+    setInterceptsMouseClicks(true, false);
 
     muteButton.onClick = [this]() {
         if (!owner.editorController) return;
@@ -90,7 +93,10 @@ TrackListComponent::TrackItem::TrackItem(TrackListComponent& o, int idx)
         auto* track = owner.editorController->getTrack(trackIndex);
         if (!track) return;
         track->setVolume(static_cast<float>(volumeSlider.getValue()));
-        owner.editorController->refreshAudioEngine(true);
+    };
+    volumeSlider.onDragEnd = [this]() {
+        if (owner.editorController)
+            owner.editorController->refreshAudioEngine(false);
     };
 }
 
@@ -168,10 +174,10 @@ void TrackListComponent::TrackItem::paint(juce::Graphics& g)
                    juce::Justification::left);
     }
 
-    // Volume label
+    // Volume label (aligned with slider row)
     g.setColour(APP_COLOR_TEXT_MUTED);
-    g.setFont(AppFont::getFont(10.0f));
-    g.drawText("Vol", leftPad, bounds.getY() + 56, 20, 12,
+    g.setFont(AppFont::getFont(11.0f));
+    g.drawText("Vol", leftPad, bounds.getY() + 57, 20, 14,
                juce::Justification::left);
 
     // ── Right: Waveform area (fit-to-width, independent of piano roll zoom) ──
@@ -230,8 +236,9 @@ void TrackListComponent::TrackItem::resized()
     muteButton.setBounds(12 + 70 + 4, btnY, btnW, btnH);
     soloButton.setBounds(12 + 70 + 4 + btnW + 4, btnY, btnW, btnH);
 
-    // Row 3: volume slider (y=54, h=20)
-    volumeSlider.setBounds(12, 54, hw - 24, 20);
+    // Row 3: "Vol" label + volume slider (y=54, h=20)
+    int volLabelW = 22;
+    volumeSlider.setBounds(12 + volLabelW, 54, hw - 24 - volLabelW, 20);
 }
 
 void TrackListComponent::TrackItem::mouseDown(const juce::MouseEvent& e)
@@ -321,9 +328,4 @@ void TrackListComponent::resized()
         y += laneHeight;
     }
     contentContainer.setSize(w, juce::jmax(y, viewport.getMaximumVisibleHeight()));
-}
-
-void TrackListComponent::mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel)
-{
-    viewport.mouseWheelMove(e.getEventRelativeTo(&viewport), wheel);
 }
