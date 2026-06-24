@@ -115,6 +115,8 @@
   "settings.pitch_detector_desc": "読み込んだ音声からピッチを解析するアルゴリズムを選択します。",
   "settings.background_waveform": "背景波形:",
   "settings.background_waveform_desc": "ノートの背後に音声全体の波形を描画します。オフにすると大規模プロジェクトの応答性が向上します。",
+  "settings.rainbow_waveform": "レインボー波形:",
+  "settings.rainbow_waveform_desc": "音量レベルに応じてトラック波形に色を付けます（青=静か、赤=大きい）。",
   "settings.fps_overlay": "FPS表示:",
   "settings.fps_overlay_desc": "ピアノロールの描画フレームレートを表示します。",
   "settings.debug.some_segments": "SOMEチャンク:",

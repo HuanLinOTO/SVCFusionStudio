@@ -476,6 +476,7 @@ MainComponent::MainComponent(bool enableAudioDevice)
   pianoRoll.setShowFpsOverlay(settingsManager->getShowFpsOverlay());
   pianoRoll.setShowBackgroundWaveform(
       settingsManager->getShowBackgroundWaveform());
+  trackList.setRainbowWaveform(settingsManager->getShowRainbowWaveform());
   pianoRollView.setShowSomeSegmentsDebug(
       settingsManager->getShowSomeSegmentsDebug());
 
@@ -2576,6 +2577,14 @@ void MainComponent::showSettings() {
             settingsManager->saveConfig();
           }
           pianoRoll.setShowBackgroundWaveform(show);
+        };
+    settingsOverlay->getSettingsComponent()->onShowRainbowWaveformChanged =
+        [this](bool show) {
+          if (settingsManager) {
+            settingsManager->setShowRainbowWaveform(show);
+            settingsManager->saveConfig();
+          }
+          trackList.setRainbowWaveform(show);
         };
   }
 

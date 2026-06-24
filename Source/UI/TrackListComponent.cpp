@@ -187,10 +187,17 @@ void TrackListComponent::TrackItem::paint(juce::Graphics& g)
     int wfY = 8;
 
     if (waveformPreview.getNumSamples() > 0 && wfWidth > 10) {
-        g.setColour(juce::Colour(0xff8a9bbf));
         const float* data = waveformPreview.getReadPointer(0);
         int numSamples = waveformPreview.getNumSamples();
         float mid = wfY + wfHeight * 0.5f;
+
+        // Rainbow mode: color each column based on its volume level
+        // Hue maps: 0.0=red, 0.33=green, 0.66=blue, 1.0=red
+        // Low volume -> blue/purple (hue ~0.7), high volume -> red (hue ~0.0)
+        auto hueForVolume = [](float vol) -> float {
+            return 0.7f - vol * 0.7f; // 0.7 (blue) -> 0.0 (red)
+        };
+
         for (int x = 0; x < wfWidth; ++x) {
             int startIdx = static_cast<int>((static_cast<float>(x) / wfWidth) * numSamples);
             int endIdx = static_cast<int>((static_cast<float>(x + 1) / wfWidth) * numSamples);
@@ -202,6 +209,13 @@ void TrackListComponent::TrackItem::paint(juce::Graphics& g)
                 if (v > maxVal) maxVal = v;
             }
             float h = maxVal * wfHeight * 0.5f;
+
+            if (owner.rainbowWaveform) {
+                float hue = hueForVolume(juce::jlimit(0.0f, 1.0f, maxVal));
+                g.setColour(juce::Colour::fromHSV(hue, 0.85f, 1.0f, 1.0f));
+            } else {
+                g.setColour(juce::Colour(0xff8a9bbf));
+            }
             g.drawVerticalLine(wfLeft + x, mid - h, mid + h);
         }
 

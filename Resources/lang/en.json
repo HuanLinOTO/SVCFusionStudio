@@ -115,6 +115,8 @@
   "settings.pitch_detector_desc": "Select the algorithm used to analyze pitch from imported audio.",
   "settings.background_waveform": "Background waveform:",
   "settings.background_waveform_desc": "Draw the full audio waveform behind notes. Off improves large-project responsiveness.",
+  "settings.rainbow_waveform": "Rainbow waveform:",
+  "settings.rainbow_waveform_desc": "Color track waveforms by volume level (blue=quiet, red=loud).",
   "settings.fps_overlay": "FPS overlay:",
   "settings.fps_overlay_desc": "Show the piano roll renderer frame-rate overlay.",
   "settings.debug.some_segments": "SOME chunks:",

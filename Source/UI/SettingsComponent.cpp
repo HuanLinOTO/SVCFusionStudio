@@ -349,13 +349,36 @@ SettingsComponent::SettingsComponent(
   backgroundWaveformToggle.onClick = [this]() {
     showBackgroundWaveform = backgroundWaveformToggle.getToggleState();
     if (settingsManager) {
-      settingsManager->setShowBackgroundWaveform(showBackgroundWaveform);
+    settingsManager->setShowBackgroundWaveform(showBackgroundWaveform);
+    settingsManager->setShowRainbowWaveform(showRainbowWaveform);
       settingsManager->saveConfig();
     }
     if (onShowBackgroundWaveformChanged)
       onShowBackgroundWaveformChanged(showBackgroundWaveform);
   };
   addAndMakeVisible(backgroundWaveformToggle);
+
+  rainbowWaveformLabel.setText(TR("settings.rainbow_waveform"),
+                                juce::dontSendNotification);
+  configureRowLabel(rainbowWaveformLabel);
+  addAndMakeVisible(rainbowWaveformLabel);
+  rainbowWaveformDescriptionLabel.setText(
+      TR("settings.rainbow_waveform_desc"), juce::dontSendNotification);
+  configureDescriptionLabel(rainbowWaveformDescriptionLabel);
+  addAndMakeVisible(rainbowWaveformDescriptionLabel);
+
+  rainbowWaveformToggle.setButtonText("");
+  rainbowWaveformToggle.setClickingTogglesState(true);
+  rainbowWaveformToggle.onClick = [this]() {
+    showRainbowWaveform = rainbowWaveformToggle.getToggleState();
+    if (settingsManager) {
+      settingsManager->setShowRainbowWaveform(showRainbowWaveform);
+      settingsManager->saveConfig();
+    }
+    if (onShowRainbowWaveformChanged)
+      onShowRainbowWaveformChanged(showRainbowWaveform);
+  };
+  addAndMakeVisible(rainbowWaveformToggle);
 
   // Info label
   infoLabel.setColour(juce::Label::textColourId, APP_COLOR_TEXT_MUTED);
@@ -460,6 +483,7 @@ SettingsComponent::~SettingsComponent() {
   actualF0DebugToggle.setLookAndFeel(nullptr);
   fpsOverlayToggle.setLookAndFeel(nullptr);
   backgroundWaveformToggle.setLookAndFeel(nullptr);
+  rainbowWaveformToggle.setLookAndFeel(nullptr);
 }
 
 void SettingsComponent::changeListenerCallback(
@@ -613,6 +637,8 @@ void SettingsComponent::layoutGeneralTab(juce::Rectangle<int> content) {
   layoutSection(displaySectionLabel);
   layoutRow(backgroundWaveformLabel, backgroundWaveformDescriptionLabel,
             backgroundWaveformToggle);
+  layoutRow(rainbowWaveformLabel, rainbowWaveformDescriptionLabel,
+            rainbowWaveformToggle);
   layoutRow(fpsOverlayLabel, fpsOverlayDescriptionLabel, fpsOverlayToggle);
 
   content.removeFromTop(8);
@@ -665,7 +691,8 @@ void SettingsComponent::applyFontSizes() {
 
   for (auto *label : {&languageLabel, &uiFontSizeLabel, &deviceLabel,
                       &gpuDeviceLabel, &pitchDetectorLabel,
-                      &backgroundWaveformLabel, &fpsOverlayLabel,
+                      &backgroundWaveformLabel, &rainbowWaveformLabel,
+                      &fpsOverlayLabel,
                       &someSegmentsDebugLabel, &someValuesDebugLabel,
                       &uvInterpolationDebugLabel, &actualF0DebugLabel,
                       &audioDeviceTypeLabel, &audioOutputLabel,
@@ -678,6 +705,7 @@ void SettingsComponent::applyFontSizes() {
                       &deviceDescriptionLabel, &gpuDeviceDescriptionLabel,
                       &pitchDetectorDescriptionLabel,
                       &backgroundWaveformDescriptionLabel,
+                      &rainbowWaveformDescriptionLabel,
                       &fpsOverlayDescriptionLabel,
                       &someSegmentsDebugDescriptionLabel,
                       &someValuesDebugDescriptionLabel,
@@ -957,7 +985,9 @@ void SettingsComponent::applyTabAnimationState() {
               &pitchDetectorLabel, &pitchDetectorDescriptionLabel,
               &pitchDetectorComboBox, &displaySectionLabel,
               &backgroundWaveformLabel, &backgroundWaveformDescriptionLabel,
-              &backgroundWaveformToggle, &fpsOverlayLabel,
+              &backgroundWaveformToggle, &rainbowWaveformLabel,
+              &rainbowWaveformDescriptionLabel, &rainbowWaveformToggle,
+              &fpsOverlayLabel,
               &fpsOverlayDescriptionLabel, &fpsOverlayToggle, &debugSectionLabel,
               &someSegmentsDebugLabel, &someSegmentsDebugDescriptionLabel,
               &someSegmentsDebugToggle, &someValuesDebugLabel,
@@ -1302,6 +1332,7 @@ void SettingsComponent::loadSettings() {
     showActualF0Debug = settingsManager->getShowActualF0Debug();
     showFpsOverlay = settingsManager->getShowFpsOverlay();
     showBackgroundWaveform = settingsManager->getShowBackgroundWaveform();
+    showRainbowWaveform = settingsManager->getShowRainbowWaveform();
 
     auto langCode = settingsManager->getLanguage();
     if (langCode == "auto") {
@@ -1359,6 +1390,8 @@ void SettingsComponent::loadSettings() {
   fpsOverlayToggle.setToggleState(showFpsOverlay, juce::dontSendNotification);
   backgroundWaveformToggle.setToggleState(showBackgroundWaveform,
                                           juce::dontSendNotification);
+  rainbowWaveformToggle.setToggleState(showRainbowWaveform,
+                                       juce::dontSendNotification);
 
   hasLoadedSettings = true;
   lastConfirmedDevice = currentDevice;

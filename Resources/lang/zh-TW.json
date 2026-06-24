@@ -115,6 +115,8 @@
   "settings.pitch_detector_desc": "選擇匯入音訊時用於分析音高的演算法。",
   "settings.background_waveform": "背景波形:",
   "settings.background_waveform_desc": "在音符後繪製完整音訊波形。關閉可提升大型工程反應速度。",
+  "settings.rainbow_waveform": "彩虹波形:",
+  "settings.rainbow_waveform_desc": "按音量級別為軌道波形著色（藍=安靜，紅=響亮）。",
   "settings.fps_overlay": "FPS 疊加:",
   "settings.fps_overlay_desc": "顯示鋼琴窗渲染幀率疊加層。",
   "settings.debug.some_segments": "SOME 分塊:",
