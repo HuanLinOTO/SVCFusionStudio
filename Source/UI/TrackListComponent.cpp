@@ -241,6 +241,10 @@ void TrackListComponent::TrackItem::mouseDrag(const juce::MouseEvent& e)
 
 TrackListComponent::TrackListComponent()
 {
+    viewport.setViewedComponent(&contentContainer, false);
+    viewport.setScrollBarsShown(true, false);
+    viewport.setScrollOnDragEnabled(false);
+    addAndMakeVisible(viewport);
 }
 
 TrackListComponent::~TrackListComponent() = default;
@@ -256,7 +260,7 @@ void TrackListComponent::refresh()
     for (int i = 0; i < count; ++i) {
         auto item = std::make_unique<TrackItem>(*this, i);
         item->updateFromTrack();
-        addAndMakeVisible(*item);
+        contentContainer.addAndMakeVisible(*item);
         items.push_back(std::move(item));
     }
 
@@ -286,10 +290,13 @@ void TrackListComponent::paint(juce::Graphics& g)
 
 void TrackListComponent::resized()
 {
+    viewport.setBounds(getLocalBounds());
+
     int y = 0;
-    int w = getWidth();
+    int w = viewport.getWidth();
     for (auto& item : items) {
         item->setBounds(0, y, w, laneHeight);
         y += laneHeight;
     }
+    contentContainer.setSize(w, juce::jmax(y, viewport.getHeight()));
 }

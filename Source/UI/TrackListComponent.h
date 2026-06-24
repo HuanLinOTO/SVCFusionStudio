@@ -61,6 +61,8 @@ private:
         juce::Slider volumeSlider;
     };
 
+    juce::Viewport viewport;
+    juce::Component contentContainer;
     std::vector<std::unique_ptr<TrackItem>> items;
     int headerWidth = 200;
     int laneHeight = 72;
