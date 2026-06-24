@@ -587,21 +587,19 @@ MainComponent::MainComponent(bool enableAudioDevice)
     pianoRoll.repaint();
   };
   toolbar.onToggleParameters = [this](bool visible) {
-    parametersVisible = visible;
-    if (visible) {
-      voicebankVisible = false;
-      toolbar.setVoicebankVisible(false);
-      sidebar->setContent(&parameterPanel, TR("panel.parameters"));
-    }
+    if (!visible) return; // ignore: clicking already-selected button does nothing
+    parametersVisible = true;
+    voicebankVisible = false;
+    toolbar.setVoicebankVisible(false);
+    sidebar->setContent(&parameterPanel, TR("panel.parameters"));
     resized();
   };
   toolbar.onToggleVoicebank = [this](bool visible) {
-    voicebankVisible = visible;
-    if (visible) {
-      parametersVisible = false;
-      toolbar.setParametersVisible(false);
-      sidebar->setContent(&voicebankPanel, TR("panel.voicebank"));
-    }
+    if (!visible) return; // ignore: clicking already-selected button does nothing
+    voicebankVisible = true;
+    parametersVisible = false;
+    toolbar.setParametersVisible(false);
+    sidebar->setContent(&voicebankPanel, TR("panel.voicebank"));
     resized();
   };
 
