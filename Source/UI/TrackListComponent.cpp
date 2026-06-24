@@ -314,7 +314,9 @@ void TrackListComponent::TrackItem::mouseDown(const juce::MouseEvent& e)
                 if (owner.onTrackDeleted)
                     owner.onTrackDeleted(trackIndex);
             });
-            menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this));
+            menu.showMenuAsync(juce::PopupMenu::Options()
+                .withTargetScreenArea(juce::Rectangle<int>(
+                    e.getScreenX(), e.getScreenY(), 1, 1)));
             return;
         }
 
