@@ -33,7 +33,7 @@ public:
 private:
     EditorController* editorController = nullptr;
 
-    struct TrackItem : public juce::Component
+    struct TrackItem : public juce::Component, public juce::TooltipClient
     {
         TrackItem(TrackListComponent& owner, int index);
         ~TrackItem() override;
@@ -42,6 +42,7 @@ private:
         void resized() override;
         void mouseDown(const juce::MouseEvent& e) override;
         void mouseDrag(const juce::MouseEvent& e) override;
+        juce::String getTooltip() override { return trackName; }
 
         void updateFromTrack();
 

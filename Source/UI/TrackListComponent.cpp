@@ -144,12 +144,23 @@ void TrackListComponent::TrackItem::paint(juce::Graphics& g)
     g.setColour(getTypeColor(trackType));
     g.fillEllipse(static_cast<float>(leftPad), bounds.getY() + 8, 10.0f, 10.0f);
 
-    // Track name
+    // Track name (truncated with ellipsis if too long)
     g.setColour(APP_COLOR_TEXT_PRIMARY);
     g.setFont(AppFont::getFont(14.0f));
-    g.drawText(trackName,
-               leftPad + 16, bounds.getY() + 4, hw - leftPad - 40, 20,
-               juce::Justification::left);
+    {
+        int nameWidth = hw - leftPad - 40;
+        juce::String displayName = trackName;
+        if (g.getCurrentFont().getStringWidth(displayName) > nameWidth) {
+            while (g.getCurrentFont().getStringWidth(displayName + "...") > nameWidth &&
+                   displayName.length() > 1) {
+                displayName = displayName.dropLastCharacters(1);
+            }
+            displayName += "...";
+        }
+        g.drawText(displayName,
+                   leftPad + 16, bounds.getY() + 4, hw - leftPad - 40, 20,
+                   juce::Justification::left);
+    }
 
     // ── Right: Waveform area (fit-to-width, independent of piano roll zoom) ──
     int wfLeft = hw;
