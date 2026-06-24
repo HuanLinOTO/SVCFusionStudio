@@ -1643,6 +1643,14 @@ void MainComponent::loadAudioFile(const juce::File &file) {
           if (track && track->getProject()) {
             double dur = track->getProject()->getAudioData().getDuration();
             safeThis->toolbar.setTotalTime(dur);
+            // Update track list totalDuration so seek works immediately
+            double maxDur = dur;
+            for (int i = 0; i < ec->getTrackCount(); ++i) {
+              auto* t = ec->getTrack(i);
+              if (t && t->getProject())
+                maxDur = std::max(maxDur, static_cast<double>(t->getProject()->getAudioData().getDuration()));
+            }
+            safeThis->trackList.setPlayheadPosition(0.0, maxDur);
           }
         }
 
