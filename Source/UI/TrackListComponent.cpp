@@ -96,7 +96,7 @@ TrackListComponent::TrackItem::TrackItem(TrackListComponent& o, int idx)
     };
     volumeSlider.onDragEnd = [this]() {
         if (owner.editorController)
-            owner.editorController->refreshAudioEngine(false);
+            owner.editorController->refreshAudioEngine(true);
     };
 }
 
