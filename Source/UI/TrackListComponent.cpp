@@ -212,7 +212,7 @@ void TrackListComponent::TrackItem::paint(juce::Graphics& g)
 
             if (owner.rainbowWaveform) {
                 float hue = hueForVolume(juce::jlimit(0.0f, 1.0f, maxVal));
-                g.setColour(juce::Colour::fromHSV(hue, 0.85f, 1.0f, 1.0f));
+                g.setColour(juce::Colour::fromHSV(hue, 0.45f, 0.8f, 0.85f));
             } else {
                 g.setColour(juce::Colour(0xff8a9bbf));
             }
