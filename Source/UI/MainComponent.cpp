@@ -1706,6 +1706,11 @@ void MainComponent::loadAudioFile(const juce::File &file) {
         safeThis->isLoadingAudio = false;
         safeThis->resized();
 
+        // Clear pending track progress
+        TrackListComponent::TrackProgress noProgress;
+        noProgress.active = false;
+        safeThis->trackList.setTrackProgress(-1, noProgress);
+
         // Process next queued file (batch import)
         safeThis->loadNextPendingFile();
 
@@ -1716,6 +1721,12 @@ void MainComponent::loadAudioFile(const juce::File &file) {
         if (safeThis == nullptr)
           return;
         safeThis->isLoadingAudio = false;
+
+        // Clear pending track progress on cancel
+        TrackListComponent::TrackProgress noProgress;
+        noProgress.active = false;
+        safeThis->trackList.setTrackProgress(-1, noProgress);
+
         safeThis->loadNextPendingFile();
       });
 }
