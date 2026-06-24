@@ -1572,9 +1572,23 @@ void MainComponent::openProjectFile(const juce::File &file) {
   }).detach();
 }
 
-void MainComponent::loadAudioFile(const juce::File &file) {
+void MainComponent::loadNextPendingFile() {
   if (isLoadingAudio.load())
     return;
+  if (pendingAudioFiles.empty())
+    return;
+
+  juce::File next = pendingAudioFiles.front();
+  pendingAudioFiles.erase(pendingAudioFiles.begin());
+  loadAudioFile(next);
+}
+
+void MainComponent::loadAudioFile(const juce::File &file) {
+  // If already loading, queue this file for later
+  if (isLoadingAudio.load()) {
+    pendingAudioFiles.push_back(file);
+    return;
+  }
   // Cancel any running SVC conversion before loading new audio
   if (editorController && editorController->isSVCConvertingNow()) {
     editorController->cancelSVCConversion();
@@ -1673,6 +1687,9 @@ void MainComponent::loadAudioFile(const juce::File &file) {
         safeThis->isLoadingAudio = false;
         safeThis->resized();
 
+        // Process next queued file (batch import)
+        safeThis->loadNextPendingFile();
+
         if (safeThis->isPluginMode())
           safeThis->notifyProjectDataChanged();
       },
@@ -1680,6 +1697,7 @@ void MainComponent::loadAudioFile(const juce::File &file) {
         if (safeThis == nullptr)
           return;
         safeThis->isLoadingAudio = false;
+        safeThis->loadNextPendingFile();
       });
 }
 
@@ -2569,13 +2587,22 @@ void MainComponent::filesDropped(const juce::StringArray &files, int /*x*/,
   if (files.isEmpty())
     return;
 
-  juce::File audioFile(files[0]);
-  if (!audioFile.existsAsFile())
-    return;
+  // Separate project files from audio files
+  juce::Array<juce::File> audioFiles;
+  for (const auto &f : files) {
+    juce::File file(f);
+    if (!file.existsAsFile())
+      continue;
 
-  if (audioFile.hasFileExtension("htpx") || audioFile.hasFileExtension(".htpx"))
-    openProjectFile(audioFile);
-  else
+    if (file.hasFileExtension("htpx") || file.hasFileExtension(".htpx")) {
+      openProjectFile(file);
+    } else {
+      audioFiles.add(file);
+    }
+  }
+
+  // Batch import audio files as tracks
+  for (const auto &audioFile : audioFiles)
     loadAudioFile(audioFile);
 }
 

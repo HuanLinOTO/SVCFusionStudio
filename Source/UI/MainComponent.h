@@ -151,6 +151,7 @@ private:
   void setModelDebugPanelVisible(bool visible);
 
   void loadAudioFile(const juce::File &file);
+  void loadNextPendingFile();
   void openProjectFile(const juce::File &file);
   void analyzeAudio();
   void analyzeAudio(
@@ -222,6 +223,9 @@ private:
 
   // Async load state
   std::atomic<bool> isLoadingAudio{false};
+
+  // Batch import queue
+  std::vector<juce::File> pendingAudioFiles;
   std::atomic<double> loadingProgress{0.0};
   juce::CriticalSection loadingMessageLock;
   juce::String loadingMessage;
