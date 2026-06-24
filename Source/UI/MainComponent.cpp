@@ -1112,11 +1112,11 @@ void MainComponent::clearProject() {
   tracks.clear();
   editorController->setActiveTrack(-1);
 
-  // Create a default empty project for the piano roll
-  auto emptyProject = std::make_unique<Project>();
-  pianoRoll.setProject(emptyProject.get());
-  pianoRollView.setProject(emptyProject.get());
-  parameterPanel.setProject(emptyProject.get());
+  // Clear piano roll and panels (nullptr = no project)
+  pianoRoll.setProject(nullptr);
+  pianoRollView.setProject(nullptr);
+  parameterPanel.setProject(nullptr);
+  pianoRoll.setEnabled(false);
 
   // Update UI
   toolbar.setTotalTime(0.0);
