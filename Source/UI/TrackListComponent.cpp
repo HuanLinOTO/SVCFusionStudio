@@ -254,7 +254,6 @@ TrackListComponent::TrackListComponent()
 {
     viewport.setViewedComponent(&contentContainer, false);
     viewport.setScrollBarsShown(true, false);
-    viewport.setScrollOnDragEnabled(false);
     addAndMakeVisible(viewport);
 }
 
@@ -309,5 +308,10 @@ void TrackListComponent::resized()
         item->setBounds(0, y, w, laneHeight);
         y += laneHeight;
     }
-    contentContainer.setSize(w, juce::jmax(y, viewport.getHeight()));
+    contentContainer.setSize(w, juce::jmax(y, viewport.getMaximumVisibleHeight()));
+}
+
+void TrackListComponent::mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel)
+{
+    viewport.mouseWheelMove(e.getEventRelativeTo(&viewport), wheel);
 }
