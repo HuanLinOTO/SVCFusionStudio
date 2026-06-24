@@ -23,6 +23,16 @@ public:
     void setRainbowWaveform(bool enabled) { rainbowWaveform = enabled; repaint(); }
     void setColormapIndex(int idx) { colormapIndex = idx; repaint(); }
 
+    // Per-track progress: trackIndex=-1 means pending track shown at bottom
+    struct TrackProgress {
+        bool active = false;
+        int step = 0;
+        int totalSteps = 0;
+        juce::String message;
+        double subProgress = -1.0; // -1 = indeterminate, 0-1 = chunk progress
+    };
+    void setTrackProgress(int trackIndex, const TrackProgress& progress);
+
     std::function<void(int trackIndex)> onTrackSelected;
     std::function<void(int trackIndex, TrackType newType)> onTrackTypeChanged;
     std::function<void(int trackIndex)> onTrackDeleted;
@@ -67,6 +77,8 @@ private:
         juce::TextButton deleteButton;
         juce::ComboBox typeCombo;
         juce::Slider volumeSlider;
+
+        TrackProgress progress;
     };
 
     void computeTotalDuration();
@@ -81,4 +93,5 @@ private:
     double totalDuration = 0.0;
     bool rainbowWaveform = false;
     int colormapIndex = 0;
+    TrackProgress pendingProgress; // for trackIndex=-1 (loading)
 };

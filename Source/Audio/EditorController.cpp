@@ -1358,6 +1358,13 @@ void EditorController::loadAudioFileAsTrack(
         onProgress(p, msg);
     };
 
+    constexpr int kLoadSteps = 4;
+    auto reportLoadStep = [&](int step, const juce::String& msg, double subProgress = -1.0) {
+      if (trackProgressCallback)
+        trackProgressCallback(-1, step, kLoadSteps, msg, subProgress);
+    };
+
+    reportLoadStep(1, "Loading audio");
     updateProgress(0.05, TR("progress.loading_audio"));
 
     juce::AudioFormatManager formatManager;
@@ -1382,6 +1389,7 @@ void EditorController::loadAudioFileAsTrack(
     juce::AudioBuffer<float> buffer(1, numSamples);
 
     updateProgress(0.10, "Reading audio...");
+    reportLoadStep(2, "Reading audio");
     if (reader->numChannels == 1) {
       reader->read(&buffer, 0, numSamples, 0, true, false);
     } else {
@@ -1405,6 +1413,7 @@ void EditorController::loadAudioFileAsTrack(
 
     if (srcSampleRate != SAMPLE_RATE) {
       updateProgress(0.18, "Resampling...");
+      reportLoadStep(3, "Resampling");
       const double ratio = static_cast<double>(srcSampleRate) / SAMPLE_RATE;
       const int newNumSamples = static_cast<int>(numSamples / ratio);
 
@@ -1428,6 +1437,7 @@ void EditorController::loadAudioFileAsTrack(
     }
 
     updateProgress(0.80, "Preparing track...");
+    reportLoadStep(4, "Finalizing");
     auto newProject = std::make_unique<Project>();
     newProject->setFilePath(file);
     newProject->setAudioSha256(shaFuture.get());
@@ -1530,10 +1540,10 @@ void EditorController::convertTrackToVocal(
       });
   };
 
-  std::thread([this, projectPtr, updateProgress, completeOnVocal]() {
+  std::thread([this, projectPtr, updateProgress, completeOnVocal, trackIndex]() {
     analyzeAudio(*projectPtr, updateProgress, [completeOnVocal]() {
       completeOnVocal(true);
-    });
+    }, trackIndex);
   }).detach();
 }
 
@@ -1858,7 +1868,8 @@ void EditorController::resynthesizeIncrementalAsync(
 void EditorController::analyzeAudio(
     Project &targetProject,
     const std::function<void(double, const juce::String &)> &onProgress,
-    std::function<void()> onComplete) {
+    std::function<void()> onComplete,
+    int trackIndexForProgress) {
   if (modelReloadThread.joinable()) {
     modelReloadThread.join();
     isReloadingModels = false;
@@ -1867,6 +1878,12 @@ void EditorController::analyzeAudio(
   auto &audioData = targetProject.getAudioData();
   if (audioData.waveform.getNumSamples() == 0)
     return;
+
+  constexpr int kTotalSteps = 6;
+  auto reportStep = [&](int step, const juce::String& msg, double subProgress = -1.0) {
+    if (trackProgressCallback && trackIndexForProgress >= 0)
+      trackProgressCallback(trackIndexForProgress, step, kTotalSteps, msg, subProgress);
+  };
 
   if (isAnalyzingAudio.exchange(true)) {
     LOG("EditorController::analyzeAudio skipped: analysis already running");
@@ -2004,18 +2021,19 @@ void EditorController::analyzeAudio(
     return result;
   };
 
-  auto runGameDetection = [this, samples, numSamples]() {
+  auto runGameDetection = [this, samples, numSamples](std::function<void(double)> progress) {
     GameSegmentationResult result;
     result.attempted = true;
     if (!gameDetector || !gameDetector->isLoaded())
       return result;
     result.notes = gameDetector->detectNotesWithProgress(
-        samples, numSamples, GAMEDetector::SAMPLE_RATE, nullptr);
+        samples, numSamples, GAMEDetector::SAMPLE_RATE, progress ? std::function<void(double)>(progress) : std::function<void(double)>{});
     result.chunks = gameDetector->getLastChunkRanges();
     return result;
   };
 
   onProgress(0.35, "Computing mel spectrogram...");
+  reportStep(1, "Mel spectrogram");
   LOG("analyzeAudio: starting mel spectrogram");
   auto melFuture = std::async(std::launch::async, [samples, numSamples, sampleRate]() {
     MelSpectrogram melComputer(sampleRate, N_FFT, HOP_SIZE, NUM_MELS, FMIN, FMAX);
@@ -2023,6 +2041,7 @@ void EditorController::analyzeAudio(
   });
 
   onProgress(0.55, "Extracting pitch (F0)...");
+  reportStep(2, "Pitch extraction (F0)");
   LOG("analyzeAudio: starting F0 extraction");
   std::future<std::vector<float>> f0Future;
   std::vector<float> extractedF0;
@@ -2073,7 +2092,8 @@ void EditorController::analyzeAudio(
 
   std::future<GameSegmentationResult> gameFuture;
   if (allowConcurrentModelInference && gameDetector && gameDetector->isLoaded())
-    gameFuture = std::async(std::launch::async, runGameDetection);
+    gameFuture = std::async(std::launch::async, runGameDetection,
+                            std::function<void(double)>{});
 
   audioData.melSpectrogram = melFuture.get();
   int targetFrames = static_cast<int>(audioData.melSpectrogram.size());
@@ -2137,6 +2157,7 @@ void EditorController::analyzeAudio(
     audioData.vadMask.resize(audioData.f0.size(), false);
 
     onProgress(0.65, "Smoothing pitch curve...");
+    reportStep(3, "Smoothing pitch");
     audioData.f0 = F0Smoother::smoothF0(audioData.f0, audioData.voicedMask);
     audioData.f0 = PitchCurveProcessor::interpolateWithUvMask(
         audioData.f0, audioData.voicedMask);
@@ -2176,12 +2197,13 @@ void EditorController::analyzeAudio(
 
   if (hnsepModel && hnsepModel->isLoaded() && numSamples > 0) {
     onProgress(0.70, "Separating harmonic/noise...");
+    reportStep(4, "HNSep separation", 0.0);
     if (hnsepFuture.valid()) {
       applyHNSepResult(hnsepFuture.get());
     } else {
-      applyHNSepResult(runHNSep([&onProgress](double progress) {
-        onProgress(0.70 + progress * 0.05,
-                   "Separating harmonic/noise...");
+      applyHNSepResult(runHNSep([&onProgress, &reportStep](double progress) {
+        onProgress(0.70 + progress * 0.05, "Separating harmonic/noise...");
+        reportStep(4, "HNSep separation", progress);
       }));
     }
   } else if (hnsepModel && !hnsepModel->isLoaded()) {
@@ -2195,6 +2217,7 @@ void EditorController::analyzeAudio(
   }
 
   onProgress(0.75, TR("progress.loading_vocoder"));
+  reportStep(5, "Loading vocoder");
   if (!voc) {
     juce::MessageManager::callAsync([]() {
       juce::AlertWindow::showMessageBoxAsync(
@@ -2236,10 +2259,17 @@ void EditorController::analyzeAudio(
   }
 
   onProgress(0.90, "Segmenting notes...");
+  reportStep(6, "Note segmentation", 0.0);
   GameSegmentationResult gameResult;
   const GameSegmentationResult *gameResultPtr = nullptr;
   if (gameFuture.valid()) {
     gameResult = gameFuture.get();
+    gameResultPtr = &gameResult;
+  } else if (gameDetector && gameDetector->isLoaded()) {
+    auto gameProgress = [&reportStep](double p) {
+      reportStep(6, "Note segmentation", p);
+    };
+    gameResult = runGameDetection(gameProgress);
     gameResultPtr = &gameResult;
   }
   segmentIntoNotesInternal(targetProject, nullptr, gameResultPtr);

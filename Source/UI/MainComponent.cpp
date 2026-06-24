@@ -454,11 +454,28 @@ MainComponent::MainComponent(bool enableAudioDevice)
     editorController->setBackgroundStatusCallback(
         [this](const juce::String &message, bool active) {
           if (active) {
-            toolbar.showProgress(message);
-            toolbar.setProgress(-1.0f);
+            // Don't show in toolbar anymore — track progress is shown on tracks
           } else if (!isLoadingAudio.load()) {
             toolbar.hideProgress();
           }
+        });
+
+    // Per-track structured progress callback
+    editorController->setTrackProgressCallback(
+        [this](int trackIndex, int step, int totalSteps,
+               const juce::String &message, double subProgress) {
+          juce::Component::SafePointer<MainComponent> safeThis(this);
+          juce::MessageManager::callAsync([safeThis, trackIndex, step, totalSteps,
+                                           message, subProgress]() {
+            if (safeThis == nullptr) return;
+            TrackListComponent::TrackProgress tp;
+            tp.active = true;
+            tp.step = step;
+            tp.totalSteps = totalSteps;
+            tp.message = message;
+            tp.subProgress = subProgress;
+            safeThis->trackList.setTrackProgress(trackIndex, tp);
+          });
         });
   }
 
@@ -1561,6 +1578,11 @@ void MainComponent::openProjectFile(const juce::File &file) {
           safeThis->isLoadingAudio = false;
           safeThis->toolbar.hideProgress();
 
+          // Clear pending track progress
+          TrackListComponent::TrackProgress noProgress;
+          noProgress.active = false;
+          safeThis->trackList.setTrackProgress(-1, noProgress);
+
           if (safeThis->isPluginMode())
             safeThis->notifyProjectDataChanged();
         });
@@ -1598,8 +1620,7 @@ void MainComponent::loadAudioFile(const juce::File &file) {
     const juce::ScopedLock sl(loadingMessageLock);
     loadingMessage = TR("progress.loading_audio");
   }
-  toolbar.showProgress(TR("progress.loading_audio"));
-  toolbar.setProgress(0.0f);
+  // Progress is now shown on the track list, not the toolbar
 
   juce::Component::SafePointer<MainComponent> safeThis(this);
   if (!editorController) {
@@ -1817,22 +1838,22 @@ void MainComponent::onTrackTypeChanged(int trackIndex, TrackType newType) {
   if (!track) return;
 
   if (newType == TrackType::Vocal && track->isAccompaniment()) {
-    // Accompaniment -> Vocal: run analysis (no confirmation dialog needed,
-    // user explicitly chose this from the dropdown)
+    // Accompaniment -> Vocal: run analysis (progress shown on track)
     juce::Component::SafePointer<MainComponent> safeThis(this);
-    toolbar.showProgress(TR("progress.analyzing_audio"));
-    toolbar.setProgress(-1.0f);
 
     editorController->convertTrackToVocal(
         trackIndex,
-        [safeThis](double p, const juce::String& msg) {
-          if (safeThis == nullptr) return;
-          safeThis->toolbar.setProgress(static_cast<float>(p));
-          safeThis->toolbar.showProgress(msg);
+        [safeThis, trackIndex](double p, const juce::String& msg) {
+          // Progress is now reported via trackProgressCallback, not toolbar
         },
         [safeThis, trackIndex](int completedTrackIndex, bool success) {
           if (safeThis == nullptr) return;
           safeThis->toolbar.hideProgress();
+
+          // Clear track progress
+          TrackListComponent::TrackProgress noProgress;
+          noProgress.active = false;
+          safeThis->trackList.setTrackProgress(trackIndex, noProgress);
 
           if (success) {
             safeThis->setActiveTrack(trackIndex);

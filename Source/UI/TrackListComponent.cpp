@@ -248,6 +248,55 @@ void TrackListComponent::TrackItem::paint(juce::Graphics& g)
         g.setColour(juce::Colour(0xffe05848).withAlpha(0.12f));
         g.fillAll();
     }
+
+    // Progress overlay
+    if (progress.active) {
+        int wfLeft = hw;
+        int wfWidth = getWidth() - hw;
+
+        // Dim the waveform area
+        g.setColour(juce::Colour(0xff000000).withAlpha(0.5f));
+        g.fillRect(wfLeft, 0, wfWidth, getHeight());
+
+        // Step text: "2/6 Mel spectrogram"
+        juce::String stepText = juce::String(progress.step) + "/" + juce::String(progress.totalSteps) + " " + progress.message;
+        g.setColour(juce::Colours::white);
+        g.setFont(AppFont::getFont(12.0f));
+        g.drawText(stepText, wfLeft + 8, 4, wfWidth - 16, 16,
+                   juce::Justification::left);
+
+        // Main progress bar (step level)
+        int barY = 24;
+        int barH = 6;
+        int barW = wfWidth - 16;
+        int barX = wfLeft + 8;
+
+        float stepRatio = (progress.totalSteps > 0)
+            ? static_cast<float>(progress.step - 1) / progress.totalSteps
+            : 0.0f;
+        float subRatio = (progress.subProgress >= 0.0f)
+            ? static_cast<float>(progress.subProgress)
+            : 0.0f;
+        float totalRatio = stepRatio + subRatio / progress.totalSteps;
+
+        // Bar background
+        g.setColour(juce::Colour(0xff333344));
+        g.fillRect(barX, barY, barW, barH);
+
+        // Bar fill
+        g.setColour(juce::Colour(0xff4fc3f7));
+        g.fillRect(barX, barY, static_cast<int>(barW * totalRatio), barH);
+
+        // Sub-progress bar (chunk level) — only if subProgress >= 0
+        if (progress.subProgress >= 0.0f) {
+            int subBarY = barY + barH + 2;
+            int subBarH = 3;
+            g.setColour(juce::Colour(0xff2a3a4a));
+            g.fillRect(barX, subBarY, barW, subBarH);
+            g.setColour(juce::Colour(0xff88ccff));
+            g.fillRect(barX, subBarY, static_cast<int>(barW * subRatio), subBarH);
+        }
+    }
 }
 
 void TrackListComponent::TrackItem::resized()
@@ -364,16 +413,102 @@ void TrackListComponent::setPlayheadPosition(double timeSeconds)
     }
 }
 
+void TrackListComponent::setTrackProgress(int trackIndex, const TrackProgress& progress)
+{
+    if (trackIndex < 0) {
+        // Pending track (loading)
+        pendingProgress = progress;
+    } else {
+        pendingProgress.active = false;
+        if (trackIndex >= 0 && trackIndex < static_cast<int>(items.size())) {
+            items[static_cast<size_t>(trackIndex)]->progress = progress;
+            items[static_cast<size_t>(trackIndex)]->repaint();
+        }
+    }
+
+    // Ensure the pending progress item is visible / hidden
+    resized();
+    if (pendingProgress.active)
+        contentContainer.repaint();
+    else
+        repaint();
+}
+
 void TrackListComponent::paint(juce::Graphics& g)
 {
     g.setColour(APP_COLOR_BACKGROUND);
     g.fillAll();
 
-    if (items.empty()) {
+    if (items.empty() && !pendingProgress.active) {
         g.setColour(APP_COLOR_TEXT_MUTED);
         g.setFont(AppFont::getFont(14.0f));
         g.drawText(TR("tracks.empty"),
                    getLocalBounds(), juce::Justification::centred);
+    }
+
+    // Draw pending track progress (for audio being loaded, track not yet created)
+    if (pendingProgress.active) {
+        int y = static_cast<int>(items.size()) * laneHeight;
+        int w = viewport.getWidth();
+        auto bounds = juce::Rectangle<int>(0, y, w, laneHeight);
+
+        g.setColour(APP_COLOR_SURFACE);
+        g.fillRect(bounds);
+
+        g.setColour(APP_COLOR_BORDER_SUBTLE);
+        g.drawHorizontalLine(static_cast<float>(bounds.getBottom() - 0.5f),
+                             static_cast<float>(bounds.getX()),
+                             static_cast<float>(bounds.getRight()));
+
+        int hw = headerWidth;
+        int wfLeft = hw;
+        int wfWidth = w - hw;
+
+        // "Loading..." label in header area
+        g.setColour(APP_COLOR_TEXT_PRIMARY);
+        g.setFont(AppFont::getFont(14.0f));
+        g.drawText(TR("progress.loading"),
+                   12, y + 4, hw - 40, 20, juce::Justification::left);
+
+        // Dim waveform area
+        g.setColour(juce::Colour(0xff000000).withAlpha(0.5f));
+        g.fillRect(wfLeft, y, wfWidth, laneHeight);
+
+        // Step text
+        juce::String stepText = juce::String(pendingProgress.step) + "/" +
+            juce::String(pendingProgress.totalSteps) + " " + pendingProgress.message;
+        g.setColour(juce::Colours::white);
+        g.setFont(AppFont::getFont(12.0f));
+        g.drawText(stepText, wfLeft + 8, y + 4, wfWidth - 16, 16,
+                   juce::Justification::left);
+
+        // Progress bar
+        int barY = y + 24;
+        int barH = 6;
+        int barW = wfWidth - 16;
+        int barX = wfLeft + 8;
+
+        float stepRatio = (pendingProgress.totalSteps > 0)
+            ? static_cast<float>(pendingProgress.step - 1) / pendingProgress.totalSteps
+            : 0.0f;
+        float subRatio = (pendingProgress.subProgress >= 0.0f)
+            ? static_cast<float>(pendingProgress.subProgress)
+            : 0.0f;
+        float totalRatio = stepRatio + subRatio / pendingProgress.totalSteps;
+
+        g.setColour(juce::Colour(0xff333344));
+        g.fillRect(barX, barY, barW, barH);
+        g.setColour(juce::Colour(0xff4fc3f7));
+        g.fillRect(barX, barY, static_cast<int>(barW * totalRatio), barH);
+
+        if (pendingProgress.subProgress >= 0.0f) {
+            int subBarY = barY + barH + 2;
+            int subBarH = 3;
+            g.setColour(juce::Colour(0xff2a3a4a));
+            g.fillRect(barX, subBarY, barW, subBarH);
+            g.setColour(juce::Colour(0xff88ccff));
+            g.fillRect(barX, subBarY, static_cast<int>(barW * subRatio), subBarH);
+        }
     }
 }
 
@@ -387,5 +522,8 @@ void TrackListComponent::resized()
         item->setBounds(0, y, w, laneHeight);
         y += laneHeight;
     }
+    // Reserve space for pending track progress
+    if (pendingProgress.active)
+        y += laneHeight;
     contentContainer.setSize(w, juce::jmax(y, viewport.getMaximumVisibleHeight()));
 }

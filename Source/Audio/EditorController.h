@@ -83,6 +83,15 @@ public:
     backgroundStatusCallback = std::move(callback);
   }
 
+  // Per-track structured progress: (trackIndex, step, totalSteps, message, subProgress)
+  // trackIndex = -1 means a pending track being loaded (not yet created)
+  // subProgress = -1.0 for indeterminate, 0.0-1.0 for chunk-level progress
+  using TrackProgressCallback =
+      std::function<void(int, int, int, const juce::String &, double)>;
+  void setTrackProgressCallback(TrackProgressCallback cb) {
+    trackProgressCallback = std::move(cb);
+  }
+
   using ProgressCallback =
       std::function<void(double, const juce::String &)>;
   using LoadCompleteCallback =
@@ -114,7 +123,8 @@ public:
   void analyzeAudio(Project &targetProject,
                     const std::function<void(double, const juce::String &)>
                         &onProgress,
-                    std::function<void()> onComplete = nullptr);
+                    std::function<void()> onComplete = nullptr,
+                    int trackIndexForProgress = -1);
 
   void segmentIntoNotes(Project &targetProject,
                         std::function<void()> onStreamingUpdate = nullptr);
@@ -223,6 +233,7 @@ private:
   juce::File lastSVCModelPath;
   bool lastSVCModelWasDirectory = false;
   std::function<void(const juce::String &, bool)> backgroundStatusCallback;
+  TrackProgressCallback trackProgressCallback;
 
   juce::File fcpeModelPath;
   juce::File melFilterbankPath;
