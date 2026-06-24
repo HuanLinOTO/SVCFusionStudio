@@ -878,6 +878,10 @@ MainComponent::MainComponent(bool enableAudioDevice)
   LOG("MainComponent: starting timer...");
   // Start timer for UI updates
   startTimerHz(30);
+
+  // Enable tooltips for all components
+  tooltipWindow = std::make_unique<juce::TooltipWindow>(this, 500);
+
   LOG("MainComponent: constructor complete");
 }
 
