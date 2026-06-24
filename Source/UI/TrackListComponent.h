@@ -67,7 +67,7 @@ private:
     juce::Component contentContainer;
     std::vector<std::unique_ptr<TrackItem>> items;
     int headerWidth = 200;
-    int laneHeight = 72;
+    int laneHeight = 80;
     double playheadPosition = 0.0;
     double totalDuration = 0.0;
 };

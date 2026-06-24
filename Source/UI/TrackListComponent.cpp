@@ -38,9 +38,15 @@ TrackListComponent::TrackItem::TrackItem(TrackListComponent& o, int idx)
     typeCombo.setSelectedId(1, juce::dontSendNotification);
 
     volumeSlider.setSliderStyle(juce::Slider::LinearHorizontal);
-    volumeSlider.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
+    volumeSlider.setTextBoxStyle(juce::Slider::TextBoxRight, false, 36, 16);
     volumeSlider.setRange(-24.0, 6.0, 0.1);
     volumeSlider.setValue(0.0);
+    volumeSlider.setColour(juce::Slider::textBoxTextColourId, APP_COLOR_TEXT_PRIMARY);
+    volumeSlider.setColour(juce::Slider::textBoxBackgroundColourId, APP_COLOR_SURFACE);
+    volumeSlider.setColour(juce::Slider::textBoxOutlineColourId, APP_COLOR_BORDER_SUBTLE);
+    volumeSlider.setColour(juce::Slider::thumbColourId, juce::Colour(0xff6ab0ff));
+    volumeSlider.setColour(juce::Slider::trackColourId, juce::Colour(0xff3a4a6a));
+    volumeSlider.setColour(juce::Slider::backgroundColourId, juce::Colour(0xff2a2a2a));
 
     addAndMakeVisible(muteButton);
     addAndMakeVisible(soloButton);
@@ -162,6 +168,12 @@ void TrackListComponent::TrackItem::paint(juce::Graphics& g)
                    juce::Justification::left);
     }
 
+    // Volume label
+    g.setColour(APP_COLOR_TEXT_MUTED);
+    g.setFont(AppFont::getFont(10.0f));
+    g.drawText("Vol", leftPad, bounds.getY() + 56, 20, 12,
+               juce::Justification::left);
+
     // ── Right: Waveform area (fit-to-width, independent of piano roll zoom) ──
     int wfLeft = hw;
     int wfWidth = getWidth() - hw;
@@ -218,8 +230,8 @@ void TrackListComponent::TrackItem::resized()
     muteButton.setBounds(12 + 70 + 4, btnY, btnW, btnH);
     soloButton.setBounds(12 + 70 + 4 + btnW + 4, btnY, btnW, btnH);
 
-    // Row 3: volume slider (y=54, h=14)
-    volumeSlider.setBounds(12, 54, hw - 24, 14);
+    // Row 3: volume slider (y=54, h=20)
+    volumeSlider.setBounds(12, 54, hw - 24, 20);
 }
 
 void TrackListComponent::TrackItem::mouseDown(const juce::MouseEvent& e)
