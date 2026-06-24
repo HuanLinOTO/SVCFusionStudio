@@ -20,7 +20,6 @@ public:
     void resized() override;
 
     void setPlayheadPosition(double timeSeconds, double totalDurationSeconds);
-    void setViewTransform(double scrollXSeconds, double pixelsPerSecond);
 
     std::function<void(int trackIndex)> onTrackSelected;
     std::function<void(int trackIndex, TrackType newType)> onTrackTypeChanged;
@@ -67,6 +66,4 @@ private:
     int laneHeight = 72;
     double playheadPosition = 0.0;
     double totalDuration = 0.0;
-    double viewScrollXSeconds = 0.0;
-    double viewPixelsPerSecond = 100.0;
 };
