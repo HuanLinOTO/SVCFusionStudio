@@ -13,6 +13,28 @@ Project::Project()
 {
 }
 
+std::unique_ptr<Project> Project::clone() const
+{
+    auto copy = std::make_unique<Project>();
+    copy->name = name;
+    copy->filePath = filePath;
+    copy->projectFilePath = projectFilePath;
+    copy->audioSha256 = audioSha256;
+    copy->audioData = audioData;
+    copy->notes = notes;
+    copy->globalPitchOffset = globalPitchOffset;
+    copy->pitchOffsetBeforeSVC = pitchOffsetBeforeSVC;
+    copy->formantShift = formantShift;
+    copy->volume = volume;
+    copy->f0DirtyStart = f0DirtyStart;
+    copy->f0DirtyEnd = f0DirtyEnd;
+    copy->svcConditioningDirtyStart = svcConditioningDirtyStart;
+    copy->svcConditioningDirtyEnd = svcConditioningDirtyEnd;
+    copy->modified = modified;
+    copy->loopRange = loopRange;
+    return copy;
+}
+
 Note* Project::getNoteAtFrame(int frame)
 {
     for (auto& note : notes)

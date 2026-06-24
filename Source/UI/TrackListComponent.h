@@ -36,6 +36,7 @@ public:
     std::function<void(int trackIndex)> onTrackSelected;
     std::function<void(int trackIndex, TrackType newType)> onTrackTypeChanged;
     std::function<void(int trackIndex)> onTrackDeleted;
+    std::function<void(int trackIndex)> onTrackCopied;
     std::function<void()> onTracksChanged;
     std::function<void(double timeSeconds)> onSeek;
 
@@ -56,6 +57,7 @@ private:
         void resized() override;
         void mouseDown(const juce::MouseEvent& e) override;
         void mouseDrag(const juce::MouseEvent& e) override;
+        void mouseUp(const juce::MouseEvent& e) override;
         juce::String getTooltip() override { return trackName; }
 
         void updateFromTrack();
@@ -74,7 +76,6 @@ private:
 
         juce::TextButton muteButton;
         juce::TextButton soloButton;
-        juce::TextButton deleteButton;
         juce::ComboBox typeCombo;
         juce::Slider volumeSlider;
 

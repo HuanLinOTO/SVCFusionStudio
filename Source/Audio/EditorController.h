@@ -155,6 +155,9 @@ public:
   /** Remove a track from the session. */
   void removeTrack(int trackIndex);
 
+  /** Duplicate a track (deep copy of project). */
+  void duplicateTrack(int trackIndex);
+
   /** Notify audio engine that track waveforms/flags changed. */
   void refreshAudioEngine(bool preservePosition = false);
 

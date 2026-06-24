@@ -165,6 +165,7 @@ private:
   void onTrackTypeChanged(int trackIndex, TrackType newType);
   void onTrackSelected(int trackIndex);
   void onTrackDeleted(int trackIndex);
+  void onTrackCopied(int trackIndex);
   void onTrackSeek(double timeSeconds);
   void setActiveTrack(int trackIndex);
   void refreshTrackList();

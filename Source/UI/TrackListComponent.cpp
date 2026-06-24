@@ -20,8 +20,7 @@ static juce::Colour colormapFor(int idx, float v) {
 
 TrackListComponent::TrackItem::TrackItem(TrackListComponent& o, int idx)
     : owner(o), trackIndex(idx),
-      muteButton("M"), soloButton("S"),
-      deleteButton("x")
+      muteButton("M"), soloButton("S")
 {
     muteButton.setClickingTogglesState(true);
     muteButton.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff3a3a3a));
@@ -36,12 +35,6 @@ TrackListComponent::TrackItem::TrackItem(TrackListComponent& o, int idx)
     soloButton.setColour(juce::TextButton::textColourOnId, juce::Colours::white);
     soloButton.setColour(juce::TextButton::textColourOffId, APP_COLOR_TEXT_MUTED);
     soloButton.setTooltip(TR("track.solo"));
-
-    deleteButton.setColour(juce::TextButton::buttonColourId, APP_COLOR_SURFACE);
-    deleteButton.setColour(juce::TextButton::buttonOnColourId, juce::Colour(0xffe05848));
-    deleteButton.setColour(juce::TextButton::textColourOnId, juce::Colours::white);
-    deleteButton.setColour(juce::TextButton::textColourOffId, APP_COLOR_TEXT_MUTED);
-    deleteButton.setTooltip("Delete track");
 
     typeCombo.addItem(TR("track.accompaniment"), 1);
     typeCombo.addItem(TR("track.vocal"), 2);
@@ -60,7 +53,6 @@ TrackListComponent::TrackItem::TrackItem(TrackListComponent& o, int idx)
 
     addAndMakeVisible(muteButton);
     addAndMakeVisible(soloButton);
-    addAndMakeVisible(deleteButton);
     addAndMakeVisible(typeCombo);
     addAndMakeVisible(volumeSlider);
 
@@ -90,11 +82,6 @@ TrackListComponent::TrackItem::TrackItem(TrackListComponent& o, int idx)
         TrackType newType = (typeCombo.getSelectedId() == 2) ? TrackType::Vocal : TrackType::Accompaniment;
         if (newType != trackType && owner.onTrackTypeChanged)
             owner.onTrackTypeChanged(trackIndex, newType);
-    };
-
-    deleteButton.onClick = [this]() {
-        if (owner.onTrackDeleted)
-            owner.onTrackDeleted(trackIndex);
     };
 
     volumeSlider.onValueChange = [this]() {
@@ -302,7 +289,6 @@ void TrackListComponent::TrackItem::paint(juce::Graphics& g)
 void TrackListComponent::TrackItem::resized()
 {
     int hw = owner.headerWidth;
-    deleteButton.setBounds(hw - 28, 4, 20, 18);
     int btnW = 26;
     int btnH = 22;
     int btnY = 28;
@@ -316,6 +302,22 @@ void TrackListComponent::TrackItem::resized()
 void TrackListComponent::TrackItem::mouseDown(const juce::MouseEvent& e)
 {
     if (e.eventComponent == this) {
+        if (e.mods.isRightButtonDown()) {
+            // Right-click: show context menu
+            juce::PopupMenu menu;
+            menu.addItem(TR("track.copy"), [this]() {
+                if (owner.onTrackCopied)
+                    owner.onTrackCopied(trackIndex);
+            });
+            menu.addSeparator();
+            menu.addItem(TR("track.delete"), [this]() {
+                if (owner.onTrackDeleted)
+                    owner.onTrackDeleted(trackIndex);
+            });
+            menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this));
+            return;
+        }
+
         if (owner.onTrackSelected)
             owner.onTrackSelected(trackIndex);
         int hw = owner.headerWidth;
@@ -335,6 +337,11 @@ void TrackListComponent::TrackItem::mouseDrag(const juce::MouseEvent& e)
         ratio = juce::jlimit(0.0, 1.0, ratio);
         owner.onSeek(ratio * owner.totalDuration);
     }
+}
+
+void TrackListComponent::TrackItem::mouseUp(const juce::MouseEvent& e)
+{
+    // Intentionally empty — kept for future use
 }
 
 TrackListComponent::TrackListComponent()

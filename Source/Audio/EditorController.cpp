@@ -260,6 +260,32 @@ void EditorController::removeTrack(int trackIndex) {
   }
 }
 
+void EditorController::duplicateTrack(int trackIndex) {
+  if (trackIndex < 0 || trackIndex >= static_cast<int>(tracks.size()))
+    return;
+
+  auto* src = tracks[static_cast<size_t>(trackIndex)].get();
+  if (!src || !src->project) return;
+
+  auto newTrack = std::make_unique<Track>();
+  newTrack->type = src->type;
+  newTrack->name = src->name;
+  newTrack->mute = src->mute;
+  newTrack->solo = src->solo;
+  newTrack->project = src->project->clone();
+
+  int insertAt = trackIndex + 1;
+  tracks.insert(tracks.begin() + insertAt, std::move(newTrack));
+
+  if (audioEngine) {
+    std::vector<Track*> trackPtrs;
+    for (auto& t : tracks)
+      trackPtrs.push_back(t.get());
+    audioEngine->setTracks(trackPtrs);
+    audioEngine->rebuildMixedWaveform();
+  }
+}
+
 Vocoder *EditorController::ensureVocoder() {
   if (!vocoder) {
     LOG("EditorController: creating vocoder on demand");

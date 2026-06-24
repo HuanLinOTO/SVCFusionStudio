@@ -201,5 +201,8 @@
   "track.type": "類型",
   "tracks.empty": "暫無軌道，導入音訊以建立",
   "tracks.title": "軌道",
-  "track.readonly": "唯讀 — 轉換為人聲軌道以編輯"
+  "track.readonly": "唯讀 — 轉換為人聲軌道以編輯",
+  "track.delete": "刪除軌道",
+  "track.copy": "複製軌道",
+  "track.delete_confirm": "刪除此軌道？"
 }

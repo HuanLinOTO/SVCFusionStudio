@@ -96,6 +96,9 @@ class Project
 public:
     Project();
     ~Project() = default;
+
+    /** Deep copy of this project. */
+    std::unique_ptr<Project> clone() const;
     
     // File operations
     void setFilePath(const juce::File& file) { filePath = file; }

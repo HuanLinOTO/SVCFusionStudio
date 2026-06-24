@@ -542,6 +542,7 @@ MainComponent::MainComponent(bool enableAudioDevice)
   trackList.onTrackSelected = [this](int trackIndex) { onTrackSelected(trackIndex); };
   trackList.onTrackTypeChanged = [this](int trackIndex, TrackType newType) { onTrackTypeChanged(trackIndex, newType); };
   trackList.onTrackDeleted = [this](int trackIndex) { onTrackDeleted(trackIndex); };
+  trackList.onTrackCopied = [this](int trackIndex) { onTrackCopied(trackIndex); };
   trackList.onTracksChanged = [this]() { rebuildAudioEngine(); };
   trackList.onSeek = [this](double time) { seek(time); };
 
@@ -1903,6 +1904,15 @@ void MainComponent::onTrackDeleted(int trackIndex) {
     parameterPanel.setProject(nullptr);
   }
 
+  refreshTrackList();
+  rebuildAudioEngine();
+}
+
+void MainComponent::onTrackCopied(int trackIndex) {
+  if (!editorController) return;
+  if (trackIndex < 0 || trackIndex >= editorController->getTrackCount()) return;
+
+  editorController->duplicateTrack(trackIndex);
   refreshTrackList();
   rebuildAudioEngine();
 }

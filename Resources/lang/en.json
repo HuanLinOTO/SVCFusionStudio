@@ -201,5 +201,8 @@
   "track.type": "Type",
   "tracks.empty": "No tracks. Import audio to create a track.",
   "tracks.title": "Tracks",
-  "track.readonly": "Read-only — convert to vocal to edit"
+  "track.readonly": "Read-only — convert to vocal to edit",
+  "track.delete": "Delete Track",
+  "track.copy": "Duplicate Track",
+  "track.delete_confirm": "Delete this track?"
 }

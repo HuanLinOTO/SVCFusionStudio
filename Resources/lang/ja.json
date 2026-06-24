@@ -201,5 +201,8 @@
   "track.type": "種類",
   "tracks.empty": "トラックがありません。音声を読み込んで作成してください",
   "tracks.title": "トラック",
-  "track.readonly": "読み取り専用 — 編集するにはボーカルトラックに変換してください"
+  "track.readonly": "読み取り専用 — 編集するにはボーカルトラックに変換してください",
+  "track.delete": "トラックを削除",
+  "track.copy": "トラックを複製",
+  "track.delete_confirm": "このトラックを削除しますか？"
 }
