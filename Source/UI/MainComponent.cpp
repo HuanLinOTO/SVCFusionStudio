@@ -1015,16 +1015,7 @@ void MainComponent::timerCallback() {
     toolbar.setCurrentTime(position);
 
     // Update playhead in track overview
-    if (editorController) {
-      double dur = 0.0;
-      int count = editorController->getTrackCount();
-      for (int i = 0; i < count; ++i) {
-        auto* t = editorController->getTrack(i);
-        if (t && t->project)
-          dur = std::max(dur, static_cast<double>(t->project->getAudioData().getDuration()));
-      }
-      trackList.setPlayheadPosition(position, dur);
-    }
+    trackList.setPlayheadPosition(position);
 
     // Follow playback: scroll to keep cursor visible
     if (isPlaying && toolbar.isFollowPlayback()) {
@@ -1645,14 +1636,9 @@ void MainComponent::loadAudioFile(const juce::File &file) {
           if (track && track->getProject()) {
             double dur = track->getProject()->getAudioData().getDuration();
             safeThis->toolbar.setTotalTime(dur);
-            // Update track list totalDuration so seek works immediately
-            double maxDur = dur;
-            for (int i = 0; i < ec->getTrackCount(); ++i) {
-              auto* t = ec->getTrack(i);
-              if (t && t->getProject())
-                maxDur = std::max(maxDur, static_cast<double>(t->getProject()->getAudioData().getDuration()));
-            }
-            safeThis->trackList.setPlayheadPosition(0.0, maxDur);
+            // Refresh track list (updates peak caches + totalDuration)
+            safeThis->trackList.refresh();
+            safeThis->trackList.setPlayheadPosition(0.0);
           }
         }
 
@@ -2291,16 +2277,7 @@ void MainComponent::seek(double time) {
   toolbar.setCurrentTime(time);
 
   // Update track list playhead immediately
-  if (editorController) {
-    double dur = 0.0;
-    int count = editorController->getTrackCount();
-    for (int i = 0; i < count; ++i) {
-      auto* t = editorController->getTrack(i);
-      if (t && t->project)
-        dur = std::max(dur, static_cast<double>(t->project->getAudioData().getDuration()));
-    }
-    trackList.setPlayheadPosition(time, dur);
-  }
+  trackList.setPlayheadPosition(time);
 
   // Scroll view to make cursor visible
   float cursorX = static_cast<float>(time * pianoRoll.getPixelsPerSecond());

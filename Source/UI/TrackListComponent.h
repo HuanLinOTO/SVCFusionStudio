@@ -19,7 +19,7 @@ public:
     void paint(juce::Graphics& g) override;
     void resized() override;
 
-    void setPlayheadPosition(double timeSeconds, double totalDurationSeconds);
+    void setPlayheadPosition(double timeSeconds);
     void setRainbowWaveform(bool enabled) { rainbowWaveform = enabled; repaint(); }
     void setColormapIndex(int idx) { colormapIndex = idx; repaint(); }
 
@@ -34,6 +34,8 @@ public:
 
 private:
     EditorController* editorController = nullptr;
+
+    static constexpr int kPeakBuckets = 2048;
 
     struct TrackItem : public juce::Component, public juce::TooltipClient
     {
@@ -55,7 +57,10 @@ private:
         bool isActive = false;
         bool isMuted = false;
         bool isSoloed = false;
-        juce::AudioBuffer<float> waveformPreview;
+
+        // Pre-computed peak data: min/max abs amplitude per bucket
+        std::vector<float> peakMin;  // min abs value per bucket
+        std::vector<float> peakMax;  // max abs value per bucket
 
         juce::TextButton muteButton;
         juce::TextButton soloButton;
@@ -63,6 +68,9 @@ private:
         juce::ComboBox typeCombo;
         juce::Slider volumeSlider;
     };
+
+    void computeTotalDuration();
+    int lastPlayheadX = -1;
 
     juce::Viewport viewport;
     juce::Component contentContainer;

@@ -6,50 +6,17 @@ static juce::Colour getTypeColor(TrackType t) {
     return (t == TrackType::Vocal) ? juce::Colour(0xff6ab0ff) : juce::Colour(0xff88cc88);
 }
 
-// Colormaps: map volume [0,1] to a color. All use soft saturation/brightness.
-static juce::Colour colormapRainbow(float v) {
-    float hue = 0.7f - v * 0.7f;
-    return juce::Colour::fromHSV(hue, 0.45f, 0.8f, 0.85f);
-}
-
-static juce::Colour colormapOcean(float v) {
-    float hue = 0.55f + v * 0.12f;
-    float sat = 0.5f + v * 0.2f;
-    return juce::Colour::fromHSV(hue, sat, 0.55f + v * 0.35f, 0.85f);
-}
-
-static juce::Colour colormapFire(float v) {
-    float hue = 0.02f + v * 0.08f;
-    return juce::Colour::fromHSV(hue, 0.6f + v * 0.2f, 0.7f + v * 0.3f, 0.85f);
-}
-
-static juce::Colour colormapPastel(float v) {
-    float hue = 0.75f - v * 0.75f;
-    return juce::Colour::fromHSV(hue, 0.3f, 0.9f, 0.7f);
-}
-
-static juce::Colour colormapMagma(float v) {
-    float hue = 0.85f - v * 0.85f;
-    return juce::Colour::fromHSV(hue, 0.5f + v * 0.3f, 0.5f + v * 0.45f, 0.85f);
-}
-
-static juce::Colour colormapViridis(float v) {
-    float hue = 0.75f - v * 0.55f;
-    return juce::Colour::fromHSV(hue, 0.45f + v * 0.25f, 0.55f + v * 0.4f, 0.85f);
-}
-
 static juce::Colour colormapFor(int idx, float v) {
+    v = juce::jlimit(0.0f, 1.0f, v);
     switch (idx) {
-        case 1:  return colormapOcean(v);
-        case 2:  return colormapFire(v);
-        case 3:  return colormapPastel(v);
-        case 4:  return colormapMagma(v);
-        case 5:  return colormapViridis(v);
-        default: return colormapRainbow(v);
+        case 1: { float h = 0.55f + v * 0.12f; return juce::Colour::fromHSV(h, 0.5f + v * 0.2f, 0.55f + v * 0.35f, 0.85f); }
+        case 2: { float h = 0.02f + v * 0.08f; return juce::Colour::fromHSV(h, 0.6f + v * 0.2f, 0.7f + v * 0.3f, 0.85f); }
+        case 3: { float h = 0.75f - v * 0.75f; return juce::Colour::fromHSV(h, 0.3f, 0.9f, 0.7f); }
+        case 4: { float h = 0.85f - v * 0.85f; return juce::Colour::fromHSV(h, 0.5f + v * 0.3f, 0.5f + v * 0.45f, 0.85f); }
+        case 5: { float h = 0.75f - v * 0.55f; return juce::Colour::fromHSV(h, 0.45f + v * 0.25f, 0.55f + v * 0.4f, 0.85f); }
+        default: { float h = 0.7f - v * 0.7f; return juce::Colour::fromHSV(h, 0.45f, 0.8f, 0.85f); }
     }
 }
-
-// ── TrackItem ──
 
 TrackListComponent::TrackItem::TrackItem(TrackListComponent& o, int idx)
     : owner(o), trackIndex(idx),
@@ -97,7 +64,6 @@ TrackListComponent::TrackItem::TrackItem(TrackListComponent& o, int idx)
     addAndMakeVisible(typeCombo);
     addAndMakeVisible(volumeSlider);
 
-    // Let wheel events pass through to the viewport for scrolling
     setInterceptsMouseClicks(true, false);
 
     muteButton.onClick = [this]() {
@@ -162,10 +128,36 @@ void TrackListComponent::TrackItem::updateFromTrack()
     auto* proj = track->getProject();
     if (proj) {
         auto& audio = proj->getAudioData();
-        waveformPreview.makeCopyOf(audio.waveform);
+        const float* data = audio.waveform.getReadPointer(0);
+        int numSamples = audio.waveform.getNumSamples();
+
+        if (numSamples > 0) {
+            int buckets = juce::jmin(static_cast<int>(kPeakBuckets), numSamples);
+            peakMin.resize(buckets);
+            peakMax.resize(buckets);
+
+            int samplesPerBucket = numSamples / buckets;
+            if (samplesPerBucket < 1) samplesPerBucket = 1;
+
+            for (int b = 0; b < buckets; ++b) {
+                int start = b * samplesPerBucket;
+                int end = (b == buckets - 1) ? numSamples : start + samplesPerBucket;
+                float mx = 0.0f;
+                for (int i = start; i < end; ++i) {
+                    float v = std::abs(data[i]);
+                    if (v > mx) mx = v;
+                }
+                peakMax[b] = mx;
+                peakMin[b] = 0.0f;
+            }
+        } else {
+            peakMin.clear();
+            peakMax.clear();
+        }
         volumeSlider.setValue(track->getVolume(), juce::dontSendNotification);
     } else {
-        waveformPreview = {};
+        peakMin.clear();
+        peakMax.clear();
     }
 
     muteButton.setToggleState(isMuted, juce::dontSendNotification);
@@ -191,15 +183,12 @@ void TrackListComponent::TrackItem::paint(juce::Graphics& g)
         g.fillRect(bounds.getX(), bounds.getY(), 3.0f, bounds.getHeight());
     }
 
-    // ── Left: Header area ──
     int hw = owner.headerWidth;
     int leftPad = 12;
 
-    // Type dot
     g.setColour(getTypeColor(trackType));
     g.fillEllipse(static_cast<float>(leftPad), bounds.getY() + 8, 10.0f, 10.0f);
 
-    // Track name (truncated with ellipsis if too long)
     g.setColour(APP_COLOR_TEXT_PRIMARY);
     g.setFont(AppFont::getFont(14.0f));
     {
@@ -217,46 +206,34 @@ void TrackListComponent::TrackItem::paint(juce::Graphics& g)
                    juce::Justification::left);
     }
 
-    // Volume label (aligned with slider row)
     g.setColour(APP_COLOR_TEXT_MUTED);
     g.setFont(AppFont::getFont(11.0f));
     g.drawText("Vol", leftPad, bounds.getY() + 57, 20, 14,
                juce::Justification::left);
 
-    // ── Right: Waveform area (fit-to-width, independent of piano roll zoom) ──
     int wfLeft = hw;
     int wfWidth = getWidth() - hw;
     int wfHeight = getHeight() - 16;
     int wfY = 8;
 
-    if (waveformPreview.getNumSamples() > 0 && wfWidth > 10) {
-        const float* data = waveformPreview.getReadPointer(0);
-        int numSamples = waveformPreview.getNumSamples();
+    if (!peakMax.empty() && wfWidth > 10) {
+        int buckets = static_cast<int>(peakMax.size());
         float mid = wfY + wfHeight * 0.5f;
 
-        // Rainbow mode: color each column based on its volume level
         for (int x = 0; x < wfWidth; ++x) {
-            int startIdx = static_cast<int>((static_cast<float>(x) / wfWidth) * numSamples);
-            int endIdx = static_cast<int>((static_cast<float>(x + 1) / wfWidth) * numSamples);
-            if (endIdx <= startIdx) endIdx = startIdx + 1;
-            if (endIdx > numSamples) endIdx = numSamples;
-            float maxVal = 0.0f;
-            for (int i = startIdx; i < endIdx; ++i) {
-                float v = std::abs(data[i]);
-                if (v > maxVal) maxVal = v;
-            }
+            int b = (x * buckets) / wfWidth;
+            if (b >= buckets) b = buckets - 1;
+            float maxVal = peakMax[b];
             float h = maxVal * wfHeight * 0.5f;
 
             if (owner.rainbowWaveform) {
-                g.setColour(colormapFor(owner.colormapIndex,
-                                        juce::jlimit(0.0f, 1.0f, maxVal)));
+                g.setColour(colormapFor(owner.colormapIndex, maxVal));
             } else {
                 g.setColour(juce::Colour(0xff8a9bbf));
             }
             g.drawVerticalLine(wfLeft + x, mid - h, mid + h);
         }
 
-        // Playhead line (ratio-based, independent of piano roll zoom)
         double ratio = (owner.totalDuration > 0.0)
             ? (owner.playheadPosition / owner.totalDuration)
             : 0.0;
@@ -276,18 +253,13 @@ void TrackListComponent::TrackItem::paint(juce::Graphics& g)
 void TrackListComponent::TrackItem::resized()
 {
     int hw = owner.headerWidth;
-    // Row 1: name (y=4, h=20)
     deleteButton.setBounds(hw - 28, 4, 20, 18);
-
-    // Row 2: type combo + M/S buttons (y=28, h=22)
     int btnW = 26;
     int btnH = 22;
     int btnY = 28;
     typeCombo.setBounds(12, btnY, 70, btnH);
     muteButton.setBounds(12 + 70 + 4, btnY, btnW, btnH);
     soloButton.setBounds(12 + 70 + 4 + btnW + 4, btnY, btnW, btnH);
-
-    // Row 3: "Vol" label + volume slider (y=54, h=20)
     int volLabelW = 22;
     volumeSlider.setBounds(12 + volLabelW, 54, hw - 24 - volLabelW, 20);
 }
@@ -297,8 +269,6 @@ void TrackListComponent::TrackItem::mouseDown(const juce::MouseEvent& e)
     if (e.eventComponent == this) {
         if (owner.onTrackSelected)
             owner.onTrackSelected(trackIndex);
-
-        // Click in waveform area = seek (ratio-based)
         int hw = owner.headerWidth;
         if (e.x >= hw && owner.totalDuration > 0.0 && owner.onSeek) {
             double ratio = static_cast<double>(e.x - hw) / (getWidth() - hw);
@@ -318,8 +288,6 @@ void TrackListComponent::TrackItem::mouseDrag(const juce::MouseEvent& e)
     }
 }
 
-// ── TrackListComponent ──
-
 TrackListComponent::TrackListComponent()
 {
     viewport.setViewedComponent(&contentContainer, false);
@@ -329,30 +297,71 @@ TrackListComponent::TrackListComponent()
 
 TrackListComponent::~TrackListComponent() = default;
 
+void TrackListComponent::computeTotalDuration()
+{
+    totalDuration = 0.0;
+    if (!editorController) return;
+    int count = editorController->getTrackCount();
+    for (int i = 0; i < count; ++i) {
+        auto* t = editorController->getTrack(i);
+        if (t && t->project)
+            totalDuration = std::max(totalDuration,
+                static_cast<double>(t->project->getAudioData().getDuration()));
+    }
+}
+
 void TrackListComponent::refresh()
 {
-    items.clear();
-
-    if (!editorController) return;
+    if (!editorController) {
+        items.clear();
+        return;
+    }
 
     int count = editorController->getTrackCount();
-    items.reserve(static_cast<size_t>(count));
-    for (int i = 0; i < count; ++i) {
-        auto item = std::make_unique<TrackItem>(*this, i);
-        item->updateFromTrack();
+
+    // Incremental update: avoid destroying/recreating items unnecessarily
+    while (static_cast<int>(items.size()) < count) {
+        auto item = std::make_unique<TrackItem>(*this, static_cast<int>(items.size()));
         contentContainer.addAndMakeVisible(*item);
         items.push_back(std::move(item));
     }
+    while (static_cast<int>(items.size()) > count) {
+        items.pop_back();
+    }
 
+    for (int i = 0; i < count; ++i) {
+        items[static_cast<size_t>(i)]->trackIndex = i;
+        items[static_cast<size_t>(i)]->updateFromTrack();
+    }
+
+    computeTotalDuration();
     resized();
     repaint();
 }
 
-void TrackListComponent::setPlayheadPosition(double timeSeconds, double totalDurationSeconds)
+void TrackListComponent::setPlayheadPosition(double timeSeconds)
 {
     playheadPosition = timeSeconds;
-    totalDuration = totalDurationSeconds;
-    repaint();
+
+    // Repaint only the dirty playhead regions on each item
+    int wfWidth = viewport.getWidth() - headerWidth;
+    if (wfWidth <= 0) return;
+
+    int newPhX = (totalDuration > 0.0)
+        ? static_cast<int>((playheadPosition / totalDuration) * wfWidth)
+        : 0;
+
+    if (newPhX == lastPlayheadX) return;
+
+    int oldPhX = lastPlayheadX;
+    lastPlayheadX = newPhX;
+
+    for (auto& item : items) {
+        int wfLeft = headerWidth;
+        int minX = wfLeft + juce::jmin(oldPhX, newPhX) - 1;
+        int maxX = wfLeft + juce::jmax(oldPhX, newPhX) + 1;
+        item->repaint(juce::Rectangle<int>(minX, 0, maxX - minX, item->getHeight()));
+    }
 }
 
 void TrackListComponent::paint(juce::Graphics& g)
