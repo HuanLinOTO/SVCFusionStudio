@@ -305,6 +305,8 @@ void TrackListComponent::TrackItem::mouseDown(const juce::MouseEvent& e)
         if (e.mods.isRightButtonDown()) {
             // Right-click: show context menu
             juce::PopupMenu menu;
+            menu.addSectionHeader(trackName);
+            menu.addSeparator();
             menu.addItem(TR("track.copy"), [this]() {
                 if (owner.onTrackCopied)
                     owner.onTrackCopied(trackIndex);
