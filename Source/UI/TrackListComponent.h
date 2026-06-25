@@ -60,7 +60,7 @@ private:
     EditorController* editorController = nullptr;
 
     static constexpr int kPeakBuckets = 2048;
-    static constexpr int kHScrollBarHeight = 14;
+    static constexpr int kHScrollBarHeight = 8;
 
     struct TrackItem : public juce::Component, public juce::TooltipClient
     {
