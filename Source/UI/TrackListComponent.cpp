@@ -686,7 +686,8 @@ void TrackListComponent::updateScrollBarRange()
     // Clamp scroll position
     if (trackScrollSec > maxScroll) trackScrollSec = maxScroll;
 
-    hScrollBar.setRangeLimits(0.0, maxScroll, juce::dontSendNotification);
+    // Range limits = full content duration; thumb = visible portion
+    hScrollBar.setRangeLimits(0.0, totalDuration, juce::dontSendNotification);
     hScrollBar.setCurrentRange(trackScrollSec, visibleSecs, juce::dontSendNotification);
 }
 
