@@ -206,9 +206,15 @@ void TrackListComponent::TrackItem::paint(juce::Graphics& g)
     if (!peakMax.empty() && wfWidth > 10) {
         int buckets = static_cast<int>(peakMax.size());
         float mid = wfY + wfHeight * 0.5f;
+        float pps = owner.getEffectivePps();
+        double scrollSec = owner.trackScrollSec;
 
         for (int x = 0; x < wfWidth; ++x) {
-            int b = (x * buckets) / wfWidth;
+            double time = scrollSec + (static_cast<double>(x) / pps);
+            if (time < 0.0 || time > owner.totalDuration) continue;
+
+            int b = static_cast<int>((time / owner.totalDuration) * buckets);
+            if (b < 0) b = 0;
             if (b >= buckets) b = buckets - 1;
             float maxVal = peakMax[b];
             float h = maxVal * wfHeight * 0.5f;
@@ -221,13 +227,11 @@ void TrackListComponent::TrackItem::paint(juce::Graphics& g)
             g.drawVerticalLine(wfLeft + x, mid - h, mid + h);
         }
 
-        double ratio = (owner.totalDuration > 0.0)
-            ? (owner.playheadPosition / owner.totalDuration)
-            : 0.0;
-        if (ratio >= 0.0 && ratio <= 1.0) {
-            int phX = wfLeft + static_cast<int>(ratio * wfWidth);
+        // Playhead: pixel position based on zoom/scroll
+        float phX = wfLeft + owner.timeToPixel(owner.playheadPosition);
+        if (phX >= wfLeft && phX <= wfLeft + wfWidth) {
             g.setColour(juce::Colours::white.withAlpha(0.9f));
-            g.drawVerticalLine(phX, bounds.getY(), bounds.getBottom());
+            g.drawVerticalLine(static_cast<int>(phX), bounds.getY(), bounds.getBottom());
         }
     }
 
@@ -326,9 +330,9 @@ void TrackListComponent::TrackItem::mouseDown(const juce::MouseEvent& e)
             owner.onTrackSelected(trackIndex);
         int hw = owner.headerWidth;
         if (e.x >= hw && owner.totalDuration > 0.0 && owner.onSeek) {
-            double ratio = static_cast<double>(e.x - hw) / (getWidth() - hw);
-            ratio = juce::jlimit(0.0, 1.0, ratio);
-            owner.onSeek(ratio * owner.totalDuration);
+            double time = owner.pixelToTime(static_cast<float>(e.x - hw));
+            time = juce::jlimit(0.0, owner.totalDuration, time);
+            owner.onSeek(time);
         }
     }
 }
@@ -337,9 +341,9 @@ void TrackListComponent::TrackItem::mouseDrag(const juce::MouseEvent& e)
 {
     int hw = owner.headerWidth;
     if (e.x >= hw && owner.totalDuration > 0.0 && owner.onSeek) {
-        double ratio = static_cast<double>(e.x - hw) / (getWidth() - hw);
-        ratio = juce::jlimit(0.0, 1.0, ratio);
-        owner.onSeek(ratio * owner.totalDuration);
+        double time = owner.pixelToTime(static_cast<float>(e.x - hw));
+        time = juce::jlimit(0.0, owner.totalDuration, time);
+        owner.onSeek(time);
     }
 }
 
@@ -348,11 +352,86 @@ void TrackListComponent::TrackItem::mouseUp(const juce::MouseEvent& e)
     // Intentionally empty — kept for future use
 }
 
+void TrackListComponent::TrackItem::mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel)
+{
+    if (e.mods.isCommandDown() || e.mods.isCtrlDown()) {
+        // Ctrl/Cmd + wheel = zoom centered on mouse position
+        int hw = owner.headerWidth;
+        if (e.x < hw || owner.totalDuration <= 0.0) return;
+
+        float wfWidth = static_cast<float>(getWidth() - hw);
+        float oldPps = owner.getEffectivePps();
+        float mouseX = static_cast<float>(e.x - hw);
+
+        // Time at mouse position before zoom
+        double timeAtMouse = owner.pixelToTime(mouseX);
+
+        // Zoom factor
+        float zoomFactor = 1.0f + wheel.deltaY * 0.3f;
+        if (zoomFactor < 0.5f) zoomFactor = 0.5f;
+        if (zoomFactor > 2.0f) zoomFactor = 2.0f;
+
+        float newPps = oldPps * zoomFactor;
+        // Clamp: don't zoom out beyond fit-to-width, don't zoom in beyond 2000 pps
+        float fitPps = (owner.totalDuration > 0.0)
+            ? wfWidth / static_cast<float>(owner.totalDuration) : 100.0f;
+        if (newPps < fitPps) newPps = fitPps;
+        if (newPps > 2000.0f) newPps = 2000.0f;
+
+        owner.trackPps = newPps;
+
+        // Adjust scroll to keep mouse position stable
+        owner.trackScrollSec = timeAtMouse - (mouseX / newPps);
+        if (owner.trackScrollSec < 0.0) owner.trackScrollSec = 0.0;
+
+        double maxScroll = owner.totalDuration - (wfWidth / newPps);
+        if (maxScroll < 0.0) maxScroll = 0.0;
+        if (owner.trackScrollSec > maxScroll) owner.trackScrollSec = maxScroll;
+
+        owner.updateScrollBarRange();
+        owner.lastPlayheadX = -1;
+        owner.repaint();
+    } else {
+        // Normal scroll: horizontal
+        if (owner.totalDuration <= 0.0) return;
+        float wfWidth = static_cast<float>(getWidth() - owner.headerWidth);
+        float effectivePps = owner.getEffectivePps();
+        double visibleSecs = wfWidth / effectivePps;
+        double maxScroll = owner.totalDuration - visibleSecs;
+        if (maxScroll <= 0.0) return;
+
+        double scrollDelta = -wheel.deltaY * visibleSecs * 0.1;
+        owner.trackScrollSec = juce::jlimit(0.0, maxScroll, owner.trackScrollSec + scrollDelta);
+        owner.updateScrollBarRange();
+        owner.lastPlayheadX = -1;
+        owner.repaint();
+    }
+}
+
+void TrackListComponent::TrackItem::mouseDoubleClick(const juce::MouseEvent& e)
+{
+    int hw = owner.headerWidth;
+    if (e.x >= hw) {
+        // Reset to fit-to-width
+        owner.trackPps = 0.0f;
+        owner.trackScrollSec = 0.0;
+        owner.lastPlayheadX = -1;
+        owner.updateScrollBarRange();
+        owner.repaint();
+    }
+}
+
 TrackListComponent::TrackListComponent()
 {
     viewport.setViewedComponent(&contentContainer, false);
     viewport.setScrollBarsShown(true, false);
     addAndMakeVisible(viewport);
+
+    hScrollBar.setColour(juce::ScrollBar::backgroundColourId, APP_COLOR_SURFACE);
+    hScrollBar.setColour(juce::ScrollBar::thumbColourId, APP_COLOR_PRIMARY.withAlpha(0.6f));
+    hScrollBar.setColour(juce::ScrollBar::trackColourId, APP_COLOR_SURFACE_ALT);
+    hScrollBar.addListener(this);
+    addAndMakeVisible(hScrollBar);
 }
 
 TrackListComponent::~TrackListComponent() = default;
@@ -407,9 +486,7 @@ void TrackListComponent::setPlayheadPosition(double timeSeconds)
     int wfWidth = viewport.getWidth() - headerWidth;
     if (wfWidth <= 0) return;
 
-    int newPhX = (totalDuration > 0.0)
-        ? static_cast<int>((playheadPosition / totalDuration) * wfWidth)
-        : 0;
+    int newPhX = static_cast<int>(timeToPixel(playheadPosition));
 
     if (newPhX == lastPlayheadX) return;
 
@@ -525,7 +602,10 @@ void TrackListComponent::paint(juce::Graphics& g)
 
 void TrackListComponent::resized()
 {
-    viewport.setBounds(getLocalBounds());
+    int scrollH = kHScrollBarHeight;
+    int viewH = getHeight() - scrollH;
+
+    viewport.setBounds(0, 0, getWidth(), viewH);
 
     int y = 0;
     int w = viewport.getWidth();
@@ -537,4 +617,83 @@ void TrackListComponent::resized()
     if (pendingProgress.active)
         y += laneHeight;
     contentContainer.setSize(w, juce::jmax(y, viewport.getMaximumVisibleHeight()));
+
+    hScrollBar.setBounds(0, viewH, getWidth(), scrollH);
+    updateScrollBarRange();
+}
+
+float TrackListComponent::getEffectivePps() const
+{
+    if (trackPps > 0.0f)
+        return trackPps;
+
+    // Fit-to-width
+    int wfWidth = viewport.getWidth() - headerWidth;
+    if (wfWidth <= 0 || totalDuration <= 0.0)
+        return 100.0f;
+    return static_cast<float>(wfWidth / totalDuration);
+}
+
+float TrackListComponent::getPixelsPerSecond() const
+{
+    return trackPps;
+}
+
+void TrackListComponent::setPixelsPerSecond(float pps)
+{
+    trackPps = pps;
+    lastPlayheadX = -1;
+    updateScrollBarRange();
+    repaint();
+}
+
+void TrackListComponent::setScrollSeconds(double sec)
+{
+    trackScrollSec = sec;
+    lastPlayheadX = -1;
+    updateScrollBarRange();
+    repaint();
+}
+
+double TrackListComponent::pixelToTime(float x) const
+{
+    return trackScrollSec + static_cast<double>(x) / getEffectivePps();
+}
+
+float TrackListComponent::timeToPixel(double time) const
+{
+    return static_cast<float>((time - trackScrollSec) * getEffectivePps());
+}
+
+void TrackListComponent::updateScrollBarRange()
+{
+    int wfWidth = viewport.getWidth() - headerWidth;
+    if (wfWidth <= 0 || totalDuration <= 0.0) {
+        hScrollBar.setRangeLimits(0.0, 0.0, juce::dontSendNotification);
+        return;
+    }
+
+    float pps = getEffectivePps();
+    double visibleSecs = wfWidth / pps;
+    double maxScroll = totalDuration - visibleSecs;
+    if (maxScroll < 0.0) maxScroll = 0.0;
+
+    // Clamp scroll position
+    if (trackScrollSec > maxScroll) trackScrollSec = maxScroll;
+
+    hScrollBar.setRangeLimits(0.0, maxScroll, juce::dontSendNotification);
+    hScrollBar.setCurrentRange(trackScrollSec, visibleSecs, juce::dontSendNotification);
+}
+
+void TrackListComponent::onHScrollChanged()
+{
+    trackScrollSec = hScrollBar.getCurrentRangeStart();
+    lastPlayheadX = -1;
+    repaint();
+}
+
+void TrackListComponent::scrollBarMoved(juce::ScrollBar* scrollBarThatHasMoved, double newRangeStart)
+{
+    if (scrollBarThatHasMoved == &hScrollBar)
+        onHScrollChanged();
 }

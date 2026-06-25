@@ -7,7 +7,7 @@
 
 class EditorController;
 
-class TrackListComponent : public juce::Component
+class TrackListComponent : public juce::Component, private juce::ScrollBar::Listener
 {
 public:
     TrackListComponent();
@@ -43,10 +43,24 @@ public:
     int getHeaderWidth() const { return headerWidth; }
     int getLaneHeight() const { return laneHeight; }
 
+    // Independent zoom for track list waveform
+    float getPixelsPerSecond() const;
+    void setPixelsPerSecond(float pps);
+    double getScrollSeconds() const { return trackScrollSec; }
+    void setScrollSeconds(double sec);
+
+    // Convert pixel X (relative to waveform area) to time in seconds
+    double pixelToTime(float x) const;
+    // Convert time in seconds to pixel X (relative to waveform area)
+    float timeToPixel(double time) const;
+    // Effective pps: 0 means fit-to-width
+    float getEffectivePps() const;
+
 private:
     EditorController* editorController = nullptr;
 
     static constexpr int kPeakBuckets = 2048;
+    static constexpr int kHScrollBarHeight = 14;
 
     struct TrackItem : public juce::Component, public juce::TooltipClient
     {
@@ -58,6 +72,8 @@ private:
         void mouseDown(const juce::MouseEvent& e) override;
         void mouseDrag(const juce::MouseEvent& e) override;
         void mouseUp(const juce::MouseEvent& e) override;
+        void mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel) override;
+        void mouseDoubleClick(const juce::MouseEvent& e) override;
         juce::String getTooltip() override { return trackName; }
 
         void updateFromTrack();
@@ -87,6 +103,7 @@ private:
 
     juce::Viewport viewport;
     juce::Component contentContainer;
+    juce::ScrollBar hScrollBar { false };
     std::vector<std::unique_ptr<TrackItem>> items;
     int headerWidth = 200;
     int laneHeight = 80;
@@ -95,4 +112,14 @@ private:
     bool rainbowWaveform = false;
     int colormapIndex = 0;
     TrackProgress pendingProgress; // for trackIndex=-1 (loading)
+
+    // Independent zoom state
+    float trackPps = 0.0f;       // 0 = fit-to-width
+    double trackScrollSec = 0.0; // scroll offset in seconds
+
+    void updateScrollBarRange();
+    void onHScrollChanged();
+
+    // ScrollBar::Listener
+    void scrollBarMoved(juce::ScrollBar* scrollBarThatHasMoved, double newRangeStart) override;
 };
