@@ -86,9 +86,10 @@ private:
         bool isMuted = false;
         bool isSoloed = false;
 
-        // Pre-computed peak data: min/max abs amplitude per bucket
-        std::vector<float> peakMin;  // min abs value per bucket
-        std::vector<float> peakMax;  // max abs value per bucket
+        // Raw audio data pointer (not owned) for per-pixel peak computation
+        const float* audioData = nullptr;
+        int audioNumSamples = 0;
+        int audioSampleRate = 44100;
 
         juce::TextButton muteButton;
         juce::TextButton soloButton;

@@ -115,36 +115,13 @@ void TrackListComponent::TrackItem::updateFromTrack()
     auto* proj = track->getProject();
     if (proj) {
         auto& audio = proj->getAudioData();
-        const float* data = audio.waveform.getReadPointer(0);
-        int numSamples = audio.waveform.getNumSamples();
-
-        if (numSamples > 0) {
-            int buckets = juce::jmin(static_cast<int>(kPeakBuckets), numSamples);
-            peakMin.resize(buckets);
-            peakMax.resize(buckets);
-
-            int samplesPerBucket = numSamples / buckets;
-            if (samplesPerBucket < 1) samplesPerBucket = 1;
-
-            for (int b = 0; b < buckets; ++b) {
-                int start = b * samplesPerBucket;
-                int end = (b == buckets - 1) ? numSamples : start + samplesPerBucket;
-                float mx = 0.0f;
-                for (int i = start; i < end; ++i) {
-                    float v = std::abs(data[i]);
-                    if (v > mx) mx = v;
-                }
-                peakMax[b] = mx;
-                peakMin[b] = 0.0f;
-            }
-        } else {
-            peakMin.clear();
-            peakMax.clear();
-        }
+        audioData = audio.waveform.getReadPointer(0);
+        audioNumSamples = audio.waveform.getNumSamples();
+        audioSampleRate = audio.sampleRate;
         volumeSlider.setValue(track->getVolume(), juce::dontSendNotification);
     } else {
-        peakMin.clear();
-        peakMax.clear();
+        audioData = nullptr;
+        audioNumSamples = 0;
     }
 
     muteButton.setToggleState(isMuted, juce::dontSendNotification);
@@ -203,22 +180,31 @@ void TrackListComponent::TrackItem::paint(juce::Graphics& g)
     int wfHeight = getHeight() - 16;
     int wfY = 8;
 
-    if (!peakMax.empty() && wfWidth > 10) {
-        int buckets = static_cast<int>(peakMax.size());
+    if (audioData != nullptr && audioNumSamples > 0 && wfWidth > 10) {
         float mid = wfY + wfHeight * 0.5f;
         float pps = owner.getEffectivePps();
         double scrollSec = owner.trackScrollSec;
+        double samplesPerSec = static_cast<double>(audioSampleRate);
+        double totalSamples = static_cast<double>(audioNumSamples);
 
         for (int x = 0; x < wfWidth; ++x) {
-            double time = scrollSec + (static_cast<double>(x) / pps);
-            if (time < 0.0 || time > owner.totalDuration) continue;
+            double timeStart = scrollSec + (static_cast<double>(x) / pps);
+            double timeEnd = scrollSec + (static_cast<double>(x + 1) / pps);
+            if (timeEnd < 0.0 || timeStart > owner.totalDuration) continue;
 
-            int b = static_cast<int>((time / owner.totalDuration) * buckets);
-            if (b < 0) b = 0;
-            if (b >= buckets) b = buckets - 1;
-            float maxVal = peakMax[b];
+            int sampleStart = static_cast<int>(timeStart * samplesPerSec);
+            int sampleEnd = static_cast<int>(timeEnd * samplesPerSec);
+            if (sampleStart < 0) sampleStart = 0;
+            if (sampleEnd >= audioNumSamples) sampleEnd = audioNumSamples - 1;
+            if (sampleStart > sampleEnd) sampleStart = sampleEnd;
+
+            float maxVal = 0.0f;
+            for (int i = sampleStart; i <= sampleEnd; ++i) {
+                float v = std::abs(audioData[i]);
+                if (v > maxVal) maxVal = v;
+            }
+
             float h = maxVal * wfHeight * 0.5f;
-
             if (owner.rainbowWaveform) {
                 g.setColour(colormapFor(owner.colormapIndex, maxVal));
             } else {
