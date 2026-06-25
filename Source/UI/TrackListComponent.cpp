@@ -139,15 +139,20 @@ void TrackListComponent::TrackItem::paint(juce::Graphics& g)
     g.setColour(bg);
     g.fillAll();
 
-    g.setColour(APP_COLOR_BORDER_SUBTLE);
-    g.drawHorizontalLine(bounds.getBottom() - 0.5f, bounds.getX(), bounds.getRight());
+    // Clear separator line between tracks
+    g.setColour(APP_COLOR_BORDER);
+    g.drawHorizontalLine(bounds.getBottom() - 1.0f, bounds.getX(), bounds.getRight());
+
+    // Vertical separator between header and waveform
+    int hw = owner.headerWidth;
+    g.setColour(APP_COLOR_BORDER);
+    g.drawVerticalLine(static_cast<float>(hw), bounds.getY(), bounds.getBottom());
 
     if (isActive) {
         g.setColour(APP_COLOR_PRIMARY);
         g.fillRect(bounds.getX(), bounds.getY(), 3.0f, bounds.getHeight());
     }
 
-    int hw = owner.headerWidth;
     int leftPad = 12;
 
     g.setColour(getTypeColor(trackType));
