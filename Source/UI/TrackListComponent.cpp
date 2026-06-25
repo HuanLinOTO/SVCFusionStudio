@@ -468,10 +468,29 @@ void TrackListComponent::setPlayheadPosition(double timeSeconds)
 {
     playheadPosition = timeSeconds;
 
-    // Repaint only the dirty playhead regions on each item
     int wfWidth = viewport.getWidth() - headerWidth;
     if (wfWidth <= 0) return;
 
+    // Auto-scroll to follow playhead when zoomed in
+    if (trackPps > 0.0f && totalDuration > 0.0) {
+        float pps = getEffectivePps();
+        double visibleSecs = wfWidth / pps;
+        double playheadEnd = trackScrollSec + visibleSecs;
+
+        // If playhead is outside visible range, scroll to keep it at 20% from left edge
+        if (playheadPosition < trackScrollSec || playheadPosition > playheadEnd) {
+            trackScrollSec = playheadPosition - visibleSecs * 0.2;
+            if (trackScrollSec < 0.0) trackScrollSec = 0.0;
+            double maxScroll = totalDuration - visibleSecs;
+            if (trackScrollSec > maxScroll) trackScrollSec = maxScroll;
+            lastPlayheadX = -1;
+            updateScrollBarRange();
+            repaint();
+            return;
+        }
+    }
+
+    // Repaint only the dirty playhead regions on each item
     int newPhX = static_cast<int>(timeToPixel(playheadPosition));
 
     if (newPhX == lastPlayheadX) return;
