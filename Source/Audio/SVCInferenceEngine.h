@@ -64,6 +64,16 @@ public:
     bool isContentVecLoaded() const;
 
     /**
+     * Safely unload a model session, serialized against any in-flight
+     * inference. Inference (infer/inferSoVITS/inferRVC) holds inferenceMutex
+     * for its full duration while using the model's ONNX sessions, so tearing
+     * those sessions down must take the same lock to avoid a use-after-free
+     * when another thread (e.g. track analysis) evicts the SVC model while a
+     * conversion is running.
+     */
+    void unloadModelSession(SVCModelSession& model);
+
+    /**
      * Run full SVC inference pipeline for DDSP/Reflow models.
      *
      * @param model         Loaded SVC model session (encoder + velocity)

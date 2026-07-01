@@ -387,7 +387,11 @@ bool EditorController::loadSVCModelFromDirectory(const juce::File& voicebankDir)
 }
 
 void EditorController::unloadSVCModel() {
-  if (svcModel) svcModel->unload();
+  if (!svcModel) return;
+  if (svcEngine)
+    svcEngine->unloadModelSession(*svcModel);
+  else
+    svcModel->unload();
 }
 
 bool EditorController::isSVCModelActive() const {
@@ -1035,12 +1039,14 @@ void EditorController::runFullSVCConversionAsync(SVCProgressCallback onProgress,
         audioData.hnsepBasesFromSVC = false;
       }
 
-      // Load into audio engine for playback
+      // Rebuild the multi-track mix for playback. Using loadWaveform here would
+      // overwrite the whole mix buffer with just this track's waveform, silencing
+      // all other tracks. refreshAudioEngine re-mixes all audible tracks instead.
       if (audioEngine) {
         try {
-          audioEngine->loadWaveform(audioData.waveform, audioData.sampleRate, true);
+          refreshAudioEngine(true);
         } catch (...) {
-          LOG("EditorController: EXCEPTION in loadWaveform after SVC conversion");
+          LOG("EditorController: EXCEPTION in refreshAudioEngine after SVC conversion");
         }
       }
 
@@ -1221,8 +1227,15 @@ bool EditorController::ensureHNSepModelLoadedForAnalysis() {
   if (hnsepModel->isLoaded())
     return true;
 
-  if (svcModel && svcModel->isLoaded())
-    svcModel->unload();
+  if (svcModel && svcModel->isLoaded()) {
+    // Route eviction through svcEngine so it is serialized against any
+    // in-flight SVC inference (avoids use-after-free when a conversion runs
+    // concurrently with track analysis).
+    if (svcEngine)
+      svcEngine->unloadModelSession(*svcModel);
+    else
+      svcModel->unload();
+  }
   if (svcEngine && svcEngine->isContentVecLoaded())
     svcEngine->unloadContentVec();
 
@@ -1839,12 +1852,12 @@ void EditorController::resynthesizeIncrementalAsync(
         }
 
         if (audioEnginePtr && !isPluginMode) {
-          auto &audioData = projectPtr->getAudioData();
           try {
-            audioEnginePtr->loadWaveform(audioData.waveform,
-                                         audioData.sampleRate, true);
+            // Re-mix all audible tracks instead of overwriting the mix buffer
+            // with just this track's waveform (which would mute other tracks).
+            refreshAudioEngine(true);
           } catch (...) {
-            DBG("resynthesizeIncrementalAsync: EXCEPTION in loadWaveform!");
+            DBG("resynthesizeIncrementalAsync: EXCEPTION in refreshAudioEngine!");
           }
         }
 

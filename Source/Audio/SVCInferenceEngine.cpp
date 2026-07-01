@@ -142,10 +142,24 @@ bool SVCInferenceEngine::isContentVecLoaded() const
 void SVCInferenceEngine::unloadContentVec()
 {
 #ifdef HAVE_ONNXRUNTIME
+    // Serialize against in-flight inference which holds inferenceMutex while
+    // using contentVecSession. Without this lock another thread can free the
+    // session mid-inference (use-after-free crash).
+    std::lock_guard<std::mutex> lock(inferenceMutex);
     contentVecSession.reset();
 #endif
     contentVecLoaded = false;
     LOG("SVCInferenceEngine: ContentVec unloaded");
+}
+
+void SVCInferenceEngine::unloadModelSession(SVCModelSession& model)
+{
+#ifdef HAVE_ONNXRUNTIME
+    // Serialize against in-flight inference which holds inferenceMutex while
+    // using this model's ONNX sessions.
+    std::lock_guard<std::mutex> lock(inferenceMutex);
+#endif
+    model.unload();
 }
 
 // =======================================================================
