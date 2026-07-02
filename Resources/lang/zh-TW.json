@@ -200,9 +200,14 @@
   "track.solo": "獨奏",
   "track.type": "類型",
   "tracks.empty": "暫無軌道，導入音訊以建立",
+  "tracks.queued": "排隊分析中…",
+  "tracks.queued_analysis": "排隊分析中…",
+  "tracks.queued_svc": "排隊推理SVC中…",
   "tracks.title": "軌道",
   "track.readonly": "唯讀 — 轉換為人聲軌道以編輯",
   "track.delete": "刪除軌道",
   "track.copy": "複製軌道",
+  "error.svc_requires_vocal_track": "無法在伴奏軌道上推理 SVC",
+  "error.svc_requires_vocal_track_detail": "請先將該軌道轉換為人聲軌道，再選擇 SVC 聲庫。",
   "track.delete_confirm": "刪除此軌道？"
 }

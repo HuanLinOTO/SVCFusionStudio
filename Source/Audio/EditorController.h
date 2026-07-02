@@ -18,8 +18,11 @@
 #include "../Utils/AppLogger.h"
 
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <functional>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -90,6 +93,15 @@ public:
       std::function<void(int, int, int, const juce::String &, double)>;
   void setTrackProgressCallback(TrackProgressCallback cb) {
     trackProgressCallback = std::move(cb);
+  }
+
+  // Notifies when a track is waiting in the serialized inference queue
+  // (queued = true) or when it leaves the queue to start processing
+  // (queued = false). Used to display a typed "queued" badge in the UI.
+  using TrackQueuedCallback =
+      std::function<void(int trackIndex, bool queued, const juce::String &label)>;
+  void setTrackQueuedCallback(TrackQueuedCallback cb) {
+    trackQueuedCallback = std::move(cb);
   }
 
   using ProgressCallback =
@@ -189,7 +201,18 @@ public:
   using SVCProgressCallback = std::function<void(const juce::String&)>;
   using SVCCompleteCallback = std::function<void(bool success)>;
   void runFullSVCConversionAsync(SVCProgressCallback onProgress,
-                                 SVCCompleteCallback onComplete);
+                                 SVCCompleteCallback onComplete,
+                                 int progressTrackIndex = -1);
+
+  /** Load an SVC voicebank on the shared serial worker so it never runs
+   *  concurrently with track analysis or another conversion. onComplete is
+   *  invoked on the message thread. When isDirectory is true the path is an
+   *  extracted voicebank directory; otherwise it is a .sfs_model file. */
+  void loadSVCModelAsync(const juce::File &path, bool isDirectory,
+                         std::function<void(bool success)> onComplete,
+                         int progressTrackIndex = -1);
+  void abortTrackSVC(int trackIndex);
+  void abortTrackVocalConversion(int trackIndex);
 
   /** Check if an SVC conversion is currently running. */
   bool isSVCConvertingNow() const { return isSVCConverting.load(); }
@@ -237,6 +260,7 @@ private:
   bool lastSVCModelWasDirectory = false;
   std::function<void(const juce::String &, bool)> backgroundStatusCallback;
   TrackProgressCallback trackProgressCallback;
+  TrackQueuedCallback trackQueuedCallback;
 
   juce::File fcpeModelPath;
   juce::File melFilterbankPath;
@@ -259,6 +283,30 @@ private:
   std::atomic<bool> isAnalyzingAudio{false};
   std::atomic<bool> cancelLoadingFlag{false};
   std::atomic<std::uint64_t> hostAnalysisJobId{0};
+  std::atomic<std::uint64_t> vocalConvertGeneration{0};
+  std::atomic<int> abortedVocalConvertTrackIndex{-1};
+
+  // Serialized inference queue. Track analysis and SVC conversion both need
+  // exclusive access to the inference engine; running them concurrently causes
+  // crashes / dropped work. All such jobs share ONE worker thread and are
+  // executed strictly one at a time. When one is running, the others wait in
+  // the queue (the track shows a "queued" badge) instead of being dropped.
+  enum class SerialJobKind { VocalConvert, SVCConvert };
+  struct SerialJob {
+    SerialJobKind kind = SerialJobKind::VocalConvert;
+    int trackIndex = -1;              // track that shows queued/progress badge
+    std::function<void()> run;        // runs synchronously on the worker thread
+  };
+  void enqueueSerialJob(SerialJob job);
+  void serialWorkerLoop();
+  void clearTrackVocalAnalysisData(int trackIndex);
+
+  std::thread serialWorkerThread;
+  std::deque<SerialJob> serialJobQueue;
+  std::mutex serialJobMutex;
+  std::condition_variable serialJobCv;
+  bool serialWorkerStop = false;
+  bool serialWorkerStarted = false;
 
   // Async render state
   std::thread renderThread;
@@ -279,6 +327,24 @@ private:
   std::atomic<bool> isSVCConverting{false};
   std::atomic<bool> cancelSVCFlag{false};
   std::atomic<uint64_t> svcGeneration{0};
+
+  // Track index whose lane shows SVC conversion progress (the active track at
+  // the time the conversion was enqueued). -1 = no track-level progress.
+  std::atomic<int> svcProgressTrackIndex{-1};
+  // Track index currently being analyzed on the serial worker (VocalConvert).
+  // Used to suppress SVC progress on the same track so analysis bars stay visible.
+  std::atomic<int> analyzingTrackIndex{-1};
+  // Structured SVC progress: big bar = stage, small bar = segment sub-progress.
+  // Mirrors the analyze-audio flow so the UI can reuse the two-bar overlay.
+  void reportSVCProgress(int step, const juce::String &msg,
+                         double subProgress = -1.0);
+  void clearTrackProgress(int trackIndex);
+  // The actual SVC conversion body (prep + inference + writeback). Spawns its
+  // own worker for the heavy inference; the serial-queue wrapper blocks until
+  // it finishes so conversions never overlap analysis.
+  void runFullSVCConversionImpl(SVCProgressCallback onProgress,
+                                SVCCompleteCallback onComplete,
+                                int targetTrackIndex);
 
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(EditorController)
 };

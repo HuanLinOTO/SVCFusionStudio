@@ -200,9 +200,14 @@
   "track.solo": "Solo",
   "track.type": "Type",
   "tracks.empty": "No tracks. Import audio to create a track.",
+  "tracks.queued": "Queued for analysis...",
+  "tracks.queued_analysis": "Queued for analysis...",
+  "tracks.queued_svc": "Queued for SVC inference...",
   "tracks.title": "Tracks",
   "track.readonly": "Read-only — convert to vocal to edit",
   "track.delete": "Delete Track",
   "track.copy": "Duplicate Track",
+  "error.svc_requires_vocal_track": "SVC cannot run on accompaniment tracks",
+  "error.svc_requires_vocal_track_detail": "Convert this track to a vocal track before selecting an SVC voicebank.",
   "track.delete_confirm": "Delete this track?"
 }

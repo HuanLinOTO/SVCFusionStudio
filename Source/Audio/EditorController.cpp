@@ -123,6 +123,13 @@ EditorController::~EditorController() {
     svcConversionThread.join();
   for (auto& t : svcOldThreads)
     if (t.joinable()) t.join();
+  {
+    std::lock_guard<std::mutex> lock(serialJobMutex);
+    serialWorkerStop = true;
+  }
+  serialJobCv.notify_all();
+  if (serialWorkerThread.joinable())
+    serialWorkerThread.join();
 }
 
 Project* EditorController::getProject() const {
@@ -334,13 +341,6 @@ bool EditorController::loadSVCModel(const juce::File& sfsModelFile) {
       " spk=" + juce::String(cfg.nSpk));
   lastSVCModelPath = sfsModelFile;
   lastSVCModelWasDirectory = false;
-  if (auto* p = getProject()) {
-    auto &audioData = p->getAudioData();
-    audioData.svcEnabled = true;
-    audioData.svcVoicebankWasDirectory = false;
-    audioData.svcVoicebankName = sfsModelFile.getFileNameWithoutExtension();
-    audioData.svcVoicebankPath = sfsModelFile.getFullPathName();
-  }
   return true;
 }
 
@@ -376,13 +376,6 @@ bool EditorController::loadSVCModelFromDirectory(const juce::File& voicebankDir)
       " spk=" + juce::String(cfg.nSpk));
   lastSVCModelPath = voicebankDir;
   lastSVCModelWasDirectory = true;
-  if (auto* p = getProject()) {
-    auto &audioData = p->getAudioData();
-    audioData.svcEnabled = true;
-    audioData.svcVoicebankWasDirectory = true;
-    audioData.svcVoicebankName = voicebankDir.getFileName();
-    audioData.svcVoicebankPath = voicebankDir.getFullPathName();
-  }
   return true;
 }
 
@@ -442,15 +435,6 @@ bool EditorController::ensureSVCModelReady() {
   auto &cfg = svcModel->getConfig();
   LOG("EditorController: SVC model restored -- " + cfg.modelTypeName +
       " (" + cfg.name + ")");
-  if (auto* p = getProject()) {
-    auto &audioData = p->getAudioData();
-    audioData.svcEnabled = true;
-    audioData.svcVoicebankWasDirectory = lastSVCModelWasDirectory;
-    audioData.svcVoicebankName = lastSVCModelPath.getFileNameWithoutExtension();
-    if (lastSVCModelWasDirectory)
-      audioData.svcVoicebankName = lastSVCModelPath.getFileName();
-    audioData.svcVoicebankPath = lastSVCModelPath.getFullPathName();
-  }
   return true;
 }
 
@@ -465,9 +449,60 @@ void EditorController::cancelSVCConversion() {
 }
 
 void EditorController::runFullSVCConversionAsync(SVCProgressCallback onProgress,
-                                                  SVCCompleteCallback onComplete) {
+                                                  SVCCompleteCallback onComplete,
+                                                  int progressTrackIndex) {
+  // Route the conversion through the shared serial worker so it never runs
+  // concurrently with track analysis or another conversion. The heavy work
+  // inside runFullSVCConversionImpl spawns its own inference thread and reports
+  // completion asynchronously; we block the worker here (via a future) until
+  // that completion fires, keeping the queue strictly serial.
+  const int trackIndex = progressTrackIndex >= 0 ? progressTrackIndex
+                                                 : getActiveTrackIndex();
+  SVCProgressCallback progressCb = std::move(onProgress);
+  SVCCompleteCallback completeCb = std::move(onComplete);
+
+  SerialJob job;
+  job.kind = SerialJobKind::SVCConvert;
+  job.trackIndex = trackIndex;
+  job.run = [this, trackIndex, progressCb, completeCb]() {
+    svcProgressTrackIndex.store(trackIndex);
+    auto done = std::make_shared<std::promise<void>>();
+    std::future<void> fut = done->get_future();
+
+    SVCCompleteCallback wrapped = [this, completeCb, done,
+                                   trackIndex](bool success) {
+      // May run on the worker thread (prep-failure early return) or the
+      // message thread (normal completion posts here). Dispatch the UI-facing
+      // callback to the message thread and unblock the serial worker.
+      svcProgressTrackIndex.store(-1);
+      clearTrackProgress(trackIndex);
+      if (completeCb)
+        juce::MessageManager::callAsync([completeCb, success]() {
+          completeCb(success);
+        });
+      done->set_value();
+    };
+
+    runFullSVCConversionImpl(progressCb, wrapped, trackIndex);
+
+    // Block the serial worker until the conversion (and its message-thread
+    // writeback) has completed, so the next queued job waits for the engine.
+    fut.wait();
+  };
+  enqueueSerialJob(std::move(job));
+}
+
+void EditorController::runFullSVCConversionImpl(SVCProgressCallback onProgress,
+                                                  SVCCompleteCallback onComplete,
+                                                  int targetTrackIndex) {
   auto *voc = ensureVocoder();
-  auto* activeProject = getProject();
+  auto* targetTrack = getTrack(targetTrackIndex);
+  if (!targetTrack || !targetTrack->isVocal()) {
+    LOG("EditorController::runFullSVCConversion: target track is not vocal");
+    if (onComplete) onComplete(false);
+    return;
+  }
+  auto* activeProject = targetTrack ? targetTrack->project.get() : nullptr;
   if (!activeProject || !svcEngine || !svcModel || !voc) {
     if (onComplete) onComplete(false);
     return;
@@ -542,7 +577,8 @@ void EditorController::runFullSVCConversionAsync(SVCProgressCallback onProgress,
   // ── End of project data copying ──
 
   svcConversionThread = std::thread([this, myGen, onProgress, onComplete,
-                                     localOrig = std::move(localOrigWaveform),
+                                      targetTrackIndex,
+                                      localOrig = std::move(localOrigWaveform),
                                      localVoiced = std::move(localVoicedMask),
                                      adjustedF0 = std::move(adjustedF0),
                                      f0ForSVC = std::move(f0ForSVC),
@@ -559,6 +595,7 @@ void EditorController::runFullSVCConversionAsync(SVCProgressCallback onProgress,
 
     if (onProgress)
       juce::MessageManager::callAsync([onProgress]() { onProgress("Running SVC inference..."); });
+    reportSVCProgress(1, "SVC inference", 0.0);
 
     LOG("EditorController: Running full SVC conversion -- " +
         juce::String(totalFrames) + " frames, " +
@@ -615,6 +652,14 @@ void EditorController::runFullSVCConversionAsync(SVCProgressCallback onProgress,
             juce::MessageManager::callAsync([onProgress, idx, tot]() {
               onProgress("SVC segment " + juce::String(idx + 1) + "/" + juce::String(tot) + "...");
             });
+          }
+          {
+            int tot = static_cast<int>(segments.size());
+            double sub = tot > 0 ? static_cast<double>(segIdx) / tot : 0.0;
+            reportSVCProgress(1,
+                "SVC segment " + juce::String(segIdx + 1) + "/" +
+                    juce::String(tot),
+                sub);
           }
 
           auto tSeg = std::chrono::steady_clock::now();
@@ -899,10 +944,12 @@ void EditorController::runFullSVCConversionAsync(SVCProgressCallback onProgress,
     if (!blendedAudio.empty()) {
       std::lock_guard<std::mutex> lock(hnsepBasesMutex);
       notifyBackgroundStatus("Preparing HNSep harmonic/noise bases...", true);
+      reportSVCProgress(2, "HNSep", 0.0);
       if (ensureHNSepModelLoadedForAnalysis()) {
-        refreshedSVCBases = hnsepModel->separate(
+        refreshedSVCBases = hnsepModel->separateWithProgress(
             blendedAudio.data(), static_cast<int>(blendedAudio.size()),
-            svcHarmonic, svcNoise);
+            svcHarmonic, svcNoise,
+            [this](double p) { reportSVCProgress(2, "HNSep", p); });
         if (refreshedSVCBases) {
           LOG("EditorController: refreshed HNSep bases from SVC result [" +
               juce::String(svcHarmonic.size()) + " samples]");
@@ -919,12 +966,9 @@ void EditorController::runFullSVCConversionAsync(SVCProgressCallback onProgress,
       notifyBackgroundStatus({}, false);
     }
 
-    if (onProgress)
-      juce::MessageManager::callAsync([onProgress]() { onProgress("Applying SVC audio..."); });
-
     // Update the waveform on the message thread
     // Check generation to discard stale results (project may have been replaced)
-    juce::MessageManager::callAsync([this, myGen,
+    juce::MessageManager::callAsync([this, myGen, targetTrackIndex,
                                      blendedAudio = std::move(blendedAudio),
                                       writeLen, onComplete, isDirectAudioSVC, totalFrames,
                                       collectedSegMels = std::move(collectedSegMels),
@@ -945,7 +989,9 @@ void EditorController::runFullSVCConversionAsync(SVCProgressCallback onProgress,
         return;
       }
 
-      if (!getProject()) {
+      auto* targetTrack = getTrack(targetTrackIndex);
+      auto* targetProject = targetTrack ? targetTrack->project.get() : nullptr;
+      if (!targetProject) {
         isSVCConverting = false;
         if (svcEngine && svcEngine->isContentVecLoaded())
           svcEngine->unloadContentVec();
@@ -953,7 +999,7 @@ void EditorController::runFullSVCConversionAsync(SVCProgressCallback onProgress,
         return;
       }
 
-      auto& audioData = getProject()->getAudioData();
+      auto& audioData = targetProject->getAudioData();
       int numChannels = audioData.waveform.getNumChannels();
 
       for (int ch = 0; ch < numChannels; ++ch) {
@@ -1219,6 +1265,256 @@ void EditorController::notifyBackgroundStatus(const juce::String &message,
       [callback = backgroundStatusCallback, message, active]() {
         callback(message, active);
       });
+}
+
+// SVC conversion two-bar progress. Big bar = stage (of kSVCTotalSteps),
+// small bar = segment sub-progress. Routed to the active track's lane via the
+// same trackProgressCallback used by analyzeAudio.
+void EditorController::reportSVCProgress(int step, const juce::String &msg,
+                                         double subProgress) {
+  const int trackIndex = svcProgressTrackIndex.load();
+  if (trackProgressCallback && trackIndex >= 0) {
+    // Don't override analysis progress on the same track.
+    if (trackIndex == analyzingTrackIndex.load())
+      return;
+    constexpr int kSVCTotalSteps = 2; // inference, HNSep
+    trackProgressCallback(trackIndex, step, kSVCTotalSteps, msg, subProgress);
+  }
+}
+
+void EditorController::clearTrackProgress(int trackIndex) {
+  if (trackProgressCallback && trackIndex >= 0)
+    trackProgressCallback(trackIndex, -1, 0, {}, -1.0);
+}
+
+void EditorController::loadSVCModelAsync(
+    const juce::File &path, bool isDirectory,
+    std::function<void(bool success)> onComplete,
+    int progressTrackIndex) {
+  const int resolvedTrackIndex = progressTrackIndex >= 0 ? progressTrackIndex
+                                                         : getActiveTrackIndex();
+  auto* resolvedTrack = getTrack(resolvedTrackIndex);
+  if (!resolvedTrack || !resolvedTrack->isVocal()) {
+    LOG("EditorController: rejecting SVC load for non-vocal track=" +
+        juce::String(resolvedTrackIndex));
+    if (onComplete)
+      juce::MessageManager::callAsync([onComplete]() { onComplete(false); });
+    return;
+  }
+
+  SerialJob job;
+  job.kind = SerialJobKind::SVCConvert;
+  job.trackIndex = resolvedTrackIndex;
+  const int trackIndex = job.trackIndex;
+  job.run = [this, path, isDirectory, onComplete, trackIndex]() {
+    try {
+      LOG("EditorController: SVC load+convert job start track=" +
+          juce::String(trackIndex) + " path=" + path.getFullPathName());
+      auto* initialTrack = getTrack(trackIndex);
+      if (!initialTrack || !initialTrack->isVocal()) {
+        LOG("EditorController: SVC load+convert aborted, target track is not vocal track=" +
+            juce::String(trackIndex));
+        if (onComplete)
+          juce::MessageManager::callAsync([onComplete]() { onComplete(false); });
+        return;
+      }
+      // Phase 1: load the model
+      if (trackProgressCallback && trackIndex >= 0)
+        trackProgressCallback(trackIndex, 1, 1,
+                              juce::String("Loading SVC model..."), -1.0);
+      auto tStart = std::chrono::steady_clock::now();
+      bool ok = isDirectory ? loadSVCModelFromDirectory(path)
+                            : loadSVCModel(path);
+      LOG("EditorController: SVC model load finished track=" +
+          juce::String(trackIndex) + " ok=" + juce::String(ok ? "true" : "false") +
+          " in " +
+          juce::String(std::chrono::duration_cast<std::chrono::milliseconds>(
+                           std::chrono::steady_clock::now() - tStart).count()) + " ms");
+      if (!ok) {
+        clearTrackProgress(trackIndex);
+        if (onComplete)
+          juce::MessageManager::callAsync([onComplete]() { onComplete(false); });
+        return;
+      }
+
+      auto* loadedTrack = getTrack(trackIndex);
+      if (!loadedTrack || !loadedTrack->isVocal()) {
+        LOG("EditorController: SVC load+convert aborted after load, target track is no longer vocal track=" +
+            juce::String(trackIndex));
+        clearTrackProgress(trackIndex);
+        if (onComplete)
+          juce::MessageManager::callAsync([onComplete]() { onComplete(false); });
+        return;
+      }
+
+      if (auto* targetTrack = getTrack(trackIndex)) {
+        if (targetTrack->project) {
+          auto& audioData = targetTrack->project->getAudioData();
+          audioData.svcEnabled = true;
+          audioData.svcVoicebankWasDirectory = isDirectory;
+          audioData.svcVoicebankName = isDirectory ? path.getFileName()
+                                                   : path.getFileNameWithoutExtension();
+          audioData.svcVoicebankPath = path.getFullPathName();
+        }
+      }
+
+      // Phase 2: run conversion (if audio exists on the target track)
+      auto* targetTrack = getTrack(trackIndex);
+      bool hasAudio = targetTrack && targetTrack->project
+          && targetTrack->project->getAudioData().waveform.getNumSamples() > 0
+          && !targetTrack->project->getAudioData().f0.empty();
+      LOG("EditorController: SVC load+convert job track=" + juce::String(trackIndex) +
+          " hasAudio=" + juce::String(hasAudio ? "true" : "false"));
+      if (!hasAudio) {
+        clearTrackProgress(trackIndex);
+        if (onComplete)
+          juce::MessageManager::callAsync([onComplete]() { onComplete(true); });
+        return;
+      }
+
+      // Move the lane out of the loading state immediately while conversion
+      // preflight (vocoder/model checks) runs before the SVC worker thread emits
+      // its own segment progress.
+      svcProgressTrackIndex.store(trackIndex);
+      reportSVCProgress(1, "SVC inference", 0.0);
+
+      // Block the serial worker until the SVC thread finishes (same pattern
+      // as runFullSVCConversionAsync) so everything stays serialized.
+      auto done = std::make_shared<std::promise<void>>();
+      std::future<void> fut = done->get_future();
+      SVCCompleteCallback wrapped = [this, onComplete, done,
+                                     trackIndex](bool success) {
+        LOG("EditorController: SVC load+convert job complete track=" +
+            juce::String(trackIndex) + " success=" +
+            juce::String(success ? "true" : "false"));
+        svcProgressTrackIndex.store(-1);
+        clearTrackProgress(trackIndex);
+        if (onComplete)
+          juce::MessageManager::callAsync([onComplete, success]() {
+            onComplete(success);
+          });
+        done->set_value();
+      };
+      runFullSVCConversionImpl(nullptr, wrapped, trackIndex);
+      fut.wait();
+    } catch (const std::exception& e) {
+      LOG("EditorController: SVC load+convert exception track=" +
+          juce::String(trackIndex) + " error=" + juce::String(e.what()));
+      svcProgressTrackIndex.store(-1);
+      clearTrackProgress(trackIndex);
+      if (onComplete)
+        juce::MessageManager::callAsync([onComplete]() { onComplete(false); });
+    } catch (...) {
+      LOG("EditorController: SVC load+convert unknown exception track=" +
+          juce::String(trackIndex));
+      svcProgressTrackIndex.store(-1);
+      clearTrackProgress(trackIndex);
+      if (onComplete)
+        juce::MessageManager::callAsync([onComplete]() { onComplete(false); });
+    }
+  };
+  enqueueSerialJob(std::move(job));
+}
+
+void EditorController::abortTrackSVC(int trackIndex) {
+  LOG("EditorController: abortTrackSVC track=" + juce::String(trackIndex));
+
+  {
+    std::lock_guard<std::mutex> lock(serialJobMutex);
+    auto newEnd = std::remove_if(serialJobQueue.begin(), serialJobQueue.end(),
+        [trackIndex](const SerialJob& job) {
+          return job.kind == SerialJobKind::SVCConvert &&
+                 job.trackIndex == trackIndex;
+        });
+    serialJobQueue.erase(newEnd, serialJobQueue.end());
+  }
+
+  if (svcProgressTrackIndex.load() == trackIndex)
+    cancelSVCConversion();
+
+  if (trackQueuedCallback && trackIndex >= 0)
+    trackQueuedCallback(trackIndex, false, {});
+  clearTrackProgress(trackIndex);
+
+  auto* track = getTrack(trackIndex);
+  if (!track || !track->project)
+    return;
+
+  auto& audioData = track->project->getAudioData();
+  if (audioData.originalWaveform.getNumSamples() > 0)
+    audioData.waveform.makeCopyOf(audioData.originalWaveform);
+
+  if (audioData.hnsepBasesFromSVC) {
+    audioData.harmonicWaveform.setSize(1, 0);
+    audioData.noiseWaveform.setSize(1, 0);
+  }
+
+  audioData.melFromSVC = false;
+  audioData.waveformFromSVC = false;
+  audioData.hnsepBasesFromSVC = false;
+  audioData.svcEnabled = false;
+  audioData.svcRendered = false;
+  audioData.hnsepCurvesTargetSVC = false;
+  audioData.svcVoicebankName.clear();
+  audioData.svcVoicebankPath.clear();
+  audioData.shfcCurve.clear();
+
+  refreshAudioEngine(true);
+}
+
+void EditorController::clearTrackVocalAnalysisData(int trackIndex) {
+  auto* track = getTrack(trackIndex);
+  if (!track || !track->project)
+    return;
+
+  auto& audioData = track->project->getAudioData();
+  track->project->clearNotes();
+  audioData.melSpectrogram.clear();
+  audioData.f0.clear();
+  audioData.baseF0.clear();
+  audioData.basePitch.clear();
+  audioData.deltaPitch.clear();
+  audioData.voicingCurve.clear();
+  audioData.breathCurve.clear();
+  audioData.tensionCurve.clear();
+  audioData.shfcCurve.clear();
+  audioData.voicedMask.clear();
+  audioData.vadMask.clear();
+  audioData.someChunkRanges.clear();
+  audioData.someDebugChunks.clear();
+  audioData.harmonicWaveform.setSize(1, 0);
+  audioData.noiseWaveform.setSize(1, 0);
+  audioData.melFromSVC = false;
+  audioData.waveformFromSVC = false;
+  audioData.hnsepBasesFromSVC = false;
+  audioData.svcEnabled = false;
+  audioData.svcRendered = false;
+  audioData.hnsepCurvesTargetSVC = false;
+  audioData.svcVoicebankName.clear();
+  audioData.svcVoicebankPath.clear();
+}
+
+void EditorController::abortTrackVocalConversion(int trackIndex) {
+  LOG("EditorController: abortTrackVocalConversion track=" + juce::String(trackIndex));
+  ++vocalConvertGeneration;
+  abortedVocalConvertTrackIndex.store(trackIndex);
+  if (audioAnalyzer)
+    audioAnalyzer->cancel();
+
+  {
+    std::lock_guard<std::mutex> lock(serialJobMutex);
+    auto newEnd = std::remove_if(serialJobQueue.begin(), serialJobQueue.end(),
+        [trackIndex](const SerialJob& job) {
+          return job.kind == SerialJobKind::VocalConvert &&
+                 job.trackIndex == trackIndex;
+        });
+    serialJobQueue.erase(newEnd, serialJobQueue.end());
+  }
+
+  if (trackQueuedCallback && trackIndex >= 0)
+    trackQueuedCallback(trackIndex, false, {});
+  clearTrackProgress(trackIndex);
+  clearTrackVocalAnalysisData(trackIndex);
 }
 
 bool EditorController::ensureHNSepModelLoadedForAnalysis() {
@@ -1553,37 +1849,128 @@ void EditorController::convertTrackToVocal(
   }
 
   auto* projectPtr = track->project.get();
-  auto updateProgress = [onProgress](double p, const juce::String &msg) {
-    if (onProgress)
-      onProgress(p, msg);
-  };
+  ProgressCallback progressCb = onProgress;
+  TrackConvertedCallback completeCb = onComplete;
+  const auto jobGeneration = ++vocalConvertGeneration;
+  if (abortedVocalConvertTrackIndex.load() == trackIndex)
+    abortedVocalConvertTrackIndex.store(-1);
 
-  auto completeOnVocal = [this, trackIndex, onComplete](bool success) {
-    if (success && trackIndex >= 0 && trackIndex < static_cast<int>(tracks.size())) {
-      auto* t = tracks[static_cast<size_t>(trackIndex)].get();
-      if (t) {
-        t->type = TrackType::Vocal;
-        t->project->setName(t->name);
-        if (audioEngine) {
-          std::vector<Track*> trackPtrs;
-          for (auto& tr : tracks)
-            trackPtrs.push_back(tr.get());
-          audioEngine->setTracks(trackPtrs);
-          audioEngine->rebuildMixedWaveform(true);
+  SerialJob job;
+  job.kind = SerialJobKind::VocalConvert;
+  job.trackIndex = trackIndex;
+  job.run = [this, trackIndex, projectPtr, progressCb, completeCb,
+             jobGeneration]() {
+    auto isStale = [this, trackIndex, jobGeneration]() {
+      return vocalConvertGeneration.load() != jobGeneration ||
+             abortedVocalConvertTrackIndex.load() == trackIndex;
+    };
+    if (isStale())
+      return;
+
+    auto updateProgress = [progressCb, isStale](double p, const juce::String &msg) {
+      if (isStale())
+        return;
+      if (progressCb)
+        progressCb(p, msg);
+    };
+
+    auto completeOnVocal = [this, trackIndex, completeCb, isStale](bool success) {
+      if (isStale()) {
+        clearTrackVocalAnalysisData(trackIndex);
+        clearTrackProgress(trackIndex);
+        return;
+      }
+      if (success && trackIndex >= 0 &&
+          trackIndex < static_cast<int>(tracks.size())) {
+        auto* t = tracks[static_cast<size_t>(trackIndex)].get();
+        if (t) {
+          t->type = TrackType::Vocal;
+          t->project->setName(t->name);
+          if (audioEngine) {
+            std::vector<Track*> trackPtrs;
+            for (auto& tr : tracks)
+              trackPtrs.push_back(tr.get());
+            audioEngine->setTracks(trackPtrs);
+            audioEngine->rebuildMixedWaveform(true);
+          }
         }
       }
-    }
-    if (onComplete)
-      juce::MessageManager::callAsync([onComplete, trackIndex, success]() {
-        onComplete(trackIndex, success);
-      });
-  };
+      if (completeCb)
+        juce::MessageManager::callAsync([completeCb, trackIndex, success]() {
+          completeCb(trackIndex, success);
+        });
+    };
 
-  std::thread([this, projectPtr, updateProgress, completeOnVocal, trackIndex]() {
-    analyzeAudio(*projectPtr, updateProgress, [completeOnVocal]() {
-      completeOnVocal(true);
+    // Runs synchronously on the worker thread so jobs process serially.
+    analyzeAudio(*projectPtr, updateProgress, [completeOnVocal, isStale]() {
+      if (isStale())
+        completeOnVocal(false);
+      else
+        completeOnVocal(true);
     }, trackIndex);
-  }).detach();
+  };
+  enqueueSerialJob(std::move(job));
+}
+
+void EditorController::enqueueSerialJob(SerialJob job) {
+  const int trackIndex = job.trackIndex;
+  const SerialJobKind kind = job.kind;
+  const juce::String queuedLabel = kind == SerialJobKind::SVCConvert
+                                       ? TR("tracks.queued_svc")
+                                       : TR("tracks.queued_analysis");
+  {
+    std::lock_guard<std::mutex> lock(serialJobMutex);
+    // Ignore duplicate requests of the same kind for a track already queued.
+    for (const auto& queued : serialJobQueue) {
+      if (queued.kind == kind && queued.trackIndex == trackIndex &&
+          trackIndex >= 0) {
+        return;
+      }
+    }
+    serialJobQueue.push_back(std::move(job));
+    if (!serialWorkerStarted) {
+      serialWorkerStarted = true;
+      if (serialWorkerThread.joinable())
+        serialWorkerThread.join();
+      serialWorkerThread = std::thread([this]() { serialWorkerLoop(); });
+    }
+  }
+  serialJobCv.notify_one();
+
+  // Mark this track as queued immediately so the UI can show a badge.
+  if (trackQueuedCallback && trackIndex >= 0)
+    trackQueuedCallback(trackIndex, true, queuedLabel);
+}
+
+void EditorController::serialWorkerLoop() {
+  for (;;) {
+    SerialJob job;
+    {
+      std::unique_lock<std::mutex> lock(serialJobMutex);
+      serialJobCv.wait(lock, [this]() {
+        return serialWorkerStop || !serialJobQueue.empty();
+      });
+      if (serialWorkerStop && serialJobQueue.empty())
+        return;
+      job = std::move(serialJobQueue.front());
+      serialJobQueue.pop_front();
+    }
+
+    // The job left the queue and is about to start processing.
+    if (trackQueuedCallback && job.trackIndex >= 0)
+      trackQueuedCallback(job.trackIndex, false, {});
+
+    // Track which track is being analyzed (VocalConvert) so SVC progress
+    // doesn't override the analysis bars on the same track.
+    if (job.kind == SerialJobKind::VocalConvert)
+      analyzingTrackIndex.store(job.trackIndex);
+
+    if (job.run)
+      job.run();
+
+    if (job.kind == SerialJobKind::VocalConvert)
+      analyzingTrackIndex.store(-1);
+  }
 }
 
 void EditorController::setHostAudioAsync(
@@ -1919,7 +2306,20 @@ void EditorController::analyzeAudio(
     return;
 
   constexpr int kTotalSteps = 6;
+  auto shouldAbortTrackAnalysis = [&]() {
+    return trackIndexForProgress >= 0 &&
+           abortedVocalConvertTrackIndex.load() == trackIndexForProgress;
+  };
+  auto abortAnalysisAndClear = [&]() {
+    if (!shouldAbortTrackAnalysis())
+      return false;
+    clearTrackVocalAnalysisData(trackIndexForProgress);
+    clearTrackProgress(trackIndexForProgress);
+    return true;
+  };
   auto reportStep = [&](int step, const juce::String& msg, double subProgress = -1.0) {
+    if (shouldAbortTrackAnalysis())
+      return;
     if (trackProgressCallback && trackIndexForProgress >= 0)
       trackProgressCallback(trackIndexForProgress, step, kTotalSteps, msg, subProgress);
   };
@@ -1929,6 +2329,8 @@ void EditorController::analyzeAudio(
     return;
   }
   AtomicFlagGuard analyzingGuard(isAnalyzingAudio);
+  if (abortAnalysisAndClear())
+    return;
 
   auto showMissingModelAndAbort = [](const juce::String &modelName,
                                      const juce::File &path) {
@@ -2073,6 +2475,8 @@ void EditorController::analyzeAudio(
 
   onProgress(0.35, "Computing mel spectrogram...");
   reportStep(1, "Mel spectrogram");
+  if (abortAnalysisAndClear())
+    return;
   LOG("analyzeAudio: starting mel spectrogram");
   auto melFuture = std::async(std::launch::async, [samples, numSamples, sampleRate]() {
     MelSpectrogram melComputer(sampleRate, N_FFT, HOP_SIZE, NUM_MELS, FMIN, FMAX);
@@ -2081,6 +2485,8 @@ void EditorController::analyzeAudio(
 
   onProgress(0.55, "Extracting pitch (F0)...");
   reportStep(2, "Pitch extraction (F0)");
+  if (abortAnalysisAndClear())
+    return;
   LOG("analyzeAudio: starting F0 extraction");
   std::future<std::vector<float>> f0Future;
   std::vector<float> extractedF0;
@@ -2098,6 +2504,8 @@ void EditorController::analyzeAudio(
     }
   }
   LOG("analyzeAudio: F0 extraction done, frames=" + juce::String(extractedF0.size()));
+  if (abortAnalysisAndClear())
+    return;
   auto vadFuture = std::async(std::launch::async, computeVadMaskForFrames,
                               predictedFrames);
 
@@ -2139,6 +2547,9 @@ void EditorController::analyzeAudio(
 
   if (f0Future.valid())
     extractedF0 = f0Future.get();
+
+  if (abortAnalysisAndClear())
+    return;
 
   if (extractedF0.empty() || targetFrames <= 0) {
     juce::MessageManager::callAsync([]() {
@@ -2197,6 +2608,8 @@ void EditorController::analyzeAudio(
 
     onProgress(0.65, "Smoothing pitch curve...");
     reportStep(3, "Smoothing pitch");
+    if (abortAnalysisAndClear())
+      return;
     audioData.f0 = F0Smoother::smoothF0(audioData.f0, audioData.voicedMask);
     audioData.f0 = PitchCurveProcessor::interpolateWithUvMask(
         audioData.f0, audioData.voicedMask);
@@ -2237,6 +2650,8 @@ void EditorController::analyzeAudio(
   if (hnsepModel && hnsepModel->isLoaded() && numSamples > 0) {
     onProgress(0.70, "Separating harmonic/noise...");
     reportStep(4, "HNSep separation", 0.0);
+    if (abortAnalysisAndClear())
+      return;
     if (hnsepFuture.valid()) {
       applyHNSepResult(hnsepFuture.get());
     } else {
@@ -2257,6 +2672,8 @@ void EditorController::analyzeAudio(
 
   onProgress(0.75, TR("progress.loading_vocoder"));
   reportStep(5, "Loading vocoder");
+  if (abortAnalysisAndClear())
+    return;
   if (!voc) {
     juce::MessageManager::callAsync([]() {
       juce::AlertWindow::showMessageBoxAsync(
@@ -2299,6 +2716,8 @@ void EditorController::analyzeAudio(
 
   onProgress(0.90, "Segmenting notes...");
   reportStep(6, "Note segmentation", 0.0);
+  if (abortAnalysisAndClear())
+    return;
   GameSegmentationResult gameResult;
   const GameSegmentationResult *gameResultPtr = nullptr;
   if (gameFuture.valid()) {
@@ -2311,7 +2730,12 @@ void EditorController::analyzeAudio(
     gameResult = runGameDetection(gameProgress);
     gameResultPtr = &gameResult;
   }
+  if (abortAnalysisAndClear())
+    return;
   segmentIntoNotesInternal(targetProject, nullptr, gameResultPtr);
+
+  if (abortAnalysisAndClear())
+    return;
 
   PitchCurveProcessor::rebuildCurvesFromSource(targetProject, audioData.f0);
   HNSepCurveProcessor::initializeCurves(targetProject);

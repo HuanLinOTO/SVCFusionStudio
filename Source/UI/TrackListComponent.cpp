@@ -80,7 +80,10 @@ TrackListComponent::TrackItem::TrackItem(TrackListComponent& o, int idx)
 
     typeCombo.onChange = [this]() {
         TrackType newType = (typeCombo.getSelectedId() == 2) ? TrackType::Vocal : TrackType::Accompaniment;
-        if (newType != trackType && owner.onTrackTypeChanged)
+        // Always notify user changes. During accompaniment->vocal analysis the
+        // model type remains Accompaniment until completion, so switching back
+        // to Accompaniment would otherwise be filtered out and fail to abort.
+        if (owner.onTrackTypeChanged)
             owner.onTrackTypeChanged(trackIndex, newType);
     };
 
@@ -231,14 +234,39 @@ void TrackListComponent::TrackItem::paint(juce::Graphics& g)
         g.fillAll();
     }
 
-    // Progress overlay
-    if (progress.active) {
+    // Progress overlay (active = bars, queued = badge; both can coexist)
+    if (progress.active || progress.queued) {
         int wfLeft = hw;
         int wfWidth = getWidth() - hw;
 
-        // Dim the waveform area
-        g.setColour(juce::Colour(0xff000000).withAlpha(0.5f));
-        g.fillRect(wfLeft, 0, wfWidth, getHeight());
+        // Dim the waveform area when progress bars are shown
+        if (progress.active) {
+            g.setColour(juce::Colour(0xff000000).withAlpha(0.5f));
+            g.fillRect(wfLeft, 0, wfWidth, getHeight());
+        }
+
+        // Queued pill badge — rendered independent of progress bars
+        if (progress.queued) {
+            juce::String label = progress.queuedLabel.isNotEmpty()
+                                     ? progress.queuedLabel
+                                     : TR("tracks.queued_analysis");
+            g.setFont(AppFont::getFont(12.0f));
+            int textW = juce::jmin(wfWidth - 16,
+                                   g.getCurrentFont().getStringWidth(label) + 28);
+            int badgeH = 22;
+            int badgeX = wfLeft + 8;
+            int badgeY = (getHeight() - badgeH) / 2;
+            juce::Rectangle<float> badge((float)badgeX, (float)badgeY,
+                                         (float)textW, (float)badgeH);
+            g.setColour(APP_COLOR_SURFACE_RAISED);
+            g.fillRoundedRectangle(badge, badgeH * 0.5f);
+            g.setColour(APP_COLOR_BORDER_HIGHLIGHT);
+            g.drawRoundedRectangle(badge.reduced(0.5f), badgeH * 0.5f, 1.0f);
+            g.setColour(APP_COLOR_PRIMARY_GLOW);
+            g.drawText(label, badge.toNearestInt(), juce::Justification::centred);
+            if (!progress.active)
+                return; // badge only, nothing else to draw
+        }
 
         // Step text: "2/6 Mel spectrogram"
         juce::String stepText = juce::String(progress.step) + "/" + juce::String(progress.totalSteps) + " " + progress.message;
@@ -519,7 +547,12 @@ void TrackListComponent::setTrackProgress(int trackIndex, const TrackProgress& p
     } else {
         pendingProgress.active = false;
         if (trackIndex >= 0 && trackIndex < static_cast<int>(items.size())) {
-            items[static_cast<size_t>(trackIndex)]->progress = progress;
+            auto& dst = items[static_cast<size_t>(trackIndex)]->progress;
+            bool preserveQueued = dst.queued;
+            juce::String preserveQueuedLabel = dst.queuedLabel;
+            dst = progress;
+            dst.queued = preserveQueued;
+            dst.queuedLabel = preserveQueuedLabel;
             items[static_cast<size_t>(trackIndex)]->repaint();
         }
     }
@@ -530,6 +563,16 @@ void TrackListComponent::setTrackProgress(int trackIndex, const TrackProgress& p
         contentContainer.repaint();
     else
         repaint();
+}
+
+void TrackListComponent::setTrackQueued(int trackIndex, bool queued, const juce::String& label)
+{
+    if (trackIndex < 0 || trackIndex >= static_cast<int>(items.size()))
+        return;
+    auto& item = items[static_cast<size_t>(trackIndex)];
+    item->progress.queued = queued;
+    item->progress.queuedLabel = queued ? label : juce::String();
+    item->repaint();
 }
 
 void TrackListComponent::paint(juce::Graphics& g)

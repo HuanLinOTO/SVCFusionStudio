@@ -200,9 +200,14 @@
   "track.solo": "独奏",
   "track.type": "类型",
   "tracks.empty": "暂无轨道，导入音频以创建",
+  "tracks.queued": "排队分析中…",
+  "tracks.queued_analysis": "排队分析中…",
+  "tracks.queued_svc": "排队推理SVC中…",
   "tracks.title": "轨道",
   "track.readonly": "只读 — 转换为人声轨道以编辑",
   "track.delete": "删除轨道",
   "track.copy": "复制轨道",
+  "error.svc_requires_vocal_track": "无法在伴奏轨道上推理 SVC",
+  "error.svc_requires_vocal_track_detail": "请先将该轨道转换为人声轨道，再选择 SVC 声库。",
   "track.delete_confirm": "删除此轨道？"
 }

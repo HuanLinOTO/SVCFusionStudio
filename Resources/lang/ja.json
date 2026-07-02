@@ -200,9 +200,14 @@
   "track.solo": "ソロ",
   "track.type": "種類",
   "tracks.empty": "トラックがありません。音声を読み込んで作成してください",
+  "tracks.queued": "解析待機中…",
+  "tracks.queued_analysis": "解析待機中…",
+  "tracks.queued_svc": "SVC推論待機中…",
   "tracks.title": "トラック",
   "track.readonly": "読み取り専用 — 編集するにはボーカルトラックに変換してください",
   "track.delete": "トラックを削除",
   "track.copy": "トラックを複製",
+  "error.svc_requires_vocal_track": "伴奏トラックではSVC推論できません",
+  "error.svc_requires_vocal_track_detail": "SVCボイスバンクを選択する前に、このトラックをボーカルトラックへ変換してください。",
   "track.delete_confirm": "このトラックを削除しますか？"
 }

@@ -469,12 +469,23 @@ MainComponent::MainComponent(bool enableAudioDevice)
                                            message, subProgress]() {
             if (safeThis == nullptr) return;
             TrackListComponent::TrackProgress tp;
-            tp.active = true;
+            // step < 0 is a sentinel meaning "clear this track's overlay".
+            tp.active = step >= 0;
             tp.step = step;
             tp.totalSteps = totalSteps;
             tp.message = message;
             tp.subProgress = subProgress;
             safeThis->trackList.setTrackProgress(trackIndex, tp);
+          });
+        });
+
+    // Track queued/dequeued notifications for the vocal-conversion queue
+    editorController->setTrackQueuedCallback(
+        [this](int trackIndex, bool queued, const juce::String &label) {
+          juce::Component::SafePointer<MainComponent> safeThis(this);
+          juce::MessageManager::callAsync([safeThis, trackIndex, queued, label]() {
+            if (safeThis == nullptr) return;
+            safeThis->trackList.setTrackQueued(trackIndex, queued, label);
           });
         });
   }
@@ -631,6 +642,16 @@ MainComponent::MainComponent(bool enableAudioDevice)
       return;
     }
 
+    auto* activeTrack = editorController->getActiveTrack();
+    if (!activeTrack || !activeTrack->isVocal()) {
+      DBG("MainComponent: Cannot activate SVC voicebank on accompaniment track");
+      StyledMessageBox::show(this,
+          TR("error.svc_requires_vocal_track"),
+          TR("error.svc_requires_vocal_track_detail"),
+          StyledMessageBox::WarningIcon);
+      return;
+    }
+
     juce::File voicebankDir(info.path);
     if (!voicebankDir.isDirectory())
     {
@@ -638,65 +659,43 @@ MainComponent::MainComponent(bool enableAudioDevice)
       return;
     }
 
-    // Load the SVC model on a background thread to avoid UI blocking
+    // Load the SVC model + run conversion on the shared serial worker so it
+    // never collides with in-progress track analysis. Progress is shown on the
+    // track that started the operation (two-bar overlay), not the toolbar.
+    // loadSVCModelAsync now handles both loading and conversion atomically
+    // within a single serial job (no separate runFullSVCConversionAsync call).
     auto* ec = editorController.get();
-    toolbar.showProgress("Loading SVC model...");
-    toolbar.setProgress(-1.0f);
+    const int svcTrackIndex = ec->getActiveTrackIndex();
     // Disable editing during SVC model loading + conversion
     pianoRoll.setEnabled(false);
     parameterPanel.setEnabled(false);
 
     juce::Component::SafePointer<MainComponent> safeThis(this);
-    std::thread([ec, voicebankDir, safeThis]() {
-      bool ok = ec->loadSVCModelFromDirectory(voicebankDir);
-      juce::MessageManager::callAsync([ok, voicebankDir, safeThis, ec]() {
-        if (!safeThis) return;
-        if (ok)
-        {
-          DBG("MainComponent: SVC model loaded: " + voicebankDir.getFileName());
-          safeThis->pianoRollView.getHNSepLane().setShfcEnabled(true);
-          // If audio is already loaded, run full SVC conversion
-          auto* proj = ec->getProject();
-          if (proj && proj->getAudioData().waveform.getNumSamples() > 0
-              && !proj->getAudioData().f0.empty())
-          {
-            safeThis->toolbar.showProgress("Converting audio with SVC...");
-            safeThis->toolbar.setProgress(-1.0f);
-            ec->runFullSVCConversionAsync(
-                [safeThis](const juce::String& msg) {
-                  if (safeThis) safeThis->toolbar.showProgress(msg);
-                },
-                [safeThis](bool success) {
-                  if (!safeThis) return;
-                  safeThis->toolbar.hideProgress();
-                  safeThis->pianoRoll.setEnabled(true);
-                  safeThis->parameterPanel.setEnabled(true);
-                  if (success) {
-                    safeThis->pianoRoll.invalidateWaveformCache();
-                    safeThis->pianoRoll.repaint();
-                    DBG("MainComponent: Full SVC conversion complete");
-                  } else {
-                    DBG("MainComponent: Full SVC conversion failed");
-                  }
-                });
-          }
-          else
-          {
-            safeThis->toolbar.hideProgress();
-            safeThis->pianoRoll.setEnabled(true);
-            safeThis->parameterPanel.setEnabled(true);
-          }
-        }
-        else
-        {
-          safeThis->toolbar.hideProgress();
-          safeThis->pianoRoll.setEnabled(true);
-          safeThis->parameterPanel.setEnabled(true);
-          safeThis->pianoRollView.getHNSepLane().setShfcEnabled(false);
-          DBG("MainComponent: Failed to load SVC model: " + voicebankDir.getFileName());
-        }
-      });
-    }).detach();
+    ec->loadSVCModelAsync(voicebankDir, /*isDirectory=*/true,
+        [safeThis, voicebankDir](bool ok) {
+      if (!safeThis) return;
+      if (ok)
+      {
+        DBG("MainComponent: SVC model loaded" +
+            juce::String(safeThis->editorController &&
+                         safeThis->editorController->getSVCModel() &&
+                         safeThis->editorController->getSVCModel()->isLoaded()
+                             ? " + conversion done"
+                             : ""));
+        safeThis->pianoRollView.getHNSepLane().setShfcEnabled(true);
+        safeThis->pianoRoll.invalidateWaveformCache();
+        safeThis->pianoRoll.repaint();
+      }
+      else
+      {
+        safeThis->pianoRollView.getHNSepLane().setShfcEnabled(false);
+        DBG("MainComponent: Failed to load SVC model: " +
+            voicebankDir.getFileName());
+      }
+      safeThis->pianoRoll.setEnabled(true);
+      safeThis->parameterPanel.setEnabled(true);
+    },
+    svcTrackIndex);
   };
 
   // Scan persistent voicebanks directory on startup
@@ -762,18 +761,12 @@ MainComponent::MainComponent(bool enableAudioDevice)
     // When SVC is active, global pitch change affects the entire F0 sent to SVC,
     // so we must re-run full SVC conversion instead of incremental resynthesis.
     if (editorController && editorController->isSVCModelActive()) {
-      toolbar.showProgress("Re-converting with SVC...");
-      toolbar.setProgress(-1.0f);
-      toolbar.setEnabled(false);
+      const int svcTrackIndex = editorController->getActiveTrackIndex();
       juce::Component::SafePointer<MainComponent> safeThis(this);
       editorController->runFullSVCConversionAsync(
-          [safeThis](const juce::String& msg) {
-            if (safeThis) safeThis->toolbar.showProgress(msg);
-          },
+          [](const juce::String&) {},
           [safeThis](bool success) {
             if (!safeThis) return;
-            safeThis->toolbar.setEnabled(true);
-            safeThis->toolbar.hideProgress();
             if (success) {
               safeThis->pianoRoll.invalidateWaveformCache();
               safeThis->pianoRoll.repaint();
@@ -782,7 +775,8 @@ MainComponent::MainComponent(bool enableAudioDevice)
               DBG("Global pitch -> full SVC conversion failed");
             }
             safeThis->notifyProjectDataChanged();
-          });
+          },
+          svcTrackIndex);
     } else {
       // No SVC active — mark all notes dirty and do incremental resynthesis
       if (auto* proj = getProject()) {
@@ -804,25 +798,20 @@ MainComponent::MainComponent(bool enableAudioDevice)
     // When SVC is active and the mode changes, re-run full SVC conversion
     // because the F0 sent to SVC is now different
     if (editorController && editorController->isSVCModelActive()) {
-      toolbar.showProgress("Re-converting with SVC...");
-      toolbar.setProgress(-1.0f);
-      toolbar.setEnabled(false);
+      const int svcTrackIndex = editorController->getActiveTrackIndex();
       juce::Component::SafePointer<MainComponent> safeThis(this);
       editorController->runFullSVCConversionAsync(
-          [safeThis](const juce::String& msg) {
-            if (safeThis) safeThis->toolbar.showProgress(msg);
-          },
+          [](const juce::String&) {},
           [safeThis](bool success) {
             if (!safeThis) return;
-            safeThis->toolbar.setEnabled(true);
-            safeThis->toolbar.hideProgress();
             if (success) {
               safeThis->pianoRoll.invalidateWaveformCache();
               safeThis->pianoRoll.repaint();
               DBG("Pitch offset mode -> full SVC conversion complete");
             }
             safeThis->notifyProjectDataChanged();
-          });
+          },
+          svcTrackIndex);
     }
   };
   parameterPanel.setProject(getProject());
@@ -1878,13 +1867,24 @@ void MainComponent::onTrackTypeChanged(int trackIndex, TrackType newType) {
                 StyledMessageBox::WarningIcon);
           }
         });
-  } else if (newType == TrackType::Accompaniment && track->isVocal()) {
-    // Vocal -> Accompaniment: just change type, keep analysis data
+  } else if (newType == TrackType::Accompaniment) {
+    // Any pending/running Vocal conversion must be invalidated, even if the
+    // model type has not flipped to Vocal yet (analysis finishes asynchronously).
+    editorController->abortTrackVocalConversion(trackIndex);
+    editorController->abortTrackSVC(trackIndex);
     track->type = TrackType::Accompaniment;
+    if (track->project)
+      track->project->clearNotes();
+    pianoRoll.invalidateWaveformCache();
+    pianoRoll.repaint();
     refreshTrackList();
 
-    if (editorController->getActiveTrackIndex() == trackIndex)
+    if (editorController->getActiveTrackIndex() == trackIndex) {
+      pianoRoll.setProject(nullptr);
+      pianoRollView.setProject(nullptr);
+      parameterPanel.setProject(nullptr);
       pianoRoll.setEnabled(false);
+    }
   }
 }
 
