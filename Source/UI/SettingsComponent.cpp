@@ -35,6 +35,20 @@ int selectedIdForFontScale(float scale) {
   return 1;
 }
 
+bool isEnvFlagEnabled(const char *name) {
+  const auto text = juce::SystemStats::getEnvironmentVariable(name, {}).trim();
+  return text.isNotEmpty() && text != "0" &&
+         !text.equalsIgnoreCase("false") && !text.equalsIgnoreCase("off");
+}
+
+bool areUiAnimationsDisabled() {
+  return isEnvFlagEnabled("SVCFS_DISABLE_UI_ANIMATIONS");
+}
+
+bool shouldAnimateSettingsOverlay() {
+  return !areUiAnimationsDisabled();
+}
+
 #ifdef _WIN32
 juce::StringArray getDxgiAdapterNames() {
   juce::StringArray names;
@@ -1053,6 +1067,15 @@ void SettingsComponent::startTabTransition(SettingsTab fromTab, SettingsTab toTa
     return;
   }
 
+  if (areUiAnimationsDisabled()) {
+    tabAnimationActive = false;
+    tabAnimationProgress = 1.0f;
+    previousTab = toTab;
+    stopTimer();
+    applyTabAnimationState();
+    return;
+  }
+
   previousTab = fromTab;
   tabAnimationActive = true;
   tabAnimationProgress = 0.0f;
@@ -1655,7 +1678,7 @@ void SettingsComponent::applyAudioSettings() {
 
 SettingsOverlay::SettingsOverlay(SettingsManager *settingsManager,
                                  juce::AudioDeviceManager *audioDeviceManager) {
-  setOpaque(false);
+  setOpaque(true);
   setInterceptsMouseClicks(true, true);
   setWantsKeyboardFocus(true);
 
@@ -1682,6 +1705,7 @@ SettingsOverlay::~SettingsOverlay() {
 }
 
 void SettingsOverlay::openAnimated() {
+  captureBackgroundSnapshot();
   settingsComponent->setVisible(true);
   closeButton.setVisible(true);
 
@@ -1701,18 +1725,19 @@ void SettingsOverlay::closeAnimated() {
 }
 
 void SettingsOverlay::paint(juce::Graphics &g) {
+  if (backgroundSnapshot.isValid())
+    g.drawImageAt(backgroundSnapshot, 0, 0);
+  else
+    g.fillAll(APP_COLOR_BACKGROUND);
+
   g.fillAll(APP_COLOR_OVERLAY_DIM.withMultipliedAlpha(animationProgress));
 
-  const auto animatedBounds = getAnimatedContentBounds().getSmallestIntegerContainer();
-  if (!animatedBounds.isEmpty()) {
-    juce::DropShadow shadow(APP_COLOR_OVERLAY_SHADOW.withMultipliedAlpha(animationProgress),
-                            18, {0, 10});
-    shadow.drawForRectangle(g, animatedBounds);
-  }
+  drawCachedShadow(g);
 }
 
 void SettingsOverlay::resized() {
   auto bounds = getLocalBounds();
+  backgroundSnapshot = {};
 
   if (settingsComponent != nullptr) {
     const int preferredWidth = settingsComponent->getWidth();
@@ -1724,6 +1749,7 @@ void SettingsOverlay::resized() {
     contentBounds = juce::Rectangle<int>(0, 0, contentWidth, contentHeight)
                         .withCentre(bounds.getCentre());
     settingsComponent->setBounds(contentBounds);
+    invalidateShadowCache();
 
     const int buttonSize = 24;
     closeButton.setBounds(contentBounds.getRight() - buttonSize - 10,
@@ -1794,6 +1820,21 @@ void SettingsOverlay::startAnimation(float nextTarget) {
   settingsComponent->setVisible(true);
   closeButton.setVisible(true);
 
+  if (!shouldAnimateSettingsOverlay()) {
+    stopTimer();
+    animationStartProgress = nextTarget;
+    animationTargetProgress = nextTarget;
+    animationProgress = nextTarget;
+    updateAnimatedState();
+
+    if (nextTarget <= 0.0f)
+      setVisible(false);
+    else
+      repaint();
+
+    return;
+  }
+
   animationStartProgress = animationProgress;
   animationTargetProgress = nextTarget;
   animationStartTimeMs = juce::Time::getMillisecondCounterHiRes();
@@ -1816,6 +1857,57 @@ void SettingsOverlay::updateAnimatedState() {
   closeButton.setTransform(transform);
   closeButton.setAlpha(animationProgress);
   closeButton.setEnabled(animationProgress >= 0.999f);
+}
+
+void SettingsOverlay::captureBackgroundSnapshot() {
+  auto *parent = getParentComponent();
+  if (parent == nullptr || getBounds().isEmpty()) {
+    backgroundSnapshot = {};
+    return;
+  }
+
+  const auto wasVisible = isVisible();
+  if (wasVisible)
+    setVisible(false);
+
+  backgroundSnapshot = parent->createComponentSnapshot(getBounds(), true);
+
+  if (wasVisible)
+    setVisible(true);
+}
+
+void SettingsOverlay::invalidateShadowCache() {
+  shadowCache = {};
+  shadowCacheBounds = {};
+}
+
+void SettingsOverlay::drawCachedShadow(juce::Graphics &g) {
+  if (contentBounds.isEmpty() || animationProgress <= 0.001f)
+    return;
+
+  constexpr int shadowRadius = 18;
+  constexpr int shadowOffsetY = 10;
+  auto requiredBounds = contentBounds.expanded(shadowRadius)
+                            .translated(0, shadowOffsetY)
+                            .getUnion(contentBounds.expanded(shadowRadius));
+
+  if (!shadowCache.isValid() || shadowCacheBounds != requiredBounds) {
+    shadowCacheBounds = requiredBounds;
+    shadowCache = juce::Image(juce::Image::ARGB, shadowCacheBounds.getWidth(),
+                              shadowCacheBounds.getHeight(), true);
+
+    juce::Graphics cacheGraphics(shadowCache);
+    juce::DropShadow shadow(APP_COLOR_OVERLAY_SHADOW, shadowRadius,
+                            {0, shadowOffsetY});
+    shadow.drawForRectangle(
+        cacheGraphics,
+        contentBounds.translated(-shadowCacheBounds.getX(),
+                                 -shadowCacheBounds.getY()));
+  }
+
+  g.setOpacity(animationProgress);
+  g.drawImageAt(shadowCache, shadowCacheBounds.getX(), shadowCacheBounds.getY());
+  g.setOpacity(1.0f);
 }
 
 juce::Rectangle<float> SettingsOverlay::getAnimatedContentBounds() const {

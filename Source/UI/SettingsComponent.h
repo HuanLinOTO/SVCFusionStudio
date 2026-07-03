@@ -233,6 +233,9 @@ private:
   void timerCallback() override;
   void startAnimation(float nextTarget);
   void updateAnimatedState();
+  void captureBackgroundSnapshot();
+  void invalidateShadowCache();
+  void drawCachedShadow(juce::Graphics &g);
   juce::Rectangle<float> getAnimatedContentBounds() const;
   juce::AffineTransform getAnimatedTransform() const;
   void closeIfPossible();
@@ -240,6 +243,9 @@ private:
   std::unique_ptr<SettingsComponent> settingsComponent;
   juce::TextButton closeButton{"X"};
   juce::Rectangle<int> contentBounds;
+  juce::Image backgroundSnapshot;
+  juce::Image shadowCache;
+  juce::Rectangle<int> shadowCacheBounds;
   float animationProgress = 0.0f;
   float animationStartProgress = 0.0f;
   float animationTargetProgress = 0.0f;

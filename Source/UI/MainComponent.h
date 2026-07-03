@@ -190,6 +190,8 @@ private:
 
   // Vertical split layout
   int trackListHeight = 200;
+  int splitDragStartTrackListHeight = 200;
+  juce::int64 lastSplitResizeMs = 0;
   class SplitterBar;
   std::unique_ptr<SplitterBar> splitterBar;
 

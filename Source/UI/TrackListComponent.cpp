@@ -195,7 +195,11 @@ void TrackListComponent::TrackItem::paint(juce::Graphics& g)
         double samplesPerSec = static_cast<double>(audioSampleRate);
         double totalSamples = static_cast<double>(audioNumSamples);
 
-        for (int x = 0; x < wfWidth; ++x) {
+        auto clip = g.getClipBounds();
+        int startX = juce::jlimit(0, wfWidth, clip.getX() - wfLeft);
+        int endX = juce::jlimit(0, wfWidth, clip.getRight() - wfLeft);
+
+        for (int x = startX; x < endX; ++x) {
             double timeStart = scrollSec + (static_cast<double>(x) / pps);
             double timeEnd = scrollSec + (static_cast<double>(x + 1) / pps);
             if (timeEnd < 0.0 || timeStart > owner.totalDuration) continue;
@@ -533,9 +537,15 @@ void TrackListComponent::setPlayheadPosition(double timeSeconds)
 
     for (auto& item : items) {
         int wfLeft = headerWidth;
-        int minX = wfLeft + juce::jmin(oldPhX, newPhX) - 1;
-        int maxX = wfLeft + juce::jmax(oldPhX, newPhX) + 1;
-        item->repaint(juce::Rectangle<int>(minX, 0, maxX - minX, item->getHeight()));
+        int itemHeight = item->getHeight();
+
+        auto repaintPlayhead = [itemHeight, &item](int x) {
+            item->repaint(juce::Rectangle<int>(x - 1, 0, 3, itemHeight));
+        };
+
+        if (oldPhX >= 0)
+            repaintPlayhead(wfLeft + oldPhX);
+        repaintPlayhead(wfLeft + newPhX);
     }
 }
 

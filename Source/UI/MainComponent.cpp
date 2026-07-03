@@ -333,18 +333,26 @@ public:
     }
 
     void mouseDown(const juce::MouseEvent& e) override {
-        dragStartY = e.y;
+        dragStartScreenY = e.getScreenY();
+        if (onDragStart)
+            onDragStart();
     }
 
     void mouseDrag(const juce::MouseEvent& e) override {
         if (onResize)
-            onResize(e.y - dragStartY);
+            onResize(e.getScreenY() - dragStartScreenY, false);
     }
 
-    std::function<void(int deltaY)> onResize;
+    void mouseUp(const juce::MouseEvent& e) override {
+        if (onResize)
+            onResize(e.getScreenY() - dragStartScreenY, true);
+    }
+
+    std::function<void()> onDragStart;
+    std::function<void(int deltaY, bool force)> onResize;
 
 private:
-    int dragStartY = 0;
+    int dragStartScreenY = 0;
 };
 
 // ── Global right sidebar for parameter/voicebank panels ──
@@ -558,11 +566,20 @@ MainComponent::MainComponent(bool enableAudioDevice)
   trackList.onSeek = [this](double time) { seek(time); };
 
   // Setup splitter bar resize
-  splitterBar->onResize = [this](int deltaY) {
-    int newHeight = trackListHeight + deltaY;
+  splitterBar->onDragStart = [this]() {
+    splitDragStartTrackListHeight = trackListHeight;
+    lastSplitResizeMs = 0;
+  };
+  splitterBar->onResize = [this](int deltaY, bool force) {
+    int newHeight = splitDragStartTrackListHeight + deltaY;
     int availableHeight = getHeight() - 24 - 52 - 4; // menu + toolbar + splitter
     newHeight = juce::jlimit(48, availableHeight - 100, newHeight);
     if (newHeight != trackListHeight) {
+      auto now = juce::Time::getMillisecondCounter();
+      if (!force && lastSplitResizeMs != 0 && now - lastSplitResizeMs < 33)
+        return;
+
+      lastSplitResizeMs = now;
       trackListHeight = newHeight;
       resized();
     }
