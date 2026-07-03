@@ -20,6 +20,7 @@ float f0ToMidi(float f0) {
 
 void OverviewPanel::paint(juce::Graphics &g) {
   auto content = getContentBounds();
+  const auto clip = g.getClipBounds().toFloat();
   const float cornerRadius = 6.0f;
 
   if (drawBackground) {
@@ -51,7 +52,13 @@ void OverviewPanel::paint(juce::Graphics &g) {
   const float amplitude = content.getHeight() * 0.58f;
 
   g.setColour(APP_COLOR_WAVEFORM.brighter(0.2f).withAlpha(0.9f));
-  for (int px = 0; px < width; ++px) {
+  const int firstWavePx = juce::jlimit(
+      0, width,
+      static_cast<int>(std::floor(clip.getX() - content.getX())) - 1);
+  const int lastWavePx = juce::jlimit(
+      0, width,
+      static_cast<int>(std::ceil(clip.getRight() - content.getX())) + 1);
+  for (int px = firstWavePx; px < lastWavePx; ++px) {
     const double t0 = static_cast<double>(px) / width;
     const double t1 = static_cast<double>(px + 1) / width;
     int startSample = static_cast<int>(t0 * numSamples);
@@ -90,6 +97,8 @@ void OverviewPanel::paint(juce::Graphics &g) {
       const float x2 = content.getX() +
                        static_cast<float>((endTime / totalTime) *
                                           content.getWidth());
+      if (x2 < clip.getX() || x1 > clip.getRight())
+        continue;
       g.fillRect(juce::Rectangle<float>(x1, content.getY(),
                                         std::max(1.0f, x2 - x1),
                                         content.getHeight()));
@@ -106,6 +115,8 @@ void OverviewPanel::paint(juce::Graphics &g) {
       const float x = content.getX() +
                       static_cast<float>((startTime / totalTime) *
                                          content.getWidth());
+      if (x < clip.getX() - 1.0f || x > clip.getRight() + 1.0f)
+        continue;
       g.drawLine(x, content.getY(), x, content.getBottom(), 1.0f);
     }
   }
@@ -129,6 +140,15 @@ void OverviewPanel::paint(juce::Graphics &g) {
             static_cast<double>(note.getEndFrame()) * HOP_SIZE / SAMPLE_RATE;
 
         if (endTime <= startTime)
+          continue;
+
+        const float noteX1 = content.getX() +
+                             static_cast<float>((startTime / totalTime) *
+                                                content.getWidth());
+        const float noteX2 = content.getX() +
+                             static_cast<float>((endTime / totalTime) *
+                                                content.getWidth());
+        if (noteX2 < clip.getX() || noteX1 > clip.getRight())
           continue;
 
         float midi = note.getAdjustedMidiNote();
@@ -170,19 +190,13 @@ void OverviewPanel::paint(juce::Graphics &g) {
                                             juce::PathStrokeType::curved,
                                             juce::PathStrokeType::rounded));
         } else {
-          const float x1 = content.getX() +
-                           static_cast<float>((startTime / totalTime) *
-                                              content.getWidth());
-          const float x2 = content.getX() +
-                           static_cast<float>((endTime / totalTime) *
-                                              content.getWidth());
           const float y = content.getY() +
                           (MAX_MIDI_NOTE - midi) / pitchRange *
                               content.getHeight();
           g.setColour(baseColour.withAlpha(0.18f));
-          g.drawLine(x1, y, x2, y, thickness * 2.6f);
+          g.drawLine(noteX1, y, noteX2, y, thickness * 2.6f);
           g.setColour(baseColour.withAlpha(0.75f));
-          g.drawLine(x1, y, x2, y, thickness);
+          g.drawLine(noteX1, y, noteX2, y, thickness);
         }
       }
 
@@ -193,7 +207,13 @@ void OverviewPanel::paint(juce::Graphics &g) {
         juce::Path f0Path;
         bool hasSegment = false;
 
-        for (int px = 0; px < widthPx; ++px) {
+        const int firstF0Px = juce::jlimit(
+            0, widthPx,
+            static_cast<int>(std::floor(clip.getX() - content.getX())) - 1);
+        const int lastF0Px = juce::jlimit(
+            0, widthPx,
+            static_cast<int>(std::ceil(clip.getRight() - content.getX())) + 1);
+        for (int px = firstF0Px; px < lastF0Px; ++px) {
           const double t0 = (static_cast<double>(px) / widthPx) * totalTime;
           const double t1 =
               (static_cast<double>(px + 1) / widthPx) * totalTime;
@@ -247,8 +267,12 @@ void OverviewPanel::paint(juce::Graphics &g) {
   }
 
   auto viewport = computeViewport();
-  if (!viewport.valid)
+  if (!viewport.valid) {
+    lastViewportBounds = {};
     return;
+  }
+
+  lastViewportBounds = viewport.rect.getSmallestIntegerContainer().expanded(4);
 
   g.setColour(APP_COLOR_SELECTION_OVERLAY.withAlpha(0.35f));
   g.fillRoundedRectangle(viewport.rect, 4.0f);
@@ -264,6 +288,24 @@ void OverviewPanel::paint(juce::Graphics &g) {
              viewport.rect.getY() + handleInset, handleWidth, handleHeight);
   g.fillRect(viewport.rect.getRight() - handleInset - handleWidth,
              viewport.rect.getY() + handleInset, handleWidth, handleHeight);
+}
+
+void OverviewPanel::resized() { lastViewportBounds = {}; }
+
+void OverviewPanel::repaintViewportChange() {
+  auto viewport = computeViewport();
+  if (!viewport.valid) {
+    lastViewportBounds = {};
+    repaint();
+    return;
+  }
+
+  auto current = viewport.rect.getSmallestIntegerContainer().expanded(4);
+  auto dirty = current;
+  if (!lastViewportBounds.isEmpty())
+    dirty = dirty.getUnion(lastViewportBounds.expanded(4));
+  lastViewportBounds = current;
+  repaint(dirty.getIntersection(getLocalBounds()));
 }
 
 void OverviewPanel::mouseDown(const juce::MouseEvent &e) {

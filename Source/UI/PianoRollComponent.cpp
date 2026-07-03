@@ -1275,15 +1275,6 @@ void PianoRollComponent::drawStaticPianoLayer(
   if (drawBounds.isEmpty())
     return;
 
-  const auto mainAreaPixels = mainArea.getWidth() * mainArea.getHeight();
-  const auto dirtyPixels = drawBounds.getWidth() * drawBounds.getHeight();
-  const bool largeDirtyRegion =
-      mainAreaPixels > 0 && dirtyPixels >= mainAreaPixels / 3;
-  if (largeDirtyRegion) {
-    drawStaticPianoContentDirect(g, mainArea);
-    return;
-  }
-
   const bool cacheHit = isStaticPianoLayerValid(mainArea);
   recordRenderProfileStaticLayerCache(cacheHit);
   if (!cacheHit)

@@ -17,22 +17,27 @@ public:
 
   void setProject(Project *proj) {
     project = proj;
+    lastViewportBounds = {};
     repaint();
   }
   void setDrawBackground(bool shouldDraw) {
     drawBackground = shouldDraw;
+    lastViewportBounds = {};
     repaint();
   }
   void setShowSomeSegmentsDebug(bool show) {
     showSomeSegmentsDebug = show;
+    lastViewportBounds = {};
     repaint();
   }
+  void repaintViewportChange();
 
   std::function<ViewState()> getViewState;
   std::function<void(double)> onScrollXChanged;
   std::function<void(float)> onZoomChanged;
 
   void paint(juce::Graphics &g) override;
+  void resized() override;
   void mouseDown(const juce::MouseEvent &e) override;
   void mouseDrag(const juce::MouseEvent &e) override;
   void mouseUp(const juce::MouseEvent &e) override;
@@ -60,6 +65,7 @@ private:
   Project *project = nullptr;
   bool drawBackground = true;
   bool showSomeSegmentsDebug = false;
+  juce::Rectangle<int> lastViewportBounds;
   DragMode dragMode = DragMode::None;
   float dragStartX = 0.0f;
   double dragStartStartTime = 0.0;

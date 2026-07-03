@@ -320,7 +320,7 @@ void PianoRollWorkspaceView::setUndoManager(PitchUndoManager *undoManager)
 void PianoRollWorkspaceView::refreshOverview()
 {
   if (overviewVisible)
-    overviewPanel.repaint();
+    overviewPanel.repaintViewportChange();
 }
 
 void PianoRollWorkspaceView::setShowSomeSegmentsDebug(bool show)
