@@ -1445,8 +1445,7 @@ void EditorController::abortTrackSVC(int trackIndex) {
   if (svcProgressTrackIndex.load() == trackIndex)
     cancelSVCConversion();
 
-  if (trackQueuedCallback && trackIndex >= 0)
-    trackQueuedCallback(trackIndex, false, {});
+  notifySerialQueueChanged();
   clearTrackProgress(trackIndex);
 
   auto* track = getTrack(trackIndex);
@@ -1556,8 +1555,7 @@ void EditorController::abortTrackVocalConversion(int trackIndex) {
     serialJobQueue.erase(newEnd, serialJobQueue.end());
   }
 
-  if (trackQueuedCallback && trackIndex >= 0)
-    trackQueuedCallback(trackIndex, false, {});
+  notifySerialQueueChanged();
   clearTrackProgress(trackIndex);
   clearTrackVocalAnalysisData(trackIndex);
 }
@@ -1969,12 +1967,52 @@ void EditorController::convertTrackToVocal(
   enqueueSerialJob(std::move(job));
 }
 
+void EditorController::notifySerialQueueChanged() {
+  if (!trackQueuedCallback)
+    return;
+
+  std::vector<SerialJob> queuedJobs;
+  {
+    std::lock_guard<std::mutex> lock(serialJobMutex);
+    queuedJobs.assign(serialJobQueue.begin(), serialJobQueue.end());
+  }
+
+  for (int i = 0; i < static_cast<int>(tracks.size()); ++i) {
+    trackQueuedCallback(i, TrackQueuedKind::VocalAnalysis, false, {}, 0);
+    trackQueuedCallback(i, TrackQueuedKind::SVCConversion, false, {}, 0);
+  }
+
+  std::vector<SerialJob> orderedJobs;
+  orderedJobs.reserve(queuedJobs.size());
+  for (const auto& job : queuedJobs) {
+    if (job.kind == SerialJobKind::VocalConvert)
+      orderedJobs.push_back(job);
+  }
+  for (const auto& job : queuedJobs) {
+    if (job.kind != SerialJobKind::VocalConvert)
+      orderedJobs.push_back(job);
+  }
+
+  for (int i = 0; i < static_cast<int>(orderedJobs.size()); ++i) {
+    const auto& job = orderedJobs[static_cast<size_t>(i)];
+    if (job.trackIndex < 0)
+      continue;
+
+    const bool isSVC = job.kind == SerialJobKind::SVCConvert;
+    const auto queuedKind = isSVC ? TrackQueuedKind::SVCConversion
+                                  : TrackQueuedKind::VocalAnalysis;
+    const auto baseLabel = isSVC ? TR("tracks.queued_svc")
+                                 : TR("tracks.queued_analysis");
+    const int queuePosition = i + 1;
+    trackQueuedCallback(job.trackIndex, queuedKind, true,
+                        baseLabel + " #" + juce::String(queuePosition),
+                        queuePosition);
+  }
+}
+
 void EditorController::enqueueSerialJob(SerialJob job) {
   const int trackIndex = job.trackIndex;
   const SerialJobKind kind = job.kind;
-  const juce::String queuedLabel = kind == SerialJobKind::SVCConvert
-                                       ? TR("tracks.queued_svc")
-                                       : TR("tracks.queued_analysis");
   {
     std::lock_guard<std::mutex> lock(serialJobMutex);
     // Ignore duplicate requests of the same kind for a track already queued.
@@ -1993,10 +2031,7 @@ void EditorController::enqueueSerialJob(SerialJob job) {
     }
   }
   serialJobCv.notify_one();
-
-  // Mark this track as queued immediately so the UI can show a badge.
-  if (trackQueuedCallback && trackIndex >= 0)
-    trackQueuedCallback(trackIndex, true, queuedLabel);
+  notifySerialQueueChanged();
 }
 
 void EditorController::serialWorkerLoop() {
@@ -2020,8 +2055,7 @@ void EditorController::serialWorkerLoop() {
     }
 
     // The job left the queue and is about to start processing.
-    if (trackQueuedCallback && job.trackIndex >= 0)
-      trackQueuedCallback(job.trackIndex, false, {});
+    notifySerialQueueChanged();
 
     // Track which track is being analyzed (VocalConvert) so SVC progress
     // doesn't override the analysis bars on the same track.

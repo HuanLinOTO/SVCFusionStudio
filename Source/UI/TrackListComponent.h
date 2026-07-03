@@ -26,15 +26,17 @@ public:
     // Per-track progress: trackIndex=-1 means pending track shown at bottom
     struct TrackProgress {
         bool active = false;
-        bool queued = false; // waiting in the vocal-conversion queue
-        juce::String queuedLabel;
+        bool queuedAnalysis = false;
+        bool queuedSVC = false;
+        juce::String queuedAnalysisLabel;
+        juce::String queuedSVCLabel;
         int step = 0;
         int totalSteps = 0;
         juce::String message;
         double subProgress = -1.0; // -1 = indeterminate, 0-1 = chunk progress
     };
     void setTrackProgress(int trackIndex, const TrackProgress& progress);
-    void setTrackQueued(int trackIndex, bool queued, const juce::String& label = {});
+    void setTrackQueued(int trackIndex, bool svcQueue, bool queued, const juce::String& label = {});
 
     std::function<void(int trackIndex)> onTrackSelected;
     std::function<void(int trackIndex, TrackType newType)> onTrackTypeChanged;

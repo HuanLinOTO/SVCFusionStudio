@@ -98,8 +98,10 @@ public:
   // Notifies when a track is waiting in the serialized inference queue
   // (queued = true) or when it leaves the queue to start processing
   // (queued = false). Used to display a typed "queued" badge in the UI.
+  enum class TrackQueuedKind { VocalAnalysis, SVCConversion };
   using TrackQueuedCallback =
-      std::function<void(int trackIndex, bool queued, const juce::String &label)>;
+      std::function<void(int trackIndex, TrackQueuedKind kind, bool queued,
+                         const juce::String &label, int queuePosition)>;
   void setTrackQueuedCallback(TrackQueuedCallback cb) {
     trackQueuedCallback = std::move(cb);
   }
@@ -305,6 +307,7 @@ private:
   bool isTrackVocalAnalysisPendingOrRunning(int trackIndex);
   std::uint64_t nextVocalConvertGeneration(int trackIndex);
   std::uint64_t getVocalConvertGeneration(int trackIndex);
+  void notifySerialQueueChanged();
 
   std::thread serialWorkerThread;
   std::deque<SerialJob> serialJobQueue;

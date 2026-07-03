@@ -238,8 +238,8 @@ void TrackListComponent::TrackItem::paint(juce::Graphics& g)
         g.fillAll();
     }
 
-    // Progress overlay (active = bars, queued = badge; both can coexist)
-    if (progress.active || progress.queued) {
+    // Progress overlay (active = bars, queued = badges; both can coexist)
+    if (progress.active || progress.queuedAnalysis || progress.queuedSVC) {
         int wfLeft = hw;
         int wfWidth = getWidth() - hw;
 
@@ -249,18 +249,15 @@ void TrackListComponent::TrackItem::paint(juce::Graphics& g)
             g.fillRect(wfLeft, 0, wfWidth, getHeight());
         }
 
-        // Queued pill badge — rendered independent of progress bars
-        if (progress.queued) {
-            juce::String label = progress.queuedLabel.isNotEmpty()
-                                     ? progress.queuedLabel
-                                     : TR("tracks.queued_analysis");
+        // Queued pill badges — rendered independent of progress bars
+        auto drawQueuedBadge = [&](const juce::String& text, int x) {
+            juce::String label = text.isNotEmpty() ? text : TR("tracks.queued_analysis");
             g.setFont(AppFont::getFont(12.0f));
             int textW = juce::jmin(wfWidth - 16,
                                    g.getCurrentFont().getStringWidth(label) + 28);
             int badgeH = 22;
-            int badgeX = wfLeft + 8;
             int badgeY = (getHeight() - badgeH) / 2;
-            juce::Rectangle<float> badge((float)badgeX, (float)badgeY,
+            juce::Rectangle<float> badge((float)x, (float)badgeY,
                                          (float)textW, (float)badgeH);
             g.setColour(APP_COLOR_SURFACE_RAISED);
             g.fillRoundedRectangle(badge, badgeH * 0.5f);
@@ -268,8 +265,17 @@ void TrackListComponent::TrackItem::paint(juce::Graphics& g)
             g.drawRoundedRectangle(badge.reduced(0.5f), badgeH * 0.5f, 1.0f);
             g.setColour(APP_COLOR_PRIMARY_GLOW);
             g.drawText(label, badge.toNearestInt(), juce::Justification::centred);
+            return textW;
+        };
+
+        if (progress.queuedAnalysis || progress.queuedSVC) {
+            int badgeX = wfLeft + 8;
+            if (progress.queuedAnalysis)
+                badgeX += drawQueuedBadge(progress.queuedAnalysisLabel, badgeX) + 8;
+            if (progress.queuedSVC)
+                badgeX += drawQueuedBadge(progress.queuedSVCLabel, badgeX) + 8;
             if (!progress.active)
-                return; // badge only, nothing else to draw
+                return; // badges only, nothing else to draw
         }
 
         // Step text: "2/6 Mel spectrogram"
@@ -558,11 +564,15 @@ void TrackListComponent::setTrackProgress(int trackIndex, const TrackProgress& p
         pendingProgress.active = false;
         if (trackIndex >= 0 && trackIndex < static_cast<int>(items.size())) {
             auto& dst = items[static_cast<size_t>(trackIndex)]->progress;
-            bool preserveQueued = dst.queued;
-            juce::String preserveQueuedLabel = dst.queuedLabel;
+            bool preserveQueuedAnalysis = dst.queuedAnalysis;
+            bool preserveQueuedSVC = dst.queuedSVC;
+            juce::String preserveQueuedAnalysisLabel = dst.queuedAnalysisLabel;
+            juce::String preserveQueuedSVCLabel = dst.queuedSVCLabel;
             dst = progress;
-            dst.queued = preserveQueued;
-            dst.queuedLabel = preserveQueuedLabel;
+            dst.queuedAnalysis = preserveQueuedAnalysis;
+            dst.queuedSVC = preserveQueuedSVC;
+            dst.queuedAnalysisLabel = preserveQueuedAnalysisLabel;
+            dst.queuedSVCLabel = preserveQueuedSVCLabel;
             items[static_cast<size_t>(trackIndex)]->repaint();
         }
     }
@@ -575,13 +585,18 @@ void TrackListComponent::setTrackProgress(int trackIndex, const TrackProgress& p
         repaint();
 }
 
-void TrackListComponent::setTrackQueued(int trackIndex, bool queued, const juce::String& label)
+void TrackListComponent::setTrackQueued(int trackIndex, bool svcQueue, bool queued, const juce::String& label)
 {
     if (trackIndex < 0 || trackIndex >= static_cast<int>(items.size()))
         return;
     auto& item = items[static_cast<size_t>(trackIndex)];
-    item->progress.queued = queued;
-    item->progress.queuedLabel = queued ? label : juce::String();
+    if (svcQueue) {
+        item->progress.queuedSVC = queued;
+        item->progress.queuedSVCLabel = queued ? label : juce::String();
+    } else {
+        item->progress.queuedAnalysis = queued;
+        item->progress.queuedAnalysisLabel = queued ? label : juce::String();
+    }
     item->repaint();
 }
 

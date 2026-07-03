@@ -489,11 +489,17 @@ MainComponent::MainComponent(bool enableAudioDevice)
 
     // Track queued/dequeued notifications for the vocal-conversion queue
     editorController->setTrackQueuedCallback(
-        [this](int trackIndex, bool queued, const juce::String &label) {
+        [this](int trackIndex, EditorController::TrackQueuedKind kind,
+               bool queued, const juce::String &label, int queuePosition) {
           juce::Component::SafePointer<MainComponent> safeThis(this);
-          juce::MessageManager::callAsync([safeThis, trackIndex, queued, label]() {
+          juce::MessageManager::callAsync([safeThis, trackIndex, kind, queued,
+                                           label, queuePosition]() {
             if (safeThis == nullptr) return;
-            safeThis->trackList.setTrackQueued(trackIndex, queued, label);
+            juce::ignoreUnused(queuePosition);
+            safeThis->trackList.setTrackQueued(
+                trackIndex,
+                kind == EditorController::TrackQueuedKind::SVCConversion,
+                queued, label);
           });
         });
   }
