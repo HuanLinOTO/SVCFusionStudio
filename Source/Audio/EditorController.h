@@ -283,7 +283,8 @@ private:
   std::atomic<bool> isAnalyzingAudio{false};
   std::atomic<bool> cancelLoadingFlag{false};
   std::atomic<std::uint64_t> hostAnalysisJobId{0};
-  std::atomic<std::uint64_t> vocalConvertGeneration{0};
+  std::vector<std::uint64_t> vocalConvertGenerations;
+  std::mutex vocalConvertGenerationMutex;
   std::atomic<int> abortedVocalConvertTrackIndex{-1};
 
   // Serialized inference queue. Track analysis and SVC conversion both need
@@ -300,6 +301,10 @@ private:
   void enqueueSerialJob(SerialJob job);
   void serialWorkerLoop();
   void clearTrackVocalAnalysisData(int trackIndex);
+  bool hasQueuedSerialJob(SerialJobKind kind, int trackIndex);
+  bool isTrackVocalAnalysisPendingOrRunning(int trackIndex);
+  std::uint64_t nextVocalConvertGeneration(int trackIndex);
+  std::uint64_t getVocalConvertGeneration(int trackIndex);
 
   std::thread serialWorkerThread;
   std::deque<SerialJob> serialJobQueue;

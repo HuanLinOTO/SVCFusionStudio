@@ -1891,6 +1891,8 @@ void MainComponent::onTrackTypeChanged(int trackIndex, TrackType newType) {
                 StyledMessageBox::WarningIcon);
           }
         });
+    setActiveTrack(trackIndex);
+    refreshTrackList();
   } else if (newType == TrackType::Accompaniment) {
     // Any pending/running Vocal conversion must be invalidated, even if the
     // model type has not flipped to Vocal yet (analysis finishes asynchronously).

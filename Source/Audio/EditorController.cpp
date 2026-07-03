@@ -178,6 +178,10 @@ void EditorController::setProject(std::unique_ptr<Project> newProject) {
 
   tracks.clear();
   tracks.push_back(std::move(track));
+  {
+    std::lock_guard<std::mutex> lock(vocalConvertGenerationMutex);
+    vocalConvertGenerations.assign(tracks.size(), 0);
+  }
   activeTrackIndex = 0;
 
   if (tracks.back()->project)
@@ -254,6 +258,11 @@ void EditorController::removeTrack(int trackIndex) {
     return;
 
   tracks.erase(tracks.begin() + trackIndex);
+  {
+    std::lock_guard<std::mutex> lock(vocalConvertGenerationMutex);
+    if (trackIndex >= 0 && trackIndex < static_cast<int>(vocalConvertGenerations.size()))
+      vocalConvertGenerations.erase(vocalConvertGenerations.begin() + trackIndex);
+  }
 
   if (activeTrackIndex >= static_cast<int>(tracks.size()))
     activeTrackIndex = static_cast<int>(tracks.size()) - 1;
@@ -283,6 +292,10 @@ void EditorController::duplicateTrack(int trackIndex) {
 
   int insertAt = trackIndex + 1;
   tracks.insert(tracks.begin() + insertAt, std::move(newTrack));
+  {
+    std::lock_guard<std::mutex> lock(vocalConvertGenerationMutex);
+    vocalConvertGenerations.insert(vocalConvertGenerations.begin() + insertAt, 0);
+  }
 
   if (audioEngine) {
     std::vector<Track*> trackPtrs;
@@ -1494,9 +1507,41 @@ void EditorController::clearTrackVocalAnalysisData(int trackIndex) {
   audioData.svcVoicebankPath.clear();
 }
 
+std::uint64_t EditorController::nextVocalConvertGeneration(int trackIndex) {
+  if (trackIndex < 0)
+    return 0;
+  std::lock_guard<std::mutex> lock(vocalConvertGenerationMutex);
+  const auto requiredSize = static_cast<size_t>(trackIndex + 1);
+  if (vocalConvertGenerations.size() < requiredSize)
+    vocalConvertGenerations.resize(requiredSize, 0);
+  return ++vocalConvertGenerations[static_cast<size_t>(trackIndex)];
+}
+
+std::uint64_t EditorController::getVocalConvertGeneration(int trackIndex) {
+  if (trackIndex < 0)
+    return 0;
+  std::lock_guard<std::mutex> lock(vocalConvertGenerationMutex);
+  if (trackIndex >= static_cast<int>(vocalConvertGenerations.size()))
+    return 0;
+  return vocalConvertGenerations[static_cast<size_t>(trackIndex)];
+}
+
+bool EditorController::hasQueuedSerialJob(SerialJobKind kind, int trackIndex) {
+  std::lock_guard<std::mutex> lock(serialJobMutex);
+  return std::any_of(serialJobQueue.begin(), serialJobQueue.end(),
+                     [kind, trackIndex](const SerialJob& job) {
+                       return job.kind == kind && job.trackIndex == trackIndex;
+                     });
+}
+
+bool EditorController::isTrackVocalAnalysisPendingOrRunning(int trackIndex) {
+  return analyzingTrackIndex.load() == trackIndex ||
+         hasQueuedSerialJob(SerialJobKind::VocalConvert, trackIndex);
+}
+
 void EditorController::abortTrackVocalConversion(int trackIndex) {
   LOG("EditorController: abortTrackVocalConversion track=" + juce::String(trackIndex));
-  ++vocalConvertGeneration;
+  nextVocalConvertGeneration(trackIndex);
   abortedVocalConvertTrackIndex.store(trackIndex);
   if (audioAnalyzer)
     audioAnalyzer->cancel();
@@ -1805,6 +1850,10 @@ void EditorController::loadAudioFileAsTrack(
 
           int newIndex = static_cast<int>(tracks.size());
           tracks.push_back(std::move(track));
+          {
+            std::lock_guard<std::mutex> lock(vocalConvertGenerationMutex);
+            vocalConvertGenerations.push_back(0);
+          }
 
           // If this is the first track or no active track, set as active
           if (activeTrackIndex < 0)
@@ -1842,16 +1891,25 @@ void EditorController::convertTrackToVocal(
     return;
   }
 
-  if (track->isVocal()) {
+  const auto& audioData = track->project->getAudioData();
+  const bool hasAnalysis = !audioData.f0.empty() &&
+                           !audioData.melSpectrogram.empty();
+  if (track->isVocal() && hasAnalysis) {
     if (onComplete)
       onComplete(trackIndex, true);
     return;
   }
 
+  track->type = TrackType::Vocal;
+  track->project->setName(track->name);
+
+  if (isTrackVocalAnalysisPendingOrRunning(trackIndex))
+    return;
+
   auto* projectPtr = track->project.get();
   ProgressCallback progressCb = onProgress;
   TrackConvertedCallback completeCb = onComplete;
-  const auto jobGeneration = ++vocalConvertGeneration;
+  const auto jobGeneration = nextVocalConvertGeneration(trackIndex);
   if (abortedVocalConvertTrackIndex.load() == trackIndex)
     abortedVocalConvertTrackIndex.store(-1);
 
@@ -1861,7 +1919,7 @@ void EditorController::convertTrackToVocal(
   job.run = [this, trackIndex, projectPtr, progressCb, completeCb,
              jobGeneration]() {
     auto isStale = [this, trackIndex, jobGeneration]() {
-      return vocalConvertGeneration.load() != jobGeneration ||
+      return getVocalConvertGeneration(trackIndex) != jobGeneration ||
              abortedVocalConvertTrackIndex.load() == trackIndex;
     };
     if (isStale())
@@ -1884,7 +1942,6 @@ void EditorController::convertTrackToVocal(
           trackIndex < static_cast<int>(tracks.size())) {
         auto* t = tracks[static_cast<size_t>(trackIndex)].get();
         if (t) {
-          t->type = TrackType::Vocal;
           t->project->setName(t->name);
           if (audioEngine) {
             std::vector<Track*> trackPtrs;
@@ -1952,8 +2009,14 @@ void EditorController::serialWorkerLoop() {
       });
       if (serialWorkerStop && serialJobQueue.empty())
         return;
-      job = std::move(serialJobQueue.front());
-      serialJobQueue.pop_front();
+      auto jobIt = std::find_if(serialJobQueue.begin(), serialJobQueue.end(),
+          [](const SerialJob& queuedJob) {
+            return queuedJob.kind == SerialJobKind::VocalConvert;
+          });
+      if (jobIt == serialJobQueue.end())
+        jobIt = serialJobQueue.begin();
+      job = std::move(*jobIt);
+      serialJobQueue.erase(jobIt);
     }
 
     // The job left the queue and is about to start processing.
