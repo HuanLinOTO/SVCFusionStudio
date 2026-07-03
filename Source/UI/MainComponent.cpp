@@ -568,19 +568,26 @@ MainComponent::MainComponent(bool enableAudioDevice)
   // Setup splitter bar resize
   splitterBar->onDragStart = [this]() {
     splitDragStartTrackListHeight = trackListHeight;
-    lastSplitResizeMs = 0;
+    splitDragActive = true;
+    splitterBar->toFront(false);
   };
   splitterBar->onResize = [this](int deltaY, bool force) {
     int newHeight = splitDragStartTrackListHeight + deltaY;
     int availableHeight = getHeight() - 24 - 52 - 4; // menu + toolbar + splitter
     newHeight = juce::jlimit(48, availableHeight - 100, newHeight);
-    if (newHeight != trackListHeight) {
-      auto now = juce::Time::getMillisecondCounter();
-      if (!force && lastSplitResizeMs != 0 && now - lastSplitResizeMs < 33)
-        return;
 
-      lastSplitResizeMs = now;
+    if (!force) {
+      int previewY = toolbar.getBottom() + newHeight;
+      splitterBar->setBounds(0, previewY, splitterBar->getWidth(),
+                             splitterBar->getHeight());
+      return;
+    }
+
+    splitDragActive = false;
+    if (newHeight != trackListHeight) {
       trackListHeight = newHeight;
+      resized();
+    } else {
       resized();
     }
   };
