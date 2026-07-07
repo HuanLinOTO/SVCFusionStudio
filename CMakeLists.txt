@@ -16,7 +16,7 @@ option(USE_BUNDLED_DIRECTML_RUNTIME "Bundle DirectML runtime DLL (Windows only)"
 option(USE_ASIO "Enable ASIO support (Windows only)" OFF)
 set(CUDA_REDIST_URL "" CACHE STRING "Optional URL to download CUDA runtime redistributable zip")
 set(DIRECTML_REDIST_URL "" CACHE STRING "Optional URL to download DirectML redistributable zip")
-set(ONNXRUNTIME_VERSION "1.17.3" CACHE STRING "ONNX Runtime version")
+set(ONNXRUNTIME_VERSION "1.24.4" CACHE STRING "ONNX Runtime version")
 
 # Check that CUDA and DirectML are not both enabled
 if(USE_CUDA AND USE_DIRECTML)
@@ -55,6 +55,7 @@ endif()
 
 # Check if ONNX Runtime already exists in build directory
 set(ONNXRUNTIME_CACHE_DIR "${CMAKE_BINARY_DIR}/_deps/onnxruntime-src")
+set(ONNXRUNTIME_CACHE_STAMP "${ONNXRUNTIME_CACHE_DIR}/.ort-version-stamp")
 if(WIN32 AND USE_DIRECTML)
     set(ONNXRUNTIME_CACHE_HEADER "${ONNXRUNTIME_CACHE_DIR}/build/native/include/onnxruntime_cxx_api.h")
     set(ONNXRUNTIME_CACHE_LIBRARY "${ONNXRUNTIME_CACHE_DIR}/runtimes/win-x64/native/onnxruntime.lib")
@@ -67,8 +68,24 @@ else()
     endif()
 endif()
 
+# Verify the cache matches the requested version; otherwise re-download.
+set(ONNXRUNTIME_CACHE_VALID FALSE)
 if(EXISTS "${ONNXRUNTIME_CACHE_HEADER}" AND EXISTS "${ONNXRUNTIME_CACHE_LIBRARY}")
-    message(STATUS "ONNX Runtime already downloaded, skipping download")
+    if(EXISTS "${ONNXRUNTIME_CACHE_STAMP}")
+        file(READ "${ONNXRUNTIME_CACHE_STAMP}" _ORT_CACHED_VERSION)
+        string(STRIP "${_ORT_CACHED_VERSION}" _ORT_CACHED_VERSION)
+        if(_ORT_CACHED_VERSION STREQUAL ONNXRUNTIME_VERSION)
+            set(ONNXRUNTIME_CACHE_VALID TRUE)
+        else()
+            message(STATUS "ONNX Runtime cache version mismatch (have ${_ORT_CACHED_VERSION}, need ${ONNXRUNTIME_VERSION}), refreshing")
+        endif()
+    else()
+        message(STATUS "ONNX Runtime cache has no version stamp, refreshing")
+    endif()
+endif()
+
+if(ONNXRUNTIME_CACHE_VALID)
+    message(STATUS "ONNX Runtime ${ONNXRUNTIME_VERSION} already downloaded, skipping download")
     set(ONNXRUNTIME_ROOT ${ONNXRUNTIME_CACHE_DIR})
 else()
     if(EXISTS "${ONNXRUNTIME_CACHE_DIR}")
@@ -82,9 +99,15 @@ else()
     # Detect platform and set download URL
     if(WIN32)
         if(USE_CUDA)
-            # CUDA requires CUDA-specific ONNX Runtime build
-            set(ONNXRUNTIME_URL "https://github.com/microsoft/onnxruntime/releases/download/v${ONNXRUNTIME_VERSION}/onnxruntime-win-x64-gpu-cuda12-${ONNXRUNTIME_VERSION}.zip")
-            message(STATUS "Downloading ONNX Runtime GPU CUDA12 package (Windows)")
+            # CUDA requires CUDA-specific ONNX Runtime build.
+            # ORT 1.24+ provides both the legacy "gpu" bundle (CUDA 12) and the
+            # new "gpu_cuda13" package. We use the legacy "gpu" bundle to stay
+            # compatible with existing CUDA 12 toolchains and the bundled
+            # runtime DLL list below. When ORT drops the legacy bundle, switch
+            # to "gpu_cuda12" (if available) or "gpu_cuda13" and update the
+            # DLL list accordingly.
+            set(ONNXRUNTIME_URL "https://github.com/microsoft/onnxruntime/releases/download/v${ONNXRUNTIME_VERSION}/onnxruntime-win-x64-gpu-${ONNXRUNTIME_VERSION}.zip")
+            message(STATUS "Downloading ONNX Runtime GPU (CUDA 12) package (Windows)")
         elseif(USE_DIRECTML)
             # DirectML uses the NuGet package (NuGet packages are ZIP files)
             set(ONNXRUNTIME_URL "https://www.nuget.org/api/v2/package/Microsoft.ML.OnnxRuntime.DirectML/${ONNXRUNTIME_VERSION}")
@@ -105,6 +128,7 @@ else()
         endif()
     else()
         if(USE_GPU)
+            # ORT 1.24+ legacy "gpu" bundle (CUDA 12). See note above.
             set(ONNXRUNTIME_URL "https://github.com/microsoft/onnxruntime/releases/download/v${ONNXRUNTIME_VERSION}/onnxruntime-linux-x64-gpu-${ONNXRUNTIME_VERSION}.tgz")
         else()
             set(ONNXRUNTIME_URL "https://github.com/microsoft/onnxruntime/releases/download/v${ONNXRUNTIME_VERSION}/onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}.tgz")
@@ -120,6 +144,7 @@ else()
     )
     FetchContent_MakeAvailable(onnxruntime)
     set(ONNXRUNTIME_ROOT ${onnxruntime_SOURCE_DIR})
+    file(WRITE "${ONNXRUNTIME_CACHE_STAMP}" "${ONNXRUNTIME_VERSION}")
 endif()
 
 # Handle different directory structures for DirectML NuGet package vs regular packages
