@@ -5,6 +5,7 @@
 #include "../Utils/F0Smoother.h"
 
 #ifdef _WIN32
+#include <windows.h>
 #include <eh.h>
 static void logSehException(unsigned int code, EXCEPTION_POINTERS *ep) {
   LOG("SEH EXCEPTION code=0x" + juce::String::toHexString(static_cast<int>(code)) +

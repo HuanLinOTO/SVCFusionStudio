@@ -48,6 +48,8 @@ static void logGpuMemory(const juce::String &label) {
     factory->Release();
   }
 }
+#else
+static void logGpuMemory(const juce::String &) {}
 #endif
 
 #include <chrono>
