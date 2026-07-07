@@ -13,7 +13,7 @@ concurrency:
 
 env:
   BUILD_TYPE: Release
-  ONNXRUNTIME_VERSION: "1.17.3"
+  ONNXRUNTIME_VERSION: "1.24.4"
   DIRECTML_VERSION: "1.15.4"
   MODEL_BASE_URL: "https://huggingface.co/SVCFusion/things/resolve/main"
   MODEL_CACHE_KEY: "svcfusion-models-v4"

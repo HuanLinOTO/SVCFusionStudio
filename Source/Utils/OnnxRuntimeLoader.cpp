@@ -51,11 +51,11 @@ bool loadOptionalDll(const juce::File &dllPath) {
 #endif
 
 bool ensureLoaded() {
-#if JUCE_WINDOWS
   static std::once_flag once;
   static bool loaded = false;
 
   std::call_once(once, []() {
+#if JUCE_WINDOWS
     const auto moduleDir = getOwningModuleDirectory();
     const auto ortDll = moduleDir.getChildFile("onnxruntime.dll");
 
@@ -74,7 +74,13 @@ bool ensureLoaded() {
       loaded = false;
       return;
     }
+#endif
 
+    // Verify ONNX Runtime C API is reachable on every platform. Earlier
+    // versions (e.g. 1.17.x) have been observed to return a null apiBase on
+    // newer macOS builds (macOS 27 Tahoe), which previously led to a NULL
+    // pointer dereference crash inside Ort::Env construction. Catching it
+    // here lets callers fall back gracefully instead of segfaulting.
     const OrtApiBase *apiBase = OrtGetApiBase();
     if (apiBase == nullptr) {
       LOG("ONNX Runtime loader: OrtGetApiBase returned null");
@@ -85,26 +91,27 @@ bool ensureLoaded() {
     const OrtApi *api = apiBase->GetApi(ORT_API_VERSION);
     if (api == nullptr) {
       LOG("ONNX Runtime loader: GetApi(" + juce::String(ORT_API_VERSION) +
-          ") returned null");
+          ") returned null (runtime version=" +
+          juce::String(apiBase->GetVersionString()) + ")");
       loaded = false;
       return;
     }
 
     Ort::InitApi(api);
 
+#if JUCE_WINDOWS
     // Providers shared is loaded lazily by ONNX Runtime, but preloading it from
     // the same directory keeps Windows away from unrelated global copies.
-    loadOptionalDll(moduleDir.getChildFile("onnxruntime_providers_shared.dll"));
+    loadOptionalDll(getOwningModuleDirectory().getChildFile(
+        "onnxruntime_providers_shared.dll"));
+#endif
 
     loaded = true;
-    LOG("ONNX Runtime loader: preloaded " + ortDll.getFullPathName() +
-        " (version=" + juce::String(apiBase->GetVersionString()) + ")");
+    LOG("ONNX Runtime loader: ready (version=" +
+        juce::String(apiBase->GetVersionString()) + ")");
   });
 
   return loaded;
-#else
-  return true;
-#endif
 }
 
 } // namespace OnnxRuntimeLoader
