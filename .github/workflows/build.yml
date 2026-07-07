@@ -101,6 +101,36 @@ jobs:
           fetch-depth: 1
           submodules: recursive
 
+      - name: Setup MSVC Developer Command Prompt
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install sccache
+        shell: pwsh
+        run: pip install sccache
+
+      - name: Cache sccache
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\Mozilla\sccache\cache
+          key: sccache-windows-cpu-${{ github.sha }}
+          restore-keys: |
+            sccache-windows-cpu-
+
+      - name: Configure sccache
+        shell: pwsh
+        run: |
+          sccache --start-server
+          "SCCACHE_DIR=$env:LOCALAPPDATA\Mozilla\sccache\cache" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "SCCACHE_CACHE_SIZE=2G" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Cache JUCE Build Helpers
+        uses: actions/cache@v4
+        with:
+          path: third_party/JUCE/extras/Build
+          key: juce-build-helpers-win-cpu-${{ hashFiles('third_party/JUCE/CMakeLists.txt') }}
+
       - name: Ensure JUCE Build Helpers
         shell: pwsh
         run: |
@@ -253,10 +283,15 @@ jobs:
           Write-Host "Prepared build models in $dstModels"
 
       - name: Configure CMake
-        run: cmake -B build -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -DUSE_ASIO=ON
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -DUSE_ASIO=ON -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
 
       - name: Build
-        run: cmake --build build --config ${{ env.BUILD_TYPE }} --parallel -- /p:WholeProgramOptimization=false
+        run: cmake --build build --parallel
+
+      - name: Show sccache stats
+        if: always()
+        shell: pwsh
+        run: sccache --show-stats
 
       - name: Prepare Package
         shell: pwsh
@@ -317,6 +352,36 @@ jobs:
         with:
           fetch-depth: 1
           submodules: recursive
+
+      - name: Setup MSVC Developer Command Prompt
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install sccache
+        shell: pwsh
+        run: pip install sccache
+
+      - name: Cache sccache
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\Mozilla\sccache\cache
+          key: sccache-windows-dml-${{ github.sha }}
+          restore-keys: |
+            sccache-windows-dml-
+
+      - name: Configure sccache
+        shell: pwsh
+        run: |
+          sccache --start-server
+          "SCCACHE_DIR=$env:LOCALAPPDATA\Mozilla\sccache\cache" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "SCCACHE_CACHE_SIZE=2G" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Cache JUCE Build Helpers
+        uses: actions/cache@v4
+        with:
+          path: third_party/JUCE/extras/Build
+          key: juce-build-helpers-win-dml-${{ hashFiles('third_party/JUCE/CMakeLists.txt') }}
 
       - name: Ensure JUCE Build Helpers
         shell: pwsh
@@ -381,7 +446,15 @@ jobs:
           name: ci-model-cache
           path: .ci-model-cache/extracted
 
+      - name: Cache DirectML package
+        id: cache-dml
+        uses: actions/cache@v4
+        with:
+          path: directml_pkg
+          key: directml-nupkg-${{ env.DIRECTML_VERSION }}-v1
+
       - name: Download DirectML Runtime
+        if: steps.cache-dml.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           # Download DirectML NuGet package
@@ -391,11 +464,14 @@ jobs:
           # Extract (nupkg is just a zip)
           Expand-Archive -Path "directml.nupkg" -DestinationPath "directml_pkg" -Force
 
+          Write-Host "DirectML ${{ env.DIRECTML_VERSION }} downloaded successfully"
+
+      - name: Stage DirectML DLL
+        shell: pwsh
+        run: |
           # Create vendor directory and copy DLL
           New-Item -ItemType Directory -Force -Path "vendor/directml/bin"
           Copy-Item -Path "directml_pkg/bin/x64-win/DirectML.dll" -Destination "vendor/directml/bin/"
-
-          Write-Host "DirectML ${{ env.DIRECTML_VERSION }} downloaded successfully"
           Get-ChildItem "vendor/directml/bin/"
 
       - name: Prepare Build Models (DirectML fp32 slim)
@@ -487,10 +563,15 @@ jobs:
           Write-Host "Prepared build models in $dstModels"
 
       - name: Configure CMake
-        run: cmake -B build -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -DUSE_DIRECTML=ON -DUSE_BUNDLED_DIRECTML_RUNTIME=ON -DUSE_ASIO=ON
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -DUSE_DIRECTML=ON -DUSE_BUNDLED_DIRECTML_RUNTIME=ON -DUSE_ASIO=ON -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
 
       - name: Build
-        run: cmake --build build --config ${{ env.BUILD_TYPE }} --parallel -- /p:WholeProgramOptimization=false
+        run: cmake --build build --parallel
+
+      - name: Show sccache stats
+        if: always()
+        shell: pwsh
+        run: sccache --show-stats
 
       - name: Prepare Package
         shell: pwsh
@@ -558,6 +639,36 @@ jobs:
         with:
           fetch-depth: 1
           submodules: recursive
+
+      - name: Setup MSVC Developer Command Prompt
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install sccache
+        shell: pwsh
+        run: pip install sccache
+
+      - name: Cache sccache
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\Mozilla\sccache\cache
+          key: sccache-windows-cuda-${{ github.sha }}
+          restore-keys: |
+            sccache-windows-cuda-
+
+      - name: Configure sccache
+        shell: pwsh
+        run: |
+          sccache --start-server
+          "SCCACHE_DIR=$env:LOCALAPPDATA\Mozilla\sccache\cache" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "SCCACHE_CACHE_SIZE=2G" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Cache JUCE Build Helpers
+        uses: actions/cache@v4
+        with:
+          path: third_party/JUCE/extras/Build
+          key: juce-build-helpers-win-cuda-${{ hashFiles('third_party/JUCE/CMakeLists.txt') }}
 
       - name: Ensure JUCE Build Helpers
         shell: pwsh
@@ -711,10 +822,15 @@ jobs:
           Write-Host "Prepared build models in $dstModels"
 
       - name: Configure CMake
-        run: cmake -B build -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -DUSE_CUDA=ON -DUSE_ASIO=ON
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -DUSE_CUDA=ON -DUSE_ASIO=ON -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
 
       - name: Build
-        run: cmake --build build --config ${{ env.BUILD_TYPE }} --parallel -- /p:WholeProgramOptimization=false
+        run: cmake --build build --parallel
+
+      - name: Show sccache stats
+        if: always()
+        shell: pwsh
+        run: sccache --show-stats
 
       - name: Prepare Package
         shell: pwsh
