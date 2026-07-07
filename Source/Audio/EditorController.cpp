@@ -2067,6 +2067,11 @@ void EditorController::serialWorkerLoop() {
 
     if (job.kind == SerialJobKind::VocalConvert)
       analyzingTrackIndex.store(-1);
+
+    // Re-sync queued badges after completion. Queue notifications are marshalled
+    // asynchronously to the UI, so a fast dequeue can otherwise be overtaken by
+    // the earlier enqueue notification and leave a stale queued badge visible.
+    notifySerialQueueChanged();
   }
 }
 

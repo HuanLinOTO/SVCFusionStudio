@@ -45,3 +45,5 @@ third_party/ASIOSDK/
 build*/
 
 .memory/
+
+.playwright-mcp/
