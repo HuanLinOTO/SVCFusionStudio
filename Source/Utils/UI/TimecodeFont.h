@@ -76,7 +76,7 @@ public:
 
 #if JUCE_MAC
         return juce::Font(
-            juce::FontOptions("Hiragino Sans", height, juce::Font::plain));
+            juce::FontOptions("PingFang SC", height, juce::Font::plain));
 #elif JUCE_WINDOWS
         return juce::Font(
             juce::FontOptions("Yu Gothic UI", height, juce::Font::plain));
@@ -96,7 +96,7 @@ public:
 
 #if JUCE_MAC
         return juce::Font(
-            juce::FontOptions("Hiragino Sans", height, juce::Font::bold));
+            juce::FontOptions("PingFang SC", height, juce::Font::bold));
 #elif JUCE_WINDOWS
         return juce::Font(
             juce::FontOptions("Yu Gothic UI", height, juce::Font::bold));

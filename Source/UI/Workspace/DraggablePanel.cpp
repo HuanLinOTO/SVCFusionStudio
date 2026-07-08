@@ -1,5 +1,6 @@
 #include "DraggablePanel.h"
 #include "PanelContainer.h"
+#include "../StyledComponents.h"
 
 DraggablePanel::DraggablePanel(const juce::String& id, const juce::String& panelTitle)
     : panelId(id), title(panelTitle)
@@ -38,7 +39,7 @@ void DraggablePanel::paint(juce::Graphics& g)
 
     // Header text
     g.setColour(APP_COLOR_TEXT_PRIMARY);
-    g.setFont(juce::FontOptions(13.0f).withStyle("Bold"));
+    g.setFont(AppFont::getBoldFont(13.0f));
     g.drawText(title, headerBounds.reduced(12, 0).toNearestInt(), juce::Justification::centredLeft);
 
     // Separator line under header

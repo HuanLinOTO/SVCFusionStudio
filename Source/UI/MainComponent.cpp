@@ -180,7 +180,7 @@ public:
     title.setText("Export Settings", juce::dontSendNotification);
     title.setJustificationType(juce::Justification::centredLeft);
     title.setColour(juce::Label::textColourId, APP_COLOR_TEXT_PRIMARY);
-    title.setFont(juce::Font(juce::FontOptions(16.0f, juce::Font::bold)));
+    title.setFont(AppFont::getBoldFont(16.0f));
 
     setupCombo(formatBox, formatLabel, "Format", {"WAV", "FLAC", "AIFF", "OGG"}, 1);
 
@@ -362,7 +362,7 @@ public:
     SidebarComponent() {
         addAndMakeVisible(titleLabel);
         titleLabel.setColour(juce::Label::textColourId, APP_COLOR_TEXT_PRIMARY);
-        titleLabel.setFont(juce::Font(juce::FontOptions(14.0f, juce::Font::bold)));
+        titleLabel.setFont(AppFont::getBoldFont(14.0f));
         titleLabel.setJustificationType(juce::Justification::centredLeft);
     }
 

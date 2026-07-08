@@ -83,8 +83,7 @@ ToolbarComponent::ToolbarComponent()
     araModeLabel.setColour(juce::Label::backgroundColourId, juce::Colours::transparentBlack);
     araModeLabel.setColour(juce::Label::textColourId, juce::Colours::white);
     araModeLabel.setJustificationType(juce::Justification::centred);
-    araModeLabel.setFont(
-        juce::Font(juce::FontOptions(11.0f, juce::Font::bold)));
+    araModeLabel.setFont(AppFont::getBoldFont(11.0f));
 
     goToStartButton.addListener(this);
     playButton.addListener(this);
@@ -163,7 +162,7 @@ ToolbarComponent::ToolbarComponent()
     addChildComponent(statusLabel);
     statusLabel.setColour(juce::Label::textColourId, APP_COLOR_TEXT_MUTED);
     statusLabel.setJustificationType(juce::Justification::centredLeft);
-    statusLabel.setFont(juce::Font(juce::FontOptions(12.0f)));
+    statusLabel.setFont(AppFont::getFont(12.0f));
 }
 
 ToolbarComponent::~ToolbarComponent()

@@ -60,16 +60,7 @@ public:
                        juce::FontOptions(instance.customTypeface).withHeight(
                            height));
 
-        // Fallback to system font
-#if JUCE_MAC
-        return juce::Font(
-            juce::FontOptions("Hiragino Sans", height, juce::Font::plain));
-#elif JUCE_WINDOWS
-        return juce::Font(
-            juce::FontOptions("Microsoft YaHei UI", height, juce::Font::plain));
-#else
-        return juce::Font(juce::FontOptions(height));
-#endif
+        return juce::Font(getSystemFontOptions(height, juce::Font::plain));
     }
 
     /**
@@ -97,16 +88,7 @@ public:
                            height))
                 .boldened();
 
-        // Fallback to system font
-#if JUCE_MAC
-        return juce::Font(
-            juce::FontOptions("Hiragino Sans", height, juce::Font::bold));
-#elif JUCE_WINDOWS
-        return juce::Font(
-            juce::FontOptions("Microsoft YaHei UI", height, juce::Font::bold));
-#else
-        return juce::Font(juce::FontOptions(height)).boldened();
-#endif
+        return juce::Font(getSystemFontOptions(height, juce::Font::bold));
     }
 
     /**
@@ -137,6 +119,35 @@ public:
 
 private:
     AppFont() = default;
+
+    static juce::FontOptions getSystemFontOptions(float height, int styleFlags)
+    {
+#if JUCE_MAC
+        return juce::FontOptions(getMacUIFontFamily(), height, styleFlags)
+            .withFallbacks({ "PingFang SC", "Hiragino Sans GB", "Heiti SC" });
+#elif JUCE_WINDOWS
+        return juce::FontOptions("Microsoft YaHei UI", height, styleFlags);
+#else
+        return juce::FontOptions(height, styleFlags);
+#endif
+    }
+
+#if JUCE_MAC
+    static juce::String getMacUIFontFamily()
+    {
+        static const juce::String family = [] {
+            const auto families = juce::Font::findAllTypefaceNames();
+
+            for (const auto* name : { "PingFang SC", "Hiragino Sans GB", "Heiti SC" })
+                if (families.contains(name, true))
+                    return juce::String(name);
+
+            return juce::Font::getDefaultSansSerifFontName();
+        }();
+
+        return family;
+    }
+#endif
 
     static AppFont& getInstance()
     {
@@ -298,7 +309,7 @@ public:
     {
         setText(text, juce::dontSendNotification);
         setColour(juce::Label::textColourId, APP_COLOR_PRIMARY);
-        setFont(juce::Font(juce::FontOptions(14.0f, juce::Font::bold)));
+        setFont(AppFont::getBoldFont(14.0f));
     }
 };
 
@@ -452,7 +463,7 @@ public:
 
         // Title
         g.setColour(juce::Colours::white);
-        g.setFont(juce::Font(juce::FontOptions(18.0f, juce::Font::bold)));
+        g.setFont(AppFont::getBoldFont(18.0f));
         g.drawText(titleText, 20, 20, getWidth() - 40, 30, juce::Justification::left);
 
         // Icon (if any)
@@ -473,8 +484,7 @@ public:
             g.setColour(iconColour);
             g.fillEllipse(iconX, iconY, iconSize, iconSize);
             g.setColour(APP_COLOR_BACKGROUND);
-            g.setFont(juce::Font(
-                juce::FontOptions(iconSize * 0.6f, juce::Font::bold)));
+            g.setFont(AppFont::getBoldFont(iconSize * 0.6f));
             
             juce::String iconChar;
             if (iconType == InfoIcon)
@@ -490,7 +500,7 @@ public:
 
         // Message text
         g.setColour(juce::Colours::lightgrey);
-        g.setFont(juce::Font(juce::FontOptions(15.0f)));
+        g.setFont(AppFont::getFont(15.0f));
         g.drawMultiLineText(messageText, iconX, iconY + 5, getWidth() - iconX - 20, juce::Justification::topLeft);
     }
 

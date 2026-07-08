@@ -2,6 +2,7 @@
 
 #include "../Utils/HNSepCurveProcessor.h"
 #include "../Utils/UI/Theme.h"
+#include "StyledComponents.h"
 
 #include <algorithm>
 #include <cmath>
@@ -524,13 +525,13 @@ void HNSepLaneComponent::drawLane(juce::Graphics &g, int laneIndex) const {
   g.fillRect(labelBounds);
 
   g.setColour(APP_COLOR_TEXT_PRIMARY);
-  g.setFont(juce::Font(juce::FontOptions(13.0f, juce::Font::bold)));
+  g.setFont(AppFont::getBoldFont(13.0f));
   g.drawText(lane.label, labelBounds.getX() + 12, labelBounds.getY() + 8,
              labelWidth, labelBounds.getHeight() - 16,
              juce::Justification::topLeft);
 
   g.setColour(APP_COLOR_TEXT_MUTED);
-  g.setFont(juce::Font(juce::FontOptions(11.0f)));
+  g.setFont(AppFont::getFont(11.0f));
   g.drawText(juce::String(lane.minValue, 0), labelBounds.getX() + 12,
              labelBounds.getBottom() - 18, labelWidth, 14,
              juce::Justification::bottomLeft);

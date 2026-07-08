@@ -10,7 +10,7 @@ VoicebankPanel::VoicebankPanel()
     addAndMakeVisible(titleLabel);
     titleLabel.setText(TR("voicebank.title"), juce::dontSendNotification);
     titleLabel.setColour(juce::Label::textColourId, APP_COLOR_PRIMARY);
-    titleLabel.setFont(juce::Font(juce::FontOptions(14.0f, juce::Font::bold)));
+    titleLabel.setFont(AppFont::getBoldFont(14.0f));
 
     // List box
     addAndMakeVisible(listBox);
@@ -49,8 +49,8 @@ VoicebankPanel::VoicebankPanel()
         label->setColour(juce::Label::textColourId, APP_COLOR_TEXT_MUTED);
     }
     infoNameLabel.setColour(juce::Label::textColourId, APP_COLOR_TEXT_PRIMARY);
-    infoNameLabel.setFont(juce::Font(juce::FontOptions(14.0f, juce::Font::bold)));
-    infoDescriptionLabel.setFont(juce::Font(juce::FontOptions(12.0f)));
+    infoNameLabel.setFont(AppFont::getBoldFont(14.0f));
+    infoDescriptionLabel.setFont(AppFont::getFont(12.0f));
     infoDescriptionLabel.setColour(juce::Label::textColourId, APP_COLOR_TEXT_MUTED.brighter(0.2f));
 
     // Button callbacks
@@ -184,7 +184,7 @@ void VoicebankPanel::paint(juce::Graphics& g)
         g.drawRoundedRectangle(b.reduced(2.0f), 8.0f, 2.0f);
 
         g.setColour(APP_COLOR_PRIMARY);
-        g.setFont(juce::Font(juce::FontOptions(14.0f, juce::Font::bold)));
+        g.setFont(AppFont::getBoldFont(14.0f));
         g.drawText(TR("voicebank.drop_here"), b, juce::Justification::centred);
     }
 }
@@ -299,13 +299,13 @@ void VoicebankPanel::paintListBoxItem(int row, juce::Graphics& g,
 
     // Name (top line)
     g.setColour(isActive ? APP_COLOR_PRIMARY : APP_COLOR_TEXT_PRIMARY);
-    g.setFont(juce::Font(juce::FontOptions(14.0f, isActive ? juce::Font::bold : juce::Font::plain)));
+    g.setFont(isActive ? AppFont::getBoldFont(14.0f) : AppFont::getFont(14.0f));
     g.drawText(vb.name, textX, 2, width - textX - 6, height / 2,
                juce::Justification::centredLeft, true);
 
     // Subtitle (bottom line): model type + encoder
     g.setColour(APP_COLOR_TEXT_MUTED);
-    g.setFont(juce::Font(juce::FontOptions(11.5f)));
+    g.setFont(AppFont::getFont(11.5f));
     juce::String subtitle = vb.modelTypeName;
     if (vb.encoder.isNotEmpty())
         subtitle += " | " + vb.encoder;
