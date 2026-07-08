@@ -16,7 +16,7 @@ env:
   ONNXRUNTIME_VERSION: "1.24.4"
   DIRECTML_VERSION: "1.15.4"
   MODEL_BASE_URL: "https://huggingface.co/SVCFusion/things/resolve/main"
-  MODEL_CACHE_KEY: "svcfusion-models-v4"
+  MODEL_CACHE_KEY: "svcfusion-models-v5"
 
 jobs:
   # ===========================================
@@ -73,6 +73,10 @@ jobs:
 
           test -f .ci-model-cache/extracted/pc_nsf_hifigan.onnx
           test -f .ci-model-cache/extracted/cent_table.bin
+          test -f .ci-model-cache/extracted/GAME/encoder.onnx
+          test -f .ci-model-cache/extracted/GAME/segmenter.onnx
+          test -f .ci-model-cache/extracted/GAME/estimator.onnx
+          test -f .ci-model-cache/extracted/GAME/bd2dur.onnx
           test -f .ci-model-cache/extracted/hnsep/hnsep_VR.onnx
           test -f .ci-model-cache/extracted/hnsep/hnsep_VR_convstft.onnx
           test -f .ci-model-cache/extracted/hnsep/split/hnsep_core.onnx
@@ -262,6 +266,23 @@ jobs:
               throw "$binName not found in model cache"
             }
           }
+
+          $gameSource = Join-Path $extractDir "GAME"
+          $gameDest = Join-Path $dstModels "GAME"
+          if (-not (Test-Path $gameSource)) {
+            throw "GAME model directory not found in model cache: $gameSource"
+          }
+          if (Test-Path $gameDest) {
+            Remove-Item -Recurse -Force $gameDest
+          }
+          Copy-Item -Path $gameSource -Destination $gameDest -Recurse -Force
+          foreach ($requiredGame in @("bd2dur.onnx", "config.json", "dur2bd.onnx", "encoder.onnx", "estimator.onnx", "segmenter.onnx")) {
+            $requiredPath = Join-Path $gameDest $requiredGame
+            if (-not (Test-Path $requiredPath)) {
+              throw "Required GAME model missing after copy: $requiredPath"
+            }
+          }
+          Write-Host "Prepared GAME model directory <= $gameSource"
 
           $hnsepSource = Join-Path $extractDir "hnsep"
           $hnsepDest = Join-Path $dstModels "hnsep"
@@ -543,6 +564,23 @@ jobs:
             }
           }
 
+          $gameSource = Join-Path $extractDir "GAME"
+          $gameDest = Join-Path $dstModels "GAME"
+          if (-not (Test-Path $gameSource)) {
+            throw "GAME model directory not found in model cache: $gameSource"
+          }
+          if (Test-Path $gameDest) {
+            Remove-Item -Recurse -Force $gameDest
+          }
+          Copy-Item -Path $gameSource -Destination $gameDest -Recurse -Force
+          foreach ($requiredGame in @("bd2dur.onnx", "config.json", "dur2bd.onnx", "encoder.onnx", "estimator.onnx", "segmenter.onnx")) {
+            $requiredPath = Join-Path $gameDest $requiredGame
+            if (-not (Test-Path $requiredPath)) {
+              throw "Required GAME model missing after copy: $requiredPath"
+            }
+          }
+          Write-Host "Prepared GAME model directory <= $gameSource"
+
           $hnsepSource = Join-Path $extractDir "hnsep"
           $hnsepDest = Join-Path $dstModels "hnsep"
           if (-not (Test-Path $hnsepSource)) {
@@ -802,6 +840,23 @@ jobs:
             }
           }
 
+          $gameSource = Join-Path $extractDir "GAME"
+          $gameDest = Join-Path $dstModels "GAME"
+          if (-not (Test-Path $gameSource)) {
+            throw "GAME model directory not found in model cache: $gameSource"
+          }
+          if (Test-Path $gameDest) {
+            Remove-Item -Recurse -Force $gameDest
+          }
+          Copy-Item -Path $gameSource -Destination $gameDest -Recurse -Force
+          foreach ($requiredGame in @("bd2dur.onnx", "config.json", "dur2bd.onnx", "encoder.onnx", "estimator.onnx", "segmenter.onnx")) {
+            $requiredPath = Join-Path $gameDest $requiredGame
+            if (-not (Test-Path $requiredPath)) {
+              throw "Required GAME model missing after copy: $requiredPath"
+            }
+          }
+          Write-Host "Prepared GAME model directory <= $gameSource"
+
           $hnsepSource = Join-Path $extractDir "hnsep"
           $hnsepDest = Join-Path $dstModels "hnsep"
           if (-not (Test-Path $hnsepSource)) {
@@ -1004,6 +1059,37 @@ jobs:
             cp -f "${bin_path}" "${dst_models}/${bin_name}"
             echo "Selected ${bin_name} <= $(basename "${bin_path}")"
           done
+
+          copy_model_dir() {
+            local rel_dir="$1"
+            shift
+            local source_dir="${extract_dir}/${rel_dir}"
+            local dest_dir="${dst_models}/${rel_dir}"
+            local required
+
+            if [ ! -d "${source_dir}" ]; then
+              echo "${rel_dir} model directory not found in model cache: ${source_dir}" >&2
+              exit 1
+            fi
+
+            rm -rf "${dest_dir}"
+            mkdir -p "$(dirname "${dest_dir}")"
+            cp -R "${source_dir}" "${dest_dir}"
+
+            for required in "$@"; do
+              if [ ! -f "${dest_dir}/${required}" ]; then
+                echo "Required ${rel_dir} model missing after copy: ${dest_dir}/${required}" >&2
+                exit 1
+              fi
+            done
+
+            echo "Prepared ${rel_dir} model directory <= ${source_dir}"
+          }
+
+          copy_model_dir "GAME" \
+            bd2dur.onnx config.json dur2bd.onnx encoder.onnx estimator.onnx segmenter.onnx
+          copy_model_dir "hnsep" \
+            hnsep_VR.onnx hnsep_VR_convstft.onnx split/hnsep_pre.onnx split/hnsep_core.onnx split/hnsep_post.onnx
 
       - name: Install ccache
         run: brew install ccache
@@ -1285,6 +1371,37 @@ jobs:
             echo "Selected ${bin_name} <= $(basename "${bin_path}")"
           done
 
+          copy_model_dir() {
+            local rel_dir="$1"
+            shift
+            local source_dir="${extract_dir}/${rel_dir}"
+            local dest_dir="${dst_models}/${rel_dir}"
+            local required
+
+            if [ ! -d "${source_dir}" ]; then
+              echo "${rel_dir} model directory not found in model cache: ${source_dir}" >&2
+              exit 1
+            fi
+
+            rm -rf "${dest_dir}"
+            mkdir -p "$(dirname "${dest_dir}")"
+            cp -R "${source_dir}" "${dest_dir}"
+
+            for required in "$@"; do
+              if [ ! -f "${dest_dir}/${required}" ]; then
+                echo "Required ${rel_dir} model missing after copy: ${dest_dir}/${required}" >&2
+                exit 1
+              fi
+            done
+
+            echo "Prepared ${rel_dir} model directory <= ${source_dir}"
+          }
+
+          copy_model_dir "GAME" \
+            bd2dur.onnx config.json dur2bd.onnx encoder.onnx estimator.onnx segmenter.onnx
+          copy_model_dir "hnsep" \
+            hnsep_VR.onnx hnsep_VR_convstft.onnx split/hnsep_pre.onnx split/hnsep_core.onnx split/hnsep_post.onnx
+
       - name: Cache ccache
         uses: actions/cache@v4
         with:
@@ -1497,6 +1614,37 @@ jobs:
             cp -f "${bin_path}" "${dst_models}/${bin_name}"
             echo "Selected ${bin_name} <= $(basename "${bin_path}")"
           done
+
+          copy_model_dir() {
+            local rel_dir="$1"
+            shift
+            local source_dir="${extract_dir}/${rel_dir}"
+            local dest_dir="${dst_models}/${rel_dir}"
+            local required
+
+            if [ ! -d "${source_dir}" ]; then
+              echo "${rel_dir} model directory not found in model cache: ${source_dir}" >&2
+              exit 1
+            fi
+
+            rm -rf "${dest_dir}"
+            mkdir -p "$(dirname "${dest_dir}")"
+            cp -R "${source_dir}" "${dest_dir}"
+
+            for required in "$@"; do
+              if [ ! -f "${dest_dir}/${required}" ]; then
+                echo "Required ${rel_dir} model missing after copy: ${dest_dir}/${required}" >&2
+                exit 1
+              fi
+            done
+
+            echo "Prepared ${rel_dir} model directory <= ${source_dir}"
+          }
+
+          copy_model_dir "GAME" \
+            bd2dur.onnx config.json dur2bd.onnx encoder.onnx estimator.onnx segmenter.onnx
+          copy_model_dir "hnsep" \
+            hnsep_VR.onnx hnsep_VR_convstft.onnx split/hnsep_pre.onnx split/hnsep_core.onnx split/hnsep_post.onnx
 
       - name: Cache ccache
         uses: actions/cache@v4

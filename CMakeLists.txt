@@ -667,6 +667,18 @@ set(REQUIRED_MODELS
     rmvpe.onnx
     cent_table.bin
     mel_filterbank.bin
+    GAME/bd2dur.onnx
+    GAME/config.json
+    GAME/dur2bd.onnx
+    GAME/encoder.onnx
+    GAME/estimator.onnx
+    GAME/segmenter.onnx
+    hnsep/config.json
+    hnsep/hnsep_VR.onnx
+    hnsep/hnsep_VR_convstft.onnx
+    hnsep/split/hnsep_pre.onnx
+    hnsep/split/hnsep_core.onnx
+    hnsep/split/hnsep_post.onnx
 )
 
 # Check required models
