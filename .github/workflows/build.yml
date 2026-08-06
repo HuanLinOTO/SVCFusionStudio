@@ -3,6 +3,7 @@ name: Build SVCFusion Studio
 on:
   push:
     branches: [main, master, refactor]
+    tags: ['v*']
   pull_request:
     branches: [main, master, refactor]
   workflow_dispatch:
@@ -1812,7 +1813,7 @@ jobs:
             artifacts/SVCFusionStudio-Linux-NoModels.tar.gz
             artifacts/SVCFusionStudio-Linux-GPU.tar.gz
             artifacts/SVCFusionStudio-Linux-GPU-NoModels.tar.gz
-          draft: true
+          draft: false
           generate_release_notes: true
           fail_on_unmatched_files: false
         env:

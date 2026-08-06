@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(SVCFusionStudio VERSION 1.0.0)
+project(SVCFusionStudio VERSION 0.0.1)
 
 include(FetchContent)
 include(cmake/Asio.cmake)
