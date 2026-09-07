@@ -1154,13 +1154,14 @@ jobs:
 
       - name: Create DMG
         run: |
-          for volume in "SVCFusionStudio" "SVCFusionStudio-NoModels"; do
+          for volume in "SVCFusionStudio" "SVCFusionStudio-NoModels" "SVCFusionStudio-VST3" "SVCFusionStudio-AU"; do
             if [ -d "/Volumes/$volume" ]; then
               hdiutil detach "/Volumes/$volume" || hdiutil detach -force "/Volumes/$volume"
             fi
           done
 
-          rm -f SVCFusionStudio-macOS.dmg SVCFusionStudio-macOS-NoModels.dmg
+          rm -f SVCFusionStudio-macOS.dmg SVCFusionStudio-macOS-NoModels.dmg \
+                SVCFusionStudio-macOS-VST3.dmg SVCFusionStudio-macOS-AU.dmg
 
           create_dmg() {
             local volname="$1" srcfolder="$2" out="$3"
@@ -1176,7 +1177,23 @@ jobs:
             return 1
           }
 
-          create_dmg "SVCFusionStudio" package SVCFusionStudio-macOS.dmg
+          # Per-component DMGs: keep every release asset under GitHub's 2 GiB limit
+          rm -rf dmg-app dmg-vst3 dmg-au
+          mkdir -p dmg-app dmg-vst3 dmg-au
+          cp -R "package/SVCFusion Studio.app" dmg-app/
+          create_dmg "SVCFusionStudio" dmg-app SVCFusionStudio-macOS.dmg
+
+          if [ -d "package/SVCFusion Studio.vst3" ]; then
+            cp -R "package/SVCFusion Studio.vst3" dmg-vst3/
+            create_dmg "SVCFusionStudio-VST3" dmg-vst3 SVCFusionStudio-macOS-VST3.dmg
+          fi
+
+          if [ -d "package/SVCFusion Studio.component" ]; then
+            cp -R "package/SVCFusion Studio.component" dmg-au/
+            create_dmg "SVCFusionStudio-AU" dmg-au SVCFusionStudio-macOS-AU.dmg
+          fi
+
+          # NoModels bundle is small enough to ship everything in one DMG
           create_dmg "SVCFusionStudio-NoModels" package-nomodels SVCFusionStudio-macOS-NoModels.dmg
 
       - name: Create App ZIP
@@ -1192,6 +1209,22 @@ jobs:
           name: SVCFusionStudio-macOS
           path: SVCFusionStudio-macOS.dmg
           retention-days: 30
+
+      - name: Upload Artifact (DMG, VST3)
+        uses: actions/upload-artifact@v4
+        with:
+          name: SVCFusionStudio-macOS-VST3
+          path: SVCFusionStudio-macOS-VST3.dmg
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Upload Artifact (DMG, AU)
+        uses: actions/upload-artifact@v4
+        with:
+          name: SVCFusionStudio-macOS-AU
+          path: SVCFusionStudio-macOS-AU.dmg
+          retention-days: 30
+          if-no-files-found: ignore
 
       - name: Upload Artifact (DMG, No Models)
         uses: actions/upload-artifact@v4
@@ -1773,6 +1806,14 @@ jobs:
             mv SVCFusionStudio-macOS/*.dmg ./SVCFusionStudio-macOS.dmg || true
           fi
 
+          if [ -d "SVCFusionStudio-macOS-VST3" ]; then
+            mv SVCFusionStudio-macOS-VST3/*.dmg ./SVCFusionStudio-macOS-VST3.dmg || true
+          fi
+
+          if [ -d "SVCFusionStudio-macOS-AU" ]; then
+            mv SVCFusionStudio-macOS-AU/*.dmg ./SVCFusionStudio-macOS-AU.dmg || true
+          fi
+
           if [ -d "SVCFusionStudio-macOS-NoModels" ]; then
             mv SVCFusionStudio-macOS-NoModels/*.dmg ./SVCFusionStudio-macOS-NoModels.dmg || true
           fi
@@ -1816,6 +1857,8 @@ jobs:
             artifacts/SVCFusionStudio-Windows-CUDA.zip
             artifacts/SVCFusionStudio-Windows-CUDA-NoModels.zip
             artifacts/SVCFusionStudio-macOS.dmg
+            artifacts/SVCFusionStudio-macOS-VST3.dmg
+            artifacts/SVCFusionStudio-macOS-AU.dmg
             artifacts/SVCFusionStudio-macOS-NoModels.dmg
             artifacts/SVCFusionStudio-macOS-App.zip
             artifacts/SVCFusionStudio-macOS-App-NoModels.zip
