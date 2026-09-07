@@ -1162,14 +1162,22 @@ jobs:
 
           rm -f SVCFusionStudio-macOS.dmg SVCFusionStudio-macOS-NoModels.dmg
 
-          hdiutil create -volname "SVCFusionStudio" \
-            -srcfolder package \
-            -ov -format UDZO \
-            SVCFusionStudio-macOS.dmg
-          hdiutil create -volname "SVCFusionStudio-NoModels" \
-            -srcfolder package-nomodels \
-            -ov -format UDZO \
-            SVCFusionStudio-macOS-NoModels.dmg
+          create_dmg() {
+            local volname="$1" srcfolder="$2" out="$3"
+            for attempt in 1 2 3; do
+              if hdiutil create -volname "$volname" -srcfolder "$srcfolder" -ov -format UDZO "$out"; then
+                return 0
+              fi
+              echo "hdiutil create failed for $out (attempt $attempt), retrying..."
+              hdiutil detach "/Volumes/$volname" -force 2>/dev/null || true
+              sleep 5
+            done
+            echo "Failed to create $out after 3 attempts" >&2
+            return 1
+          }
+
+          create_dmg "SVCFusionStudio" package SVCFusionStudio-macOS.dmg
+          create_dmg "SVCFusionStudio-NoModels" package-nomodels SVCFusionStudio-macOS-NoModels.dmg
 
       - name: Create App ZIP
         run: |
@@ -1713,6 +1721,8 @@ jobs:
   # ===========================================
   release:
     name: Create Release
+    permissions:
+      contents: write
     needs:
       - build-windows-cpu
       - build-windows-directml
